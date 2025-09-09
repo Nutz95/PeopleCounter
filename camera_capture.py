@@ -1,7 +1,7 @@
 import cv2
 
 class CameraCapture:
-    def __init__(self, camera_index=0, width=3840, height=2160):
+    def __init__(self, camera_index=0, width=3840, height=2160, auto_exposure=1, gain = 1, brightness = 1, zoom = 1, constrast = 100, saturation = 100):
         self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -15,14 +15,20 @@ class CameraCapture:
 
         # Enable auto exposure
         try:
-            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)  # 0.75 is often used for auto mode
+            #self.cap.set(cv2.CAP_PROP_EXPOSURE, 0.5)
+            self.cap.set(cv2.CAP_PROP_ZOOM , zoom)
+            self.cap.set(cv2.CAP_PROP_CONTRAST , constrast)
+            self.cap.set(cv2.CAP_PROP_SATURATION , saturation)
+            self.cap.set(cv2.CAP_PROP_GAIN , gain)
+            self.cap.set(cv2.CAP_PROP_BRIGHTNESS  , brightness)
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto_exposure)  # 0.75 is often used for auto mode
             print("Auto exposure enabled.")
         except Exception as e:
             print(f"Failed to enable auto exposure: {e}")
 
         # Enable auto white balance
         try:
-            self.cap.set(cv2.CAP_PROP_AUTO_WB, 1)
+            self.cap.set(cv2.CAP_PROP_AUTO_WB, 0)
             print("Auto white balance enabled.")
         except Exception as e:
             print(f"Failed to enable auto white balance: {e}")
