@@ -41,6 +41,5 @@ class PeopleCounterProcessor:
 
         # Superposer la carte de densité sur la frame
         overlay = cv2.addWeighted(frame, 0.7, density_color, 0.3, 0)
-        # Annoter la frame superposée
-        cv2.putText(overlay, f"Count: {int(count)}", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 4)
+        # (Suppression de l'annotation 'Count:' en rouge)
         return frame, overlay, int(count)
