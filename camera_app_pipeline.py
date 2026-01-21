@@ -9,15 +9,67 @@ import matplotlib.pyplot as plt
 from camera_capture import CameraCapture
 from people_counter_processor import PeopleCounterProcessor
 from yolo_people_counter import YoloPeopleCounter
+from rtsp_capture import RTSPCapture
+from mqtt_capture import MqttCapture
 
 # Période de moyennage en secondes
 AVERAGING_PERIOD_SECONDS = 10  # Modifiez à 10 pour une moyenne sur 10 secondes
 
 class CameraAppPipeline:
-    def __init__(self):
-        self.capture = CameraCapture(width=1920, height=1080, auto_exposure=1, gain=0, brightness = 0, zoom = 0, contrast = 0) #width=1920, height=1080
-        self.processor = PeopleCounterProcessor(model_name="DM-Count", model_weights="QNRF")
-        self.yolo_counter = YoloPeopleCounter(model_name='yolo12x', device='cuda', confidence_threshold=0.6)  # Modifiez le seuil ici
+    def __init__(self, capture_mode=None):
+        # capture_mode can be 'usb' (default), 'mqtt', or 'rtsp'
+        cmode = capture_mode or os.environ.get('CAPTURE_MODE', 'usb')
+        # Common configuration from environment (can be overridden)
+        cam_index = int(os.environ.get('CAMERA_INDEX', '0'))
+        cam_width = int(os.environ.get('CAMERA_WIDTH', '1920'))
+        cam_height = int(os.environ.get('CAMERA_HEIGHT', '1080'))
+        broker_addr = os.environ.get('MQTT_BROKER', '127.0.0.1')
+        broker_port = int(os.environ.get('MQTT_PORT', '1883'))
+        mqtt_exposure = int(os.environ.get('MQTT_EXPOSURE', '500'))
+
+        if cmode.lower() == 'mqtt':
+            # Use MQTT-based Maixcam capture
+            print("Using MqttCapture (Maixcam/MQTT)")
+            self.capture = MqttCapture(broker_address=broker_addr, broker_port=broker_port, exposure=mqtt_exposure, width=cam_width, height=cam_height)
+        elif cmode.lower() == 'rtsp':
+            # Example: set RTSP_URL env var
+            rtsp_url = os.environ.get('RTSP_URL', 'rtsp://192.168.1.95:8554/live')
+            print(f"Using RTSPCapture ({rtsp_url})")
+            self.capture = RTSPCapture(rtsp_url, width=cam_width, height=cam_height)
+        else:
+            # Default: USB camera via OpenCV
+            print(f"Using CameraCapture (index={cam_index}, {cam_width}x{cam_height})")
+            self.capture = CameraCapture(camera_index=cam_index, width=cam_width, height=cam_height, auto_exposure=1)
+
+        lwcc_backend = os.environ.get('LWCC_BACKEND', 'torch').lower()
+        openvino_device = os.environ.get('OPENVINO_DEVICE', 'GPU')
+        yolo_backend = os.environ.get('YOLO_BACKEND', 'torch').lower()
+        yolo_model = os.environ.get('YOLO_MODEL', 'yolo11n')
+
+        if yolo_backend in ('openvino', 'openvino_native'):
+            ov_dir = os.environ.get('YOLO_OPENVINO_DIR')
+            if ov_dir and os.path.isdir(ov_dir):
+                yolo_model = ov_dir
+            else:
+                candidate_dir = f"{yolo_model}_openvino_model"
+                if os.path.isdir(candidate_dir):
+                    yolo_model = candidate_dir
+        yolo_device = os.environ.get('YOLO_DEVICE')
+        if not yolo_device:
+            yolo_device = 'GPU' if yolo_backend == 'openvino_native' else 'cpu'
+
+        self.processor = PeopleCounterProcessor(
+            model_name="DM-Count",
+            model_weights="QNRF",
+            backend=lwcc_backend,
+            openvino_device=openvino_device
+        )
+        self.yolo_counter = YoloPeopleCounter(
+            model_name=yolo_model,
+            device=yolo_device,
+            confidence_threshold=0.7,
+            backend=yolo_backend
+        )  # Modifiez le seuil ici
         screen = screeninfo.get_monitors()[0]
         self.screen_width = screen.width
         self.screen_height = screen.height
@@ -40,7 +92,15 @@ class CameraAppPipeline:
             try:
                 while True:
                     start_time = time.time()
+                    # Retry mechanism for frame acquisition
+                    max_retries = 3
+                    retry_count = 0
                     frame = self.capture.get_frame()
+                    while frame is None and retry_count < max_retries:
+                        print(f"[WARNING] Frame is None. Tentative {retry_count+1}/{max_retries}...")
+                        time.sleep(1)
+                        frame = self.capture.get_frame()
+                        retry_count += 1
                     if frame is None:
                         print("[ERROR] Frame is None. Vérifiez la connexion de la caméra et ses paramètres.")
                         print(f"Camera opened: {self.capture.is_opened}")
@@ -121,5 +181,9 @@ class CameraAppPipeline:
 
 if __name__ == "__main__":
     sys.path.append(r"E:\AI\lwcc")
-    app = CameraAppPipeline()
+    # Allow override by environment variable CAPTURE_MODE or by CLI first arg
+    capture_mode = None
+    if len(sys.argv) > 1:
+        capture_mode = sys.argv[1]
+    app = CameraAppPipeline(capture_mode=capture_mode)
     app.run()

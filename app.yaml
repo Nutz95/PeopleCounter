@@ -1,0 +1,6 @@
+id: mqttclient
+name: MQTTClient
+version: 1.0.0
+author: Nutz95
+icon: ''
+desc: MQTT Client (192.168.1.68)
