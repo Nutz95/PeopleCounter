@@ -4,16 +4,30 @@ import screeninfo
 import time
 import csv
 import os
+import threading
 from datetime import datetime
 import matplotlib.pyplot as plt
+import numpy as np
 from camera_capture import CameraCapture
 from people_counter_processor import PeopleCounterProcessor
 from yolo_people_counter import YoloPeopleCounter
 from rtsp_capture import RTSPCapture
 from mqtt_capture import MqttCapture
 
+# --- Task for threading models ---
+class ModelThread(threading.Thread):
+    def __init__(self, func, *args, **kwargs):
+        super().__init__()
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+        self.result = None
+    
+    def run(self):
+        self.result = self.func(*self.args, **self.kwargs)
+
 # Période de moyennage en secondes
-AVERAGING_PERIOD_SECONDS = 10  # Modifiez à 10 pour une moyenne sur 10 secondes
+AVERAGING_PERIOD_SECONDS = 2  # Réduit à 2s pour un graphe plus réactif
 
 class CameraAppPipeline:
     def __init__(self, capture_mode=None):
@@ -54,9 +68,20 @@ class CameraAppPipeline:
                 candidate_dir = f"{yolo_model}_openvino_model"
                 if os.path.isdir(candidate_dir):
                     yolo_model = candidate_dir
+        elif yolo_backend == 'tensorrt_native':
+            if not yolo_model.endswith('.engine'):
+                engine_file = f"{yolo_model}.engine"
+                if os.path.isfile(engine_file):
+                    yolo_model = engine_file
+        
         yolo_device = os.environ.get('YOLO_DEVICE')
         if not yolo_device:
-            yolo_device = 'GPU' if yolo_backend == 'openvino_native' else 'cpu'
+            if yolo_backend == 'openvino_native':
+                yolo_device = 'GPU'
+            elif yolo_backend == 'tensorrt_native':
+                yolo_device = 'cuda'
+            else:
+                yolo_device = 'cpu'
 
         self.processor = PeopleCounterProcessor(
             model_name="DM-Count",
@@ -74,6 +99,73 @@ class CameraAppPipeline:
         self.screen_width = screen.width
         self.screen_height = screen.height
         self.use_yolo = True  # Passe à True pour utiliser YOLO au lieu du modèle density
+        self.yolo_tiling = os.environ.get('YOLO_TILING', '1') == '1' # Défaut à 1 (Tiling actif)
+        self.history_len = 600  # Raw frames history (~3-5 mins at 2-3 FPS)
+        self.history_data = [] # List of (yolo, density, total)
+
+    def _draw_mini_graph(self, img):
+        # Draw a small semi-transparent graph in the bottom left
+        h, w = img.shape[:2]
+        gw, gh = 450, 180
+        margin = 20
+        x0, y0 = margin, h - margin - gh
+        
+        # Background box
+        sub_img = img[y0:y0+gh, x0:x0+gw]
+        rect = np.zeros_like(sub_img)
+        cv2.rectangle(rect, (0, 0), (gw, gh), (30, 30, 30), -1)
+        img[y0:y0+gh, x0:x0+gw] = cv2.addWeighted(sub_img, 0.4, rect, 0.6, 0)
+        
+        if len(self.history_data) < 2:
+            cv2.putText(img, "Warming up graph...", (x0 + 10, y0 + gh//2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+            return
+            
+        # Scaling
+        # points are (yolo, density, total)
+        all_vals = []
+        for d in self.history_data:
+            all_vals.extend([d[0], d[1], d[2]])
+            
+        max_val = max(all_vals) if all_vals else 1
+        curr_max = max_val
+        if max_val < 5: max_val = 5 
+        max_val *= 1.1 # Headroom
+        
+        num_points = len(self.history_data)
+        # Use a fixed width distribution or scrolling? 
+        # For a "live" feel, we spread samples across the 450px.
+        dx = gw / (num_points - 1) if num_points > 1 else gw
+        
+        def to_py(val):
+            return int(y0 + gh - (val / max_val * (gh - 40)) - 10)
+
+        points_yolo = []
+        points_density = []
+        points_total = []
+        
+        for i, (y_val, d_val, t_val) in enumerate(self.history_data):
+            px = int(x0 + i * dx)
+            points_yolo.append((px, to_py(y_val)))
+            points_density.append((px, to_py(d_val)))
+            points_total.append((px, to_py(t_val)))
+            
+        # Draw lines with distinct styles
+        for i in range(len(points_yolo) - 1):
+            # YOLO (Green)
+            cv2.line(img, points_yolo[i], points_yolo[i+1], (0, 255, 0), 1)
+            # Density (Red)
+            cv2.line(img, points_density[i], points_density[i+1], (0, 0, 255), 1)
+            # Total (Yellow - Thicker and slightly higher to avoid overlap hiding)
+            # We offset the total line by 2 pixels up if it matches the others
+            p1_t = (points_total[i][0], points_total[i][1] - 1)
+            p2_t = (points_total[i+1][0], points_total[i+1][1] - 1)
+            cv2.line(img, p1_t, p2_t, (0, 255, 255), 2)
+        
+        # Legend and info
+        cv2.putText(img, f"Live Activity (Max: {int(curr_max)})", (x0 + 10, y0 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(img, "YOLO", (x0 + 10, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        cv2.putText(img, "LWCC", (x0 + 60, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        cv2.putText(img, "TOTAL", (x0 + 120, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
 
     def run(self):
         # Prépare le fichier CSV avec date et heure
@@ -106,16 +198,31 @@ class CameraAppPipeline:
                         print(f"Camera opened: {self.capture.is_opened}")
                         break
                     # print(f"Frame shape: {frame.shape}")
-                    # YOLO sur image de base
-                    t0 = time.time()
-                    yolo_count, frame_with_bbox = self.yolo_counter.count_people(frame, tile_size=640, draw_boxes=True)
-                    t1 = time.time()
-                    # Densité sur image de base (pas de bbox)
-                    _, density_overlay, density_count = self.processor.process(frame)
-                    t2 = time.time()
-                    yolo_time = t1 - t0
-                    density_time = t2 - t1
-                    total_time = t2 - start_time
+                    
+                    # Parallelizing YOLO and Density models
+                    t_loop_start = time.time()
+                    
+                    thr_yolo = ModelThread(
+                        self.yolo_counter.count_people, 
+                        frame, 
+                        tile_size=640, 
+                        draw_boxes=True, 
+                        use_tiling=self.yolo_tiling
+                    )
+                    thr_density = ModelThread(self.processor.process, frame)
+                    
+                    thr_yolo.start()
+                    thr_density.start()
+                    
+                    thr_yolo.join()
+                    thr_density.join()
+                    
+                    yolo_count, frame_with_bbox = thr_yolo.result
+                    _, density_overlay, density_count = thr_density.result
+                    
+                    t_loop_end = time.time()
+                    total_process_time = t_loop_end - t_loop_start
+                    
                     # Resize density_overlay to match frame_with_bbox shape
                     density_overlay = cv2.resize(density_overlay, (frame_with_bbox.shape[1], frame_with_bbox.shape[0]))
                     # Superpose la carte de densité sur l'image avec bbox
@@ -130,8 +237,23 @@ class CameraAppPipeline:
                         cv2.putText(overlay2, f'Last Max Avg: {last_max:.2f}', (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,255), 3)
                     # Resize preview to 1080p for display
                     preview_1080p = cv2.resize(overlay2, (1920, 1080))
+                    
+                    # Draw mini graph
+                    self._draw_mini_graph(preview_1080p)
+                    
+                    # Affiche le FPS en haut à droite
+                    total_time = time.time() - start_time
+                    fps = 1.0 / total_time if total_time > 0 else 0
+                    cv2.putText(preview_1080p, f'FPS: {fps:.2f}', (1700, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+                    
                     cv2.imshow(f"People Count", preview_1080p)
-                    print(f"YOLO: {yolo_count} (time: {yolo_time:.3f}s) | Density: {density_count:.2f} (time: {density_time:.3f}s) | Total: {total_time:.3f}s")
+                    print(f"Parallel Inference: YOLO={yolo_count}, Density={density_count:.2f} | Time: {total_process_time:.3f}s | FPS: {fps:.2f}")
+                    
+                    # Update mini-graph history at every frame for live feedback
+                    self.history_data.append((yolo_count, density_count, max(yolo_count, density_count)))
+                    if len(self.history_data) > self.history_len:
+                        self.history_data.pop(0)
+
                     counts_yolo.append(yolo_count)
                     counts_density.append(density_count)
                     now_sec = int(time.time())
@@ -147,6 +269,7 @@ class CameraAppPipeline:
                             writer.writerow([now_dt, f"{avg_yolo:.2f}", f"{avg_density:.2f}", f"{max_count:.2f}"])
                             csvfile.flush()
                             log_data.append((now_dt, avg_yolo, avg_density, max_count))
+                        
                         counts_yolo = []
                         counts_density = []
                         last_period = now_sec

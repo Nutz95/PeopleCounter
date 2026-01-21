@@ -27,6 +27,52 @@ class PeopleCounterProcessor:
         self.ov_input = None
         self.ov_output = None
         self.ov_input_shape = None
+        self.trt_context = None
+        self.trt_engine = None
+        self.trt_inputs = []
+        self.trt_outputs = []
+        self.trt_bindings = []
+        self.cudart = None
+
+        if self.backend == "tensorrt":
+            engine_path = os.environ.get("LWCC_TRT_ENGINE", "dm_count.engine")
+            if os.path.isfile(engine_path):
+                try:
+                    import tensorrt as trt
+                    from cuda.bindings import runtime as cudart
+                    self.cudart = cudart
+                    logger = trt.Logger(trt.Logger.INFO)
+                    with open(engine_path, "rb") as f, trt.Runtime(logger) as runtime:
+                        self.trt_engine = runtime.deserialize_cuda_engine(f.read())
+                    print(f"LWCC backend loaded into TensorRT: {engine_path}")
+                    
+                    err, self.trt_stream = cudart.cudaStreamCreate()
+                    if int(err) != 0:
+                        raise RuntimeError(f"CUDA Stream Creation failed: {err}")
+                        
+                    self.trt_context = self.trt_engine.create_execution_context()
+                    
+                    for i in range(self.trt_engine.num_io_tensors):
+                        name = self.trt_engine.get_tensor_name(i)
+                        shape = self.trt_engine.get_tensor_shape(name)
+                        dtype = trt.nptype(self.trt_engine.get_tensor_dtype(name))
+                        size = trt.volume(shape)
+                        nbytes = size * np.dtype(dtype).itemsize
+                        err, device_ptr = cudart.cudaMalloc(nbytes)
+                        host_mem = np.empty(shape, dtype=dtype)
+                        binding = {'name': name, 'dtype': dtype, 'shape': shape, 'size': size, 'nbytes': nbytes, 'host': host_mem, 'device': device_ptr}
+                        if self.trt_engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                            self.trt_inputs.append(binding)
+                            self.trt_input_shape = shape
+                        else:
+                            self.trt_outputs.append(binding)
+                        self.trt_context.set_tensor_address(name, int(device_ptr))
+                    print(f"PeopleCounterProcessor using TensorRT on RTX: {engine_path}")
+                except Exception as exc:
+                    print(f"[WARN] TensorRT init failed ({exc}), falling back to openvino.")
+                    self.backend = "openvino"
+            else:
+                self.backend = "openvino"
 
         if self.backend == "openvino":
             xml_path = os.path.join(str(Path.home()), ".lwcc", "openvino", f"{model_name}_{model_weights}.xml")
@@ -56,7 +102,31 @@ class PeopleCounterProcessor:
 
     def process(self, frame):
         # Compte les personnes sur la frame
-        if self.backend == "openvino" and self.ov_compiled_model is not None:
+        if self.backend == "tensorrt" and self.trt_context is not None:
+            if self.trt_input_shape and len(self.trt_input_shape) == 4:
+                _, _, target_h, target_w = self.trt_input_shape
+                if frame.shape[0] != target_h or frame.shape[1] != target_w:
+                    frame = cv2.resize(frame, (target_w, target_h))
+            img = preprocess_frame(frame, self.model_name, is_gray=False, resize_img=False)
+            if hasattr(img, "numpy"):
+                img = img.numpy()
+            
+            # Copy to device
+            input_data = np.ascontiguousarray(img)
+            self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, self.trt_inputs[0]['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
+            # Execute
+            self.trt_context.execute_async_v3(self.trt_stream)
+            self.cudart.cudaStreamSynchronize(self.trt_stream)
+            # Copy back
+            for output in self.trt_outputs:
+                self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
+            
+            self.cudart.cudaStreamSynchronize(self.trt_stream)
+            
+            result = self.trt_outputs[0]['host']
+            density = result[0, 0, :, :]
+            count = float(np.sum(result))
+        elif self.backend == "openvino" and self.ov_compiled_model is not None:
             if self.ov_input_shape and len(self.ov_input_shape) == 4:
                 _, _, target_h, target_w = self.ov_input_shape
                 if frame.shape[0] != target_h or frame.shape[1] != target_w:
