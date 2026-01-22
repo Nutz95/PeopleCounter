@@ -29,5 +29,6 @@ YOLO_BACKEND=torch YOLO_MODEL=yolo11n.engine ./run_people_counter_usb.sh
 
 export YOLO_MODEL=yolo12s.engine
 export YOLO_MODEL=yolo12x.engine
-./run_people_counter_rtx.sh 1080p
-./run_people_counter_rtx.sh 4k
+./run_people_counter_rtx.sh 1080p yolo12s.engine
+./run_people_counter_rtx.sh 4k yolo12m.engine
+./run_people_counter_rtx.sh 4k yolo12x.engine

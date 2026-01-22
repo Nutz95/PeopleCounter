@@ -107,8 +107,9 @@ class CameraAppPipeline:
         # Draw a small semi-transparent graph in the bottom left
         h, w = img.shape[:2]
         gw, gh = 450, 180
-        margin = 20
-        x0, y0 = margin, h - margin - gh
+        margin_x = 20
+        margin_y = 80 # Remonte le graphique pour éviter d'être coupé par la fenêtre
+        x0, y0 = margin_x, h - margin_y - gh
         
         # Background box
         sub_img = img[y0:y0+gh, x0:x0+gw]
@@ -145,27 +146,24 @@ class CameraAppPipeline:
         
         for i, (y_val, d_val, t_val) in enumerate(self.history_data):
             px = int(x0 + i * dx)
+            # Ajout d'offsets pour voir les 3 courbes si elles sont identiques
             points_yolo.append((px, to_py(y_val)))
-            points_density.append((px, to_py(d_val)))
-            points_total.append((px, to_py(t_val)))
-            
-        # Draw lines with distinct styles
+            points_density.append((px, to_py(d_val) + 2))
+            points_total.append((px, to_py(t_val) - 2))
+        # Draw lines with distinct styles (Order: Total, then Density, then YOLO)
         for i in range(len(points_yolo) - 1):
-            # YOLO (Green)
-            cv2.line(img, points_yolo[i], points_yolo[i+1], (0, 255, 0), 1)
-            # Density (Red)
+            # 1. Total (Yellow - Thickest)
+            cv2.line(img, points_total[i], points_total[i+1], (0, 255, 255), 2)
+            # 2. LWCC / Density (Red)
             cv2.line(img, points_density[i], points_density[i+1], (0, 0, 255), 1)
-            # Total (Yellow - Thicker and slightly higher to avoid overlap hiding)
-            # We offset the total line by 2 pixels up if it matches the others
-            p1_t = (points_total[i][0], points_total[i][1] - 1)
-            p2_t = (points_total[i+1][0], points_total[i+1][1] - 1)
-            cv2.line(img, p1_t, p2_t, (0, 255, 255), 2)
+            # 3. YOLO (Green)
+            cv2.line(img, points_yolo[i], points_yolo[i+1], (0, 255, 0), 1)
         
         # Legend and info
-        cv2.putText(img, f"Live Activity (Max: {int(curr_max)})", (x0 + 10, y0 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(img, f"Live Activity (Max Sample: {int(curr_max)})", (x0 + 10, y0 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         cv2.putText(img, "YOLO", (x0 + 10, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-        cv2.putText(img, "LWCC", (x0 + 60, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-        cv2.putText(img, "TOTAL", (x0 + 120, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+        cv2.putText(img, "LWCC (Density)", (x0 + 60, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        cv2.putText(img, "AVERAGE", (x0 + 170, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
 
     def run(self):
         # Prépare le fichier CSV avec date et heure
@@ -218,15 +216,28 @@ class CameraAppPipeline:
                     thr_density.join()
                     
                     yolo_count, frame_with_bbox = thr_yolo.result
-                    _, density_overlay, density_count = thr_density.result
+                    _, density_raw, density_count, density_mask = thr_density.result
                     
                     t_loop_end = time.time()
                     total_process_time = t_loop_end - t_loop_start
                     
-                    # Resize density_overlay to match frame_with_bbox shape
-                    density_overlay = cv2.resize(density_overlay, (frame_with_bbox.shape[1], frame_with_bbox.shape[0]))
+                    # Resize density elements to match frame_with_bbox shape
+                    target_w, target_h = frame_with_bbox.shape[1], frame_with_bbox.shape[0]
+                    density_raw = cv2.resize(density_raw, (target_w, target_h))
+                    density_mask = cv2.resize(density_mask, (target_w, target_h))
+                    
                     # Superpose la carte de densité sur l'image avec bbox
-                    overlay2 = cv2.addWeighted(frame_with_bbox, 0.7, density_overlay, 0.3, 0)
+                    # On réduit l'alpha (0.2) pour mieux voir le fond, les cercles feront le focus
+                    overlay2 = cv2.addWeighted(frame_with_bbox, 0.8, density_raw, 0.2, 0)
+                    
+                    # --- DESSIN DES CERCLES ROUGES OPAQUES ---
+                    # On les dessine APRES le mélange pour qu'ils ne soient pas transparents
+                    contours, _ = cv2.findContours(density_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    for cnt in contours:
+                        if cv2.contourArea(cnt) > 50: 
+                            (x, y), radius = cv2.minEnclosingCircle(cnt)
+                            cv2.circle(overlay2, (int(x), int(y)), int(radius) + 10, (0, 0, 255), 2)
+
                     # Affiche les deux compteurs en haut
                     cv2.putText(overlay2, f'Density Count: {density_count:.2f}', (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,0,255), 3)
                     yolo_label = self.yolo_counter.model_name
@@ -249,8 +260,9 @@ class CameraAppPipeline:
                     cv2.imshow(f"People Count", preview_1080p)
                     print(f"Parallel Inference: YOLO={yolo_count}, Density={density_count:.2f} | Time: {total_process_time:.3f}s | FPS: {fps:.2f}")
                     
-                    # Update mini-graph history at every frame for live feedback
-                    self.history_data.append((yolo_count, density_count, max(yolo_count, density_count)))
+                    # Update mini-graph history at every frame for live feedback (YOLO, Density, Average)
+                    avg_instant = (yolo_count + density_count) / 2.0
+                    self.history_data.append((yolo_count, density_count, avg_instant))
                     if len(self.history_data) > self.history_len:
                         self.history_data.pop(0)
 
