@@ -130,10 +130,7 @@ class YoloSegPeopleCounter:
                 
                 if x2 <= x1 or y2 <= y1: continue
 
-                # Dessin de la BBox
-                cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                
-                # Dessin du segment (Si disponible)
+                # Dessin du segment (Remplissage + Contour au lieu de BBox)
                 try:
                     mask_crop = all_masks[i]
                     if mask_crop.size > 0:
@@ -143,15 +140,21 @@ class YoloSegPeopleCounter:
                         if bw > 2 and bh > 2:
                             m_resized = cv2.resize(mask_bool.astype(np.uint8), (bw, bh), interpolation=cv2.INTER_LINEAR)
                             
-                            # Zone d'intérêt sur l'image 4K
+                            # 1. Remplissage vert transparent (dans l'overlay)
                             roi = overlay[y1:y2, x1:x2]
                             if roi.shape[0] == bh and roi.shape[1] == bw:
                                 mask_color = np.zeros_like(roi)
                                 mask_color[m_resized > 0] = (0, 255, 0)
-                                # Fusion intelligente
                                 overlay[y1:y2, x1:x2] = np.where(mask_color > 0, mask_color, roi)
-                except Exception as e:
-                    # On ignore les erreurs de dessin pour ne pas bloquer le stream
+                            
+                            # 2. Contour vert foncé (directement sur image_out)
+                            contours, _ = cv2.findContours(m_resized, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                            for cnt in contours:
+                                # On décale le contour à sa position réelle sur l'image 4K
+                                cnt[:, :, 0] += x1
+                                cnt[:, :, 1] += y1
+                                cv2.drawContours(image_out, [cnt], -1, (0, 100, 0), 2)
+                except Exception:
                     pass
             
             # Fusion avec transparence (alpha=0.3)

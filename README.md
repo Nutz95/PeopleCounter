@@ -45,6 +45,9 @@ Exemples :
 
 # 4K avec réduction de bruit active (niveau 1)
 ./run_people_counter_rtx.sh 4k yolo12m.engine 0.70 1 1 15 1
+
+# 4k avec segmentation active
+./run_people_counter_rtx.sh 4k yolo11x-seg.engine 0.50 1 0 50 1 1
 ```
 
 # 4K sans tiling YOLO et sensibilité densité augmentée (seuil 10)
