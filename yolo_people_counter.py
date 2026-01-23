@@ -4,7 +4,7 @@ import cv2
 import os
 
 class YoloPeopleCounter:
-    def __init__(self, model_name='yolov26n', device='cpu', confidence_threshold=0.25, backend='torch'):
+    def __init__(self, model_name='yolov26n', device='cpu', confidence_threshold=0.3, backend='torch'):
         """
         model_name: 'yolov8n', 'yolov8s', 'yolov8m', 'yolov8l', 'yolov8x', 'yolo11n', etc.
         device: 'cpu' or 'cuda'
@@ -151,83 +151,105 @@ class YoloPeopleCounter:
                 return int(total_count), image_out
             return int(total_count)
 
-        # Si use_tiling=True, on garde l'ancien code... (L'indentation de la suite doit être conservée)
+        # Si use_tiling=True, on combine une pyramide de détection Hiérarchique
         h, w = image.shape[:2]
-        tiles = []
-        tile_coords = []
-        pads = []
-        for y0 in range(0, h, tile_size):
-            for x0 in range(0, w, tile_size):
-                tile = image[y0:y0+tile_size, x0:x0+tile_size]
-                pad_bottom = tile_size - tile.shape[0]
-                pad_right = tile_size - tile.shape[1]
-                if pad_bottom > 0 or pad_right > 0:
-                    tile = cv2.copyMakeBorder(tile, 0, pad_bottom, 0, pad_right, cv2.BORDER_CONSTANT, value=0)
-                tile_rgb = tile[..., ::-1]
-                tiles.append(tile_rgb)
-                tile_coords.append((x0, y0))
-                pads.append((pad_right, pad_bottom))
-        total_count = 0
-        image_out = image.copy() if draw_boxes else None
-        if self.backend == 'openvino_native' or self.backend == 'tensorrt_native':
-            for idx, tile in enumerate(tiles):
-                x0, y0 = tile_coords[idx]
-                pad_right, pad_bottom = pads[idx]
-                if self.backend == 'openvino_native':
-                    boxes, scores = self._ov_native_infer(tile)
-                else:
-                    boxes, scores = self._trt_native_infer(tile)
+        all_boxes = []
+        all_scores = []
+
+        # --- ÉTAPE 1 : PASSE GLOBALE (Cibles Proches > 350px) ---
+        if self.backend == 'openvino_native':
+            g_boxes, g_scores = self._ov_native_infer(image)
+        elif self.backend == 'tensorrt_native':
+            g_boxes, g_scores = self._trt_native_infer(image)
+        else:
+            g_results = self.model.predict(image, verbose=False, imgsz=tile_size)
+            g_boxes = g_results[0].boxes.xyxy.cpu().numpy()
+            g_scores = g_results[0].boxes.conf.cpu().numpy()
+            g_mask = (g_results[0].boxes.cls.cpu().numpy() == self.person_class_id) & (g_scores >= self.confidence_threshold)
+            g_boxes, g_scores = g_boxes[g_mask], g_scores[g_mask]
+        
+        if len(g_boxes) > 0:
+            all_boxes.append(g_boxes)
+            all_scores.append(g_scores)
+
+        # --- ÉTAPE 2 : PASSE QUADRANTS (Cibles Moyennes) ---
+        quad_h, quad_w = h // 2, w // 2
+        for i in range(2):
+            for j in range(2):
+                y0, x0 = i * quad_h, j * quad_w
+                quad = image[y0:y0+quad_h, x0:x0+quad_w]
+                quad_rgb = quad[..., ::-1]
                 
-                keep = self._nms(boxes, scores, iou_threshold=0.45)
-                total_count += len(keep)
-                if draw_boxes:
-                    for i in keep:
-                        x1, y1, x2, y2 = boxes[i].astype(int)
-                        if x2 <= tile_size - pad_right and y2 <= tile_size - pad_bottom:
-                            x1 = min(x1, tile_size - pad_right - 1)
-                            x2 = min(x2, tile_size - pad_right - 1)
-                            y1 = min(y1, tile_size - pad_bottom - 1)
-                            y2 = min(y2, tile_size - pad_bottom - 1)
-                            x1 += x0
-                            x2 += x0
-                            y1 += y0
-                            y2 += y0
-                            cv2.rectangle(image_out, (x1, y1), (x2, y2), (0,255,0), 2)
-        else:
-            # Traitement batché sur GPU
-            if self.backend == 'openvino':
-                results = []
-                for tile in tiles:
-                    results.extend(self.model.predict([tile], verbose=False))
-            else:
-                results = self.model.predict(tiles, verbose=False)
-            for idx, r in enumerate(results):
-                x0, y0 = tile_coords[idx]
-                pad_right, pad_bottom = pads[idx]
-                if hasattr(r, 'boxes'):
-                    boxes = r.boxes
-                    if hasattr(boxes, 'cls') and hasattr(boxes, 'conf'):
-                        person_mask = (boxes.cls.cpu().numpy() == self.person_class_id) & (boxes.conf.cpu().numpy() >= self.confidence_threshold)
-                        total_count += np.sum(person_mask)
-                        if draw_boxes and hasattr(boxes, 'xyxy'):
-                            for i, is_person in enumerate(person_mask):
-                                if is_person:
-                                    box = boxes.xyxy[i].cpu().numpy().astype(int)
-                                    x1, y1, x2, y2 = box
-                                    if x2 <= tile_size - pad_right and y2 <= tile_size - pad_bottom:
-                                        x1 = min(x1, tile_size - pad_right - 1)
-                                        x2 = min(x2, tile_size - pad_right - 1)
-                                        y1 = min(y1, tile_size - pad_bottom - 1)
-                                        y2 = min(y2, tile_size - pad_bottom - 1)
-                                        x1 += x0
-                                        x2 += x0
-                                        y1 += y0
-                                        y2 += y0
-                                        cv2.rectangle(image_out, (x1, y1), (x2, y2), (0,255,0), 2)
+                if self.backend == 'openvino_native':
+                    q_boxes, q_scores = self._ov_native_infer(cv2.resize(quad_rgb, (tile_size, tile_size)))
+                elif self.backend == 'tensorrt_native':
+                    q_boxes, q_scores = self._trt_native_infer(cv2.resize(quad_rgb, (tile_size, tile_size)))
+                else:
+                    results = self.model.predict(quad_rgb, verbose=False, imgsz=tile_size)
+                    q_boxes = results[0].boxes.xyxy.cpu().numpy()
+                    q_scores = results[0].boxes.conf.cpu().numpy()
+                    q_mask = (results[0].boxes.cls.cpu().numpy() == self.person_class_id) & (q_scores >= self.confidence_threshold)
+                    q_boxes, q_scores = q_boxes[q_mask], q_scores[q_mask]
+
+                if len(q_boxes) > 0:
+                    if self.backend in ['openvino_native', 'tensorrt_native']:
+                        q_boxes[:, [0, 2]] *= (quad_w / tile_size)
+                        q_boxes[:, [1, 3]] *= (quad_h / tile_size)
+                    q_boxes[:, [0, 2]] += x0
+                    q_boxes[:, [1, 3]] += y0
+                    all_boxes.append(q_boxes)
+                    all_scores.append(q_scores)
+
+        # --- ÉTAPE 3 : PASSE PAR TUILES (Cibles Éloignées / Petites) ---
+        overlap_ratio = 0.2
+        step = int(tile_size * (1 - overlap_ratio))
+        y_coords = list(range(0, max(1, h - tile_size + step), step))
+        if y_coords[-1] + tile_size < h: y_coords.append(h - tile_size)
+        x_coords = list(range(0, max(1, w - tile_size + step), step))
+        if x_coords[-1] + tile_size < w: x_coords.append(w - tile_size)
+
+        for y0 in y_coords:
+            for x0 in x_coords:
+                tile = image[y0:y0+tile_size, x0:x0+tile_size]
+                if tile.shape[0] < tile_size or tile.shape[1] < tile_size:
+                    tile = cv2.copyMakeBorder(tile, 0, tile_size-tile.shape[0], 0, tile_size-tile.shape[1], cv2.BORDER_CONSTANT, value=0)
+                
+                tile_rgb = tile[..., ::-1]
+                if self.backend == 'openvino_native':
+                    boxes, scores = self._ov_native_infer(tile_rgb)
+                elif self.backend == 'tensorrt_native':
+                    boxes, scores = self._trt_native_infer(tile_rgb)
+                else:
+                    results = self.model.predict(tile_rgb, verbose=False, imgsz=tile_size)
+                    r = results[0]
+                    boxes, scores = [], []
+                    if hasattr(r, 'boxes'):
+                        mask = (r.boxes.cls.cpu().numpy() == self.person_class_id) & (r.boxes.conf.cpu().numpy() >= self.confidence_threshold)
+                        boxes = r.boxes.xyxy[mask].cpu().numpy()
+                        scores = r.boxes.conf[mask].cpu().numpy()
+
+                if len(boxes) > 0:
+                    boxes[:, [0, 2]] += x0
+                    boxes[:, [1, 3]] += y0
+                    all_boxes.append(boxes)
+                    all_scores.append(scores)
+
+        if not all_boxes:
+            return (0, image.copy()) if draw_boxes else 0
+
+        # Concaténation et NMS Hiérarchique
+        all_boxes = np.concatenate(all_boxes, axis=0)
+        all_scores = np.concatenate(all_scores, axis=0)
+        keep = self._nms(all_boxes, all_scores, iou_threshold=0.35, inclusion_threshold=0.6)
+        
+        total_count = len(keep)
+        image_out = image.copy() if draw_boxes else None
         if draw_boxes:
-            return int(total_count), image_out
-        else:
-            return int(total_count)
+            for i in keep:
+                x1, y1, x2, y2 = all_boxes[i].astype(int)
+                cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        
+        return (int(total_count), image_out) if draw_boxes else int(total_count)
 
     def _ov_native_infer(self, tile_rgb):
         img = tile_rgb.astype(np.float32) / 255.0
@@ -310,27 +332,45 @@ class YoloPeopleCounter:
         return boxes, scores
 
     @staticmethod
-    def _nms(boxes, scores, iou_threshold=0.45):
+    def _nms(boxes, scores, iou_threshold=0.3, inclusion_threshold=0.5):
+        """
+        NMS Robuste optimisé pour la détection multi-échelle (Global, Quads, Tiles).
+        Gère les chevauchements entre les différents niveaux de la pyramide.
+        """
         if boxes.size == 0:
             return []
-        x1 = boxes[:, 0]
-        y1 = boxes[:, 1]
-        x2 = boxes[:, 2]
-        y2 = boxes[:, 3]
+            
+        x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
         areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+        
         order = scores.argsort()[::-1]
         keep = []
+        
         while order.size > 0:
             i = order[0]
             keep.append(i)
+            
             xx1 = np.maximum(x1[i], x1[order[1:]])
             yy1 = np.maximum(y1[i], y1[order[1:]])
             xx2 = np.minimum(x2[i], x2[order[1:]])
             yy2 = np.minimum(y2[i], y2[order[1:]])
+            
             w = np.maximum(0.0, xx2 - xx1 + 1)
             h = np.maximum(0.0, yy2 - yy1 + 1)
             inter = w * h
-            iou = inter / (areas[i] + areas[order[1:]] - inter)
-            inds = np.where(iou <= iou_threshold)[0]
+            
+            # IoU classique pour les doublons à une même échelle
+            union = areas[i] + areas[order[1:]] - inter
+            iou = inter / (union + 1e-6)
+            
+            # Ratio d'Inclusion : Supprime les boîtes (ex: tête) incluses dans une plus grande (ex: corps)
+            min_area = np.minimum(areas[i], areas[order[1:]])
+            io_min = inter / (min_area + 1e-6)
+            
+            # Suppression si l'IoU est élevé OU si une boîte est presque totalement incluse dans l'autre
+            mask = (iou > iou_threshold) | (io_min > inclusion_threshold)
+            
+            inds = np.where(~mask)[0]
             order = order[inds + 1]
+            
         return keep

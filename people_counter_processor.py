@@ -147,14 +147,26 @@ class PeopleCounterProcessor:
                 use_gpu=torch.cuda.is_available()
             )
             self.model = self.model or None
-        # Redimensionner la carte de densité à la taille de la frame
-        density_img = Image.fromarray(np.uint8(density * 255), 'L')
-        density_img = density_img.resize((frame.shape[1], frame.shape[0]), Image.BILINEAR)
-        density_np = np.array(density_img.convert('RGB'))
-        # Appliquer une colormap rouge (COLORMAP_JET donne du rouge pour les valeurs hautes)
-        density_color = cv2.applyColorMap(density_np, cv2.COLORMAP_JET)
 
-        # Superposer la carte de densité sur la frame
-        overlay = cv2.addWeighted(frame, 0.7, density_color, 0.3, 0)
-        # (Suppression de l'annotation 'Count:' en rouge)
-        return frame, overlay, int(count)
+        # --- Optimisation de la visibilité de la carte de densité ---
+        # 1. Normalisation dynamique pour utiliser toute la plage de couleurs
+        density_norm = cv2.normalize(density, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+        
+        # 2. Redimensionnement à la taille de la frame
+        density_norm = cv2.resize(density_norm, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR)
+        
+        # 3. Application d'une colormap (JET)
+        density_color = cv2.applyColorMap(density_norm, cv2.COLORMAP_JET)
+        
+        # il peut détecter des points. On applique un seuil plus strict sur le masque.
+        _, mask = cv2.threshold(density_norm, 40, 255, cv2.THRESH_BINARY)
+        mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        density_color = cv2.bitwise_and(density_color, mask_3ch)
+
+        # Si le compte est trop faible (bruit de fond), on le ramène à zéro
+        if count < 0.5:
+            count = 0
+        
+        # On retourne la frame originale, la carte de densité brute (fond noir), 
+        # le compte, et le masque pour les contours
+        return frame, density_color, int(count), mask
