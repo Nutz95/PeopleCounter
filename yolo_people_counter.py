@@ -45,10 +45,44 @@ class YoloPeopleCounter:
             
             for i in range(self.trt_engine.num_io_tensors):
                 name = self.trt_engine.get_tensor_name(i)
-                shape = self.trt_engine.get_tensor_shape(name)
-                dtype = trt.nptype(self.trt_engine.get_tensor_dtype(name))
+                dtype = self.trt_engine.get_tensor_dtype(name)
+                shape = list(self.trt_engine.get_tensor_shape(name))
+                
+                # Gestion des dimensions dynamiques via les profils
+                if any(d < 0 or d > 1e6 for d in shape):
+                    try:
+                        # On cherche le max dans tous les profils disponibles
+                        for p_idx in range(self.trt_engine.num_optimization_profiles):
+                            p_shape = self.trt_engine.get_tensor_profile_shape(name, p_idx)
+                            if p_shape and len(p_shape) >= 3:
+                                max_shape = p_shape[2]
+                                for j in range(len(shape)):
+                                    if shape[j] < 0 or shape[j] > 1e6:
+                                        shape[j] = max(shape[j], max_shape[j])
+                        print(f"[DEBUG] YOLO: Resolved shape for {name}: {shape}")
+                    except Exception as e:
+                        print(f"[WARN] Failed to get profile shape for {name}: {e}")
+                        # Fallback structurel structurel pour YOLO
+                        # On essaye de deviner la taille max (32 pour le batch)
+                        b_max = 32
+                        if "output" in name.lower():
+                            shape = [b_max, 84, 8400]
+                        else:
+                            shape = [b_max, 3, 640, 640]
+                        print(f"[DEBUG] YOLO: Using fallback shape for {name}: {shape}")
+                
+                # Nettoyage final pour s'assurer qu'on n'a plus de -1
+                for j in range(len(shape)):
+                    if shape[j] < 1 or shape[j] > 1e6:
+                        shape[j] = 1 
+                
+                shape = tuple(shape)
+                print(f"[DEBUG] YOLO: Final allocation shape for {name}: {shape}")
+
+                shape = tuple(shape)
+                dtype_np = trt.nptype(dtype)
                 size = trt.volume(shape)
-                nbytes = size * np.dtype(dtype).itemsize
+                nbytes = size * np.dtype(dtype_np).itemsize
                 
                 # Allocate device memory
                 err, device_ptr = cudart.cudaMalloc(nbytes)
@@ -56,7 +90,7 @@ class YoloPeopleCounter:
                     raise RuntimeError(f"CUDA Malloc failed: {err}")
                 
                 # Allocation host memory
-                host_mem = np.empty(shape, dtype=dtype)
+                host_mem = np.empty(shape, dtype=dtype_np)
                 
                 binding = {
                     'name': name,
@@ -112,12 +146,21 @@ class YoloPeopleCounter:
             if self.backend != 'openvino':
                 self.model.to(device)
 
-    def count_people(self, image, tile_size=640, draw_boxes=False, use_tiling=False):
+    def count_people(self, image, tile_size=640, draw_boxes=True, use_tiling=True):
+        """
+        Détection de personnes avec pipeline hiérarchique :
+        1. Passe Globale (image entière redimensionnée)
+        2. Passe Quadrants (si 4K)
+        3. Passe Tuiles (Sliding window 640x640)
+        """
+        # Conversion RGB pour la cohérence des modèles YOLO
+        image_rgb = image[..., ::-1].copy()
+        
         if not use_tiling:
             # Inference sur image entière redimensionnée (beaucoup plus rapide)
             if self.backend == 'openvino_native':
-                boxes, scores = self._ov_native_infer(image)
-                keep = self._nms(boxes, scores, iou_threshold=0.45)
+                boxes, scores = self._ov_native_infer(image_rgb)
+                keep = self._nms(boxes, scores, iou_threshold=0.25, inclusion_threshold=0.45)
                 total_count = len(keep)
                 image_out = image.copy() if draw_boxes else None
                 if draw_boxes:
@@ -125,8 +168,8 @@ class YoloPeopleCounter:
                         x1, y1, x2, y2 = boxes[i].astype(int)
                         cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
             elif self.backend == 'tensorrt_native':
-                boxes, scores = self._trt_native_infer(image)
-                keep = self._nms(boxes, scores, iou_threshold=0.45)
+                boxes, scores = self._trt_native_infer(image_rgb)
+                keep = self._nms(boxes, scores, iou_threshold=0.25, inclusion_threshold=0.45)
                 total_count = len(keep)
                 image_out = image.copy() if draw_boxes else None
                 if draw_boxes:
@@ -134,7 +177,7 @@ class YoloPeopleCounter:
                         x1, y1, x2, y2 = boxes[i].astype(int)
                         cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
             else:
-                results = self.model.predict(image, verbose=False, imgsz=tile_size)
+                results = self.model.predict(image_rgb, verbose=False, imgsz=tile_size)
                 r = results[0]
                 total_count = 0
                 image_out = image.copy() if draw_boxes else None
@@ -152,55 +195,28 @@ class YoloPeopleCounter:
             return int(total_count)
 
         # Si use_tiling=True, on combine une pyramide de détection Hiérarchique
-        h, w = image.shape[:2]
-        all_boxes = []
-        all_scores = []
+        h, w = image_rgb.shape[:2]
+        all_boxes_list = []
+        all_scores_list = []
 
-        # --- ÉTAPE 1 : PASSE GLOBALE (Cibles Proches > 350px) ---
-        if self.backend == 'openvino_native':
-            g_boxes, g_scores = self._ov_native_infer(image)
-        elif self.backend == 'tensorrt_native':
-            g_boxes, g_scores = self._trt_native_infer(image)
-        else:
-            g_results = self.model.predict(image, verbose=False, imgsz=tile_size)
-            g_boxes = g_results[0].boxes.xyxy.cpu().numpy()
-            g_scores = g_results[0].boxes.conf.cpu().numpy()
-            g_mask = (g_results[0].boxes.cls.cpu().numpy() == self.person_class_id) & (g_scores >= self.confidence_threshold)
-            g_boxes, g_scores = g_boxes[g_mask], g_scores[g_mask]
-        
-        if len(g_boxes) > 0:
-            all_boxes.append(g_boxes)
-            all_scores.append(g_scores)
+        # --- ÉTAPE 1 : COLLECTE DE TOUTES LES TUILES ---
+        tiles_to_infer = []
+        tile_metadata = [] # (x0, y0, scale_w, scale_h)
 
-        # --- ÉTAPE 2 : PASSE QUADRANTS (Cibles Moyennes) ---
+        # 1.1 Passe Globale
+        tiles_to_infer.append(image_rgb)
+        tile_metadata.append((0, 0, 1.0, 1.0))
+
+        # 1.2 Passe Quadrants
         quad_h, quad_w = h // 2, w // 2
         for i in range(2):
             for j in range(2):
                 y0, x0 = i * quad_h, j * quad_w
-                quad = image[y0:y0+quad_h, x0:x0+quad_w]
-                quad_rgb = quad[..., ::-1]
-                
-                if self.backend == 'openvino_native':
-                    q_boxes, q_scores = self._ov_native_infer(cv2.resize(quad_rgb, (tile_size, tile_size)))
-                elif self.backend == 'tensorrt_native':
-                    q_boxes, q_scores = self._trt_native_infer(cv2.resize(quad_rgb, (tile_size, tile_size)))
-                else:
-                    results = self.model.predict(quad_rgb, verbose=False, imgsz=tile_size)
-                    q_boxes = results[0].boxes.xyxy.cpu().numpy()
-                    q_scores = results[0].boxes.conf.cpu().numpy()
-                    q_mask = (results[0].boxes.cls.cpu().numpy() == self.person_class_id) & (q_scores >= self.confidence_threshold)
-                    q_boxes, q_scores = q_boxes[q_mask], q_scores[q_mask]
+                quad = image_rgb[y0:y0+quad_h, x0:x0+quad_w]
+                tiles_to_infer.append(quad)
+                tile_metadata.append((x0, y0, quad_w/tile_size, quad_h/tile_size))
 
-                if len(q_boxes) > 0:
-                    if self.backend in ['openvino_native', 'tensorrt_native']:
-                        q_boxes[:, [0, 2]] *= (quad_w / tile_size)
-                        q_boxes[:, [1, 3]] *= (quad_h / tile_size)
-                    q_boxes[:, [0, 2]] += x0
-                    q_boxes[:, [1, 3]] += y0
-                    all_boxes.append(q_boxes)
-                    all_scores.append(q_scores)
-
-        # --- ÉTAPE 3 : PASSE PAR TUILES (Cibles Éloignées / Petites) ---
+        # 1.3 Passe Tuiles (Sliding Window)
         overlap_ratio = 0.2
         step = int(tile_size * (1 - overlap_ratio))
         y_coords = list(range(0, max(1, h - tile_size + step), step))
@@ -210,37 +226,55 @@ class YoloPeopleCounter:
 
         for y0 in y_coords:
             for x0 in x_coords:
-                tile = image[y0:y0+tile_size, x0:x0+tile_size]
+                tile = image_rgb[y0:y0+tile_size, x0:x0+tile_size]
                 if tile.shape[0] < tile_size or tile.shape[1] < tile_size:
                     tile = cv2.copyMakeBorder(tile, 0, tile_size-tile.shape[0], 0, tile_size-tile.shape[1], cv2.BORDER_CONSTANT, value=0)
-                
-                tile_rgb = tile[..., ::-1]
-                if self.backend == 'openvino_native':
-                    boxes, scores = self._ov_native_infer(tile_rgb)
-                elif self.backend == 'tensorrt_native':
-                    boxes, scores = self._trt_native_infer(tile_rgb)
-                else:
-                    results = self.model.predict(tile_rgb, verbose=False, imgsz=tile_size)
-                    r = results[0]
-                    boxes, scores = [], []
-                    if hasattr(r, 'boxes'):
-                        mask = (r.boxes.cls.cpu().numpy() == self.person_class_id) & (r.boxes.conf.cpu().numpy() >= self.confidence_threshold)
-                        boxes = r.boxes.xyxy[mask].cpu().numpy()
-                        scores = r.boxes.conf[mask].cpu().numpy()
+                tiles_to_infer.append(tile)
+                tile_metadata.append((x0, y0, 1.0, 1.0))
 
-                if len(boxes) > 0:
+        # --- ÉTAPE 2 : INFÉRENCE BATCHÉE ---
+        if self.backend == 'tensorrt_native':
+            batch_boxes, batch_scores = self._trt_native_infer_batch(tiles_to_infer)
+            for i, (boxes, scores) in enumerate(zip(batch_boxes, batch_scores)):
+                if boxes.size > 0:
+                    x0, y0, sw, sh = tile_metadata[i]
+                    # On rescale les boxes si nécessaire (pour les quadrants)
+                    if sw != 1.0 or sh != 1.0:
+                        boxes[:, [0, 2]] *= sw
+                        boxes[:, [1, 3]] *= sh
+                    # On ajoute l'offset
                     boxes[:, [0, 2]] += x0
                     boxes[:, [1, 3]] += y0
-                    all_boxes.append(boxes)
-                    all_scores.append(scores)
+                    all_boxes_list.append(boxes)
+                    all_scores_list.append(scores)
+        else:
+            # Fallback séquentiel pour OpenVINO/Torch (non encore batché ici)
+            for i, tile in enumerate(tiles_to_infer):
+                if self.backend == 'openvino_native':
+                    boxes, scores = self._ov_native_infer(tile)
+                else:
+                    results = self.model.predict(tile, verbose=False, imgsz=tile_size)
+                    mask = (results[0].boxes.cls.cpu().numpy() == self.person_class_id) & (results[0].boxes.conf.cpu().numpy() >= self.confidence_threshold)
+                    boxes = results[0].boxes.xyxy[mask].cpu().numpy()
+                    scores = results[0].boxes.conf[mask].cpu().numpy()
+                
+                if boxes.size > 0:
+                    x0, y0, sw, sh = tile_metadata[i]
+                    if self.backend == 'openvino_native' and (sw != 1.0 or sh != 1.0):
+                        boxes[:, [0, 2]] *= sw
+                        boxes[:, [1, 3]] *= sh
+                    boxes[:, [0, 2]] += x0
+                    boxes[:, [1, 3]] += y0
+                    all_boxes_list.append(boxes)
+                    all_scores_list.append(scores)
 
-        if not all_boxes:
+        if not all_boxes_list:
             return (0, image.copy()) if draw_boxes else 0
 
         # Concaténation et NMS Hiérarchique
-        all_boxes = np.concatenate(all_boxes, axis=0)
-        all_scores = np.concatenate(all_scores, axis=0)
-        keep = self._nms(all_boxes, all_scores, iou_threshold=0.35, inclusion_threshold=0.6)
+        all_boxes = np.concatenate(all_boxes_list, axis=0)
+        all_scores = np.concatenate(all_scores_list, axis=0)
+        keep = self._nms(all_boxes, all_scores, iou_threshold=0.25, inclusion_threshold=0.45)
         
         total_count = len(keep)
         image_out = image.copy() if draw_boxes else None
@@ -248,6 +282,10 @@ class YoloPeopleCounter:
             for i in keep:
                 x1, y1, x2, y2 = all_boxes[i].astype(int)
                 cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        
+        if draw_boxes:
+            return int(total_count), image_out
+        return int(total_count)
         
         return (int(total_count), image_out) if draw_boxes else int(total_count)
 
@@ -282,11 +320,13 @@ class YoloPeopleCounter:
 
     def _trt_native_infer(self, tile_rgb):
         import numpy as np
+        h_orig, w_orig = tile_rgb.shape[:2]
 
         img = tile_rgb.astype(np.float32) / 255.0
         img = np.transpose(img, (2, 0, 1))[None, ...]
         
         # Check input shape
+        target_w, target_h = w_orig, h_orig
         if self.trt_input_shape and len(self.trt_input_shape) == 4:
             _, _, target_h, target_w = self.trt_input_shape
             if img.shape[2] != target_h or img.shape[3] != target_w:
@@ -296,7 +336,11 @@ class YoloPeopleCounter:
 
         # Copy input to device
         input_data = np.ascontiguousarray(img)
-        self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, self.trt_inputs[0]['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
+        # Use the actual size of input_data instead of self.trt_inputs[0]['nbytes'] (which might be max batch)
+        self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
+
+        # IMPORTANT: Set input shape for dynamic engines
+        self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
 
         # Execute
         self.trt_context.execute_async_v3(self.trt_stream)
@@ -319,11 +363,15 @@ class YoloPeopleCounter:
         scores = scores[mask]
         if boxes.size == 0:
             return boxes, scores
+
+        # Scale back to original tile size
+        sw = w_orig / target_w
+        sh = h_orig / target_h
             
-        x = boxes[:, 0]
-        y = boxes[:, 1]
-        w = boxes[:, 2]
-        h = boxes[:, 3]
+        x = boxes[:, 0] * sw
+        y = boxes[:, 1] * sh
+        w = boxes[:, 2] * sw
+        h = boxes[:, 3] * sh
         x1 = x - w / 2
         y1 = y - h / 2
         x2 = x + w / 2
@@ -331,11 +379,98 @@ class YoloPeopleCounter:
         boxes = np.stack([x1, y1, x2, y2], axis=1)
         return boxes, scores
 
+    def _trt_native_infer_batch(self, batch_imgs):
+        """
+        Inférence YOLO en Batch pour TensorRT.
+        batch_imgs: Liste d'images (tiles)
+        """
+        num_imgs = len(batch_imgs)
+        if num_imgs == 0: return [], []
+        
+        # On suppose que toutes les images du batch font la même taille (imgsz de YOLO)
+        target_h, target_w = self.trt_input_shape[2], self.trt_input_shape[3]
+        max_batch = self.trt_input_shape[0] if self.trt_input_shape[0] > 0 else num_imgs
+        
+        all_boxes, all_scores = [], []
+        
+        # On traite par morceaux de taille supportée par l'engine
+        from concurrent.futures import ThreadPoolExecutor
+        
+        # On définit une fonction pour le pré-processing d'une tuile
+        def process_tile(tile, target_h, target_w):
+            if tile.shape[0] != target_h or tile.shape[1] != target_w:
+                tile = cv2.resize(tile, (target_w, target_h))
+            tile = tile.astype(np.float32)
+            tile *= (1.0 / 255.0)
+            return np.transpose(tile, (2, 0, 1))
+
+        for i in range(0, num_imgs, max_batch):
+            chunk = batch_imgs[i:i+max_batch]
+            actual_b = len(chunk)
+            
+            # Preprocess Batch (optimisé en parallèle pour le CPU)
+            processed = np.zeros((actual_b, 3, target_h, target_w), dtype=np.float32)
+            
+            with ThreadPoolExecutor(max_workers=min(8, actual_b)) as executor:
+                futures = [executor.submit(process_tile, chunk[j], target_h, target_w) for j in range(actual_b)]
+                for j, future in enumerate(futures):
+                    processed[j] = future.result()
+            
+            input_data = np.ascontiguousarray(processed)
+            
+            # On vérifie si on peut vraiment envoyer le batch
+            if self.trt_input_shape[0] > 0 and actual_b > self.trt_input_shape[0]:
+                print(f"[WARN] Batch size {actual_b} exceeds engine max {self.trt_input_shape[0]}. Falling back to sequential.")
+                for j in range(actual_b):
+                    single_boxes, single_scores = self._trt_native_infer(chunk[j])
+                    all_boxes.append(single_boxes)
+                    all_scores.append(single_scores)
+            else:
+                # Real batch inference
+                # print(f"[DEBUG] YOLO: Executing batch of size {actual_b}")
+                self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
+                # Définir explicitement la forme du batch actuel
+                self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
+                self.trt_context.execute_async_v3(self.trt_stream)
+                self.cudart.cudaStreamSynchronize(self.trt_stream)
+
+                for output in self.trt_outputs:
+                    self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
+                self.cudart.cudaStreamSynchronize(self.trt_stream)
+
+                # Process Output
+                result = self.trt_outputs[0]['host'] # [Batch, 84, 8400]
+                for j in range(actual_b):
+                    pred = result[j].T
+                    boxes = pred[:, :4]
+                    scores = pred[:, 4 + self.person_class_id]
+                    mask = scores >= self.confidence_threshold
+                    boxes, scores = boxes[mask], scores[mask]
+                    
+                    if boxes.size > 0:
+                        h_orig, w_orig = chunk[j].shape[:2]
+                        sw, sh = w_orig / target_w, h_orig / target_h
+                        
+                        x1 = (boxes[:, 0] - boxes[:, 2] / 2) * sw
+                        y1 = (boxes[:, 1] - boxes[:, 3] / 2) * sh
+                        x2 = (boxes[:, 0] + boxes[:, 2] / 2) * sw
+                        y2 = (boxes[:, 1] + boxes[:, 3] / 2) * sh
+                        res_boxes = np.stack([x1, y1, x2, y2], axis=1)
+                        all_boxes.append(res_boxes)
+                        all_scores.append(scores)
+                    else:
+                        all_boxes.append(np.array([]))
+                        all_scores.append(np.array([]))
+
+        return all_boxes, all_scores
+
     @staticmethod
     def _nms(boxes, scores, iou_threshold=0.3, inclusion_threshold=0.5):
         """
-        NMS Robuste optimisé pour la détection multi-échelle (Global, Quads, Tiles).
-        Gère les chevauchements entre les différents niveaux de la pyramide.
+        NMS Hiérarchique optimisé pour le Multi-Scale.
+        Utilise une pondération par la surface pour privilégier les détections 
+        'globales' (le tout) sur les détections de 'tuiles' (les parties), 
+        tout en préservant les petits objets isolés (chevaliers au fond).
         """
         if boxes.size == 0:
             return []
@@ -343,7 +478,13 @@ class YoloPeopleCounter:
         x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
         areas = (x2 - x1 + 1) * (y2 - y1 + 1)
         
-        order = scores.argsort()[::-1]
+        # HEURISTIQUE CLÉ : On trie par (Score * sqrt(Area))
+        # Cela permet à une détection globale du corps (grande surface) de 'gagner' 
+        # sur une détection locale d'une partie du corps (petite surface)
+        # même si le score local est légèrement meilleur.
+        importance = scores * np.sqrt(areas)
+        order = importance.argsort()[::-1]
+        
         keep = []
         
         while order.size > 0:
@@ -359,15 +500,15 @@ class YoloPeopleCounter:
             h = np.maximum(0.0, yy2 - yy1 + 1)
             inter = w * h
             
-            # IoU classique pour les doublons à une même échelle
+            # IoU classique
             union = areas[i] + areas[order[1:]] - inter
             iou = inter / (union + 1e-6)
             
-            # Ratio d'Inclusion : Supprime les boîtes (ex: tête) incluses dans une plus grande (ex: corps)
+            # Ratio d'Inclusion (inter / min_area)
             min_area = np.minimum(areas[i], areas[order[1:]])
             io_min = inter / (min_area + 1e-6)
             
-            # Suppression si l'IoU est élevé OU si une boîte est presque totalement incluse dans l'autre
+            # Suppression si l'un des deux critères est rempli
             mask = (iou > iou_threshold) | (io_min > inclusion_threshold)
             
             inds = np.where(~mask)[0]

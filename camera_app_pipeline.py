@@ -11,6 +11,7 @@ import numpy as np
 from camera_capture import CameraCapture
 from people_counter_processor import PeopleCounterProcessor
 from yolo_people_counter import YoloPeopleCounter
+from yolo_seg_people_counter import YoloSegPeopleCounter
 from rtsp_capture import RTSPCapture
 from mqtt_capture import MqttCapture
 
@@ -40,6 +41,16 @@ class CameraAppPipeline:
         broker_addr = os.environ.get('MQTT_BROKER', '127.0.0.1')
         broker_port = int(os.environ.get('MQTT_PORT', '1883'))
         mqtt_exposure = int(os.environ.get('MQTT_EXPOSURE', '500'))
+        yolo_conf = float(os.environ.get('YOLO_CONF', '0.65'))
+        self.density_threshold = int(os.environ.get('DENSITY_THRESHOLD', '15'))
+        self.denoise_strength = int(os.environ.get('DENOISE_STRENGTH', '0'))
+        
+        # Nouvelles options de Tiling via variables d'environnement
+        # YOLO_TILING=1 pour activer (Pyramide 3 niveaux), actif par défaut pour max précision
+        self.yolo_tiling = os.environ.get('YOLO_TILING', '1') == '1'
+        self.yolo_seg = os.environ.get('YOLO_SEG', '0') == '1'
+        # DENSITY_TILING=1 pour activer (divise en 4 quadrants), actif par défaut
+        self.density_tiling = os.environ.get('DENSITY_TILING', '1') == '1'
 
         if cmode.lower() == 'mqtt':
             # Use MQTT-based Maixcam capture
@@ -87,17 +98,34 @@ class CameraAppPipeline:
             model_name="DM-Count",
             model_weights="QNRF",
             backend=lwcc_backend,
-            openvino_device=openvino_device
+            openvino_device=openvino_device,
+            density_threshold=self.density_threshold
         )
-        self.yolo_counter = YoloPeopleCounter(
-            model_name=yolo_model,
-            device=yolo_device,
-            confidence_threshold=0.7,
-            backend=yolo_backend
-        )  # Modifiez le seuil ici
+        if self.yolo_seg:
+            self.yolo_counter = YoloSegPeopleCounter(
+                model_path=yolo_model,
+                confidence_threshold=yolo_conf,
+                backend=yolo_backend
+            )
+        else:
+            self.yolo_counter = YoloPeopleCounter(
+                model_name=yolo_model,
+                device=yolo_device,
+                confidence_threshold=yolo_conf, 
+                backend=yolo_backend
+            )
         screen = screeninfo.get_monitors()[0]
         self.screen_width = screen.width
         self.screen_height = screen.height
+
+        # Création de la fenêtre une seule fois avec support du redimensionnement
+        cv2.namedWindow("People Count", cv2.WINDOW_NORMAL)
+        # On définit une taille initiale raisonnable (ex: 75% de l'écran)
+        init_w = int(self.screen_width * 0.75)
+        init_h = int(self.screen_height * 0.75)
+        cv2.resizeWindow("People Count", init_w, init_h)
+        cv2.moveWindow("People Count", (self.screen_width - init_w) // 2, (self.screen_height - init_h) // 2)
+
         self.use_yolo = True  # Passe à True pour utiliser YOLO au lieu du modèle density
         self.yolo_tiling = os.environ.get('YOLO_TILING', '1') == '1' # Défaut à 1 (Tiling actif)
         self.history_len = 600  # Raw frames history (~3-5 mins at 2-3 FPS)
@@ -142,18 +170,19 @@ class CameraAppPipeline:
 
         points_yolo = []
         points_density = []
-        points_total = []
+        points_average = []
         
-        for i, (y_val, d_val, t_val) in enumerate(self.history_data):
+        for i, (y_val, d_val, a_val) in enumerate(self.history_data):
             px = int(x0 + i * dx)
             # Ajout d'offsets pour voir les 3 courbes si elles sont identiques
             points_yolo.append((px, to_py(y_val)))
             points_density.append((px, to_py(d_val) + 2))
-            points_total.append((px, to_py(t_val) - 2))
-        # Draw lines with distinct styles (Order: Total, then Density, then YOLO)
+            points_average.append((px, to_py(a_val) - 2))
+            
+        # Draw lines with distinct styles
         for i in range(len(points_yolo) - 1):
-            # 1. Total (Yellow - Thickest)
-            cv2.line(img, points_total[i], points_total[i+1], (0, 255, 255), 2)
+            # 1. Average (Cyan - Thickest)
+            cv2.line(img, points_average[i], points_average[i+1], (255, 255, 0), 2)
             # 2. LWCC / Density (Red)
             cv2.line(img, points_density[i], points_density[i+1], (0, 0, 255), 1)
             # 3. YOLO (Green)
@@ -163,7 +192,7 @@ class CameraAppPipeline:
         cv2.putText(img, f"Live Activity (Max Sample: {int(curr_max)})", (x0 + 10, y0 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         cv2.putText(img, "YOLO", (x0 + 10, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
         cv2.putText(img, "LWCC (Density)", (x0 + 60, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-        cv2.putText(img, "AVERAGE", (x0 + 170, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+        cv2.putText(img, "AVERAGE", (x0 + 170, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
 
     def run(self):
         # Prépare le fichier CSV avec date et heure
@@ -174,7 +203,7 @@ class CameraAppPipeline:
         img_path = os.path.join(os.getcwd(), img_filename)
         with open(csv_path, mode='w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(["datetime", "YOLO_count", "Density_count", "Max_count"])
+            writer.writerow(["datetime", "YOLO_count", "Density_count", "Avg_combined", "Max_count"])
             counts_yolo = []
             counts_density = []
             last_period = int(time.time())
@@ -197,9 +226,17 @@ class CameraAppPipeline:
                         break
                     # print(f"Frame shape: {frame.shape}")
                     
+                    # --- FILTRAGE DU BRUIT (Optionnel) ---
+                    if self.denoise_strength > 0:
+                        # On utilise un flou Gaussien léger pour lisser le bruit de capteur
+                        # kernel_size doit être impair
+                        k = (self.denoise_strength * 2) + 1
+                        frame = cv2.GaussianBlur(frame, (k, k), 0)
+                    
                     # Parallelizing YOLO and Density models
                     t_loop_start = time.time()
                     
+                    # 1. YOLO INFERENCE (Tiling optionale)
                     thr_yolo = ModelThread(
                         self.yolo_counter.count_people, 
                         frame, 
@@ -207,57 +244,141 @@ class CameraAppPipeline:
                         draw_boxes=True, 
                         use_tiling=self.yolo_tiling
                     )
-                    thr_density = ModelThread(self.processor.process, frame)
+
+                    # 2. DENSITY INFERENCE (Tiling 2x2 Batché)
+                    t_loop_start = time.time()
+                    if self.density_tiling:
+                        # On prépare les quadrants
+                        h, w = frame.shape[:2]
+                        mid_h, mid_w = h // 2, w // 2
+                        quads = [
+                            frame[0:mid_h, 0:mid_w],
+                            frame[0:mid_h, mid_w:w],
+                            frame[mid_h:h, 0:mid_w],
+                            frame[mid_h:h, mid_w:w]
+                        ]
+                        thr_density = ModelThread(self.processor.process_batch, quads)
+                    else:
+                        # Mode standard (Inférence globale redimensionnée)
+                        thr_density = ModelThread(self.processor.process, frame)
                     
+                    # On lance les deux threads
                     thr_yolo.start()
                     thr_density.start()
                     
+                    # Attente YOLO
                     thr_yolo.join()
-                    thr_density.join()
-                    
+                    yolo_time = time.time() - t_loop_start
                     yolo_count, frame_with_bbox = thr_yolo.result
-                    _, density_raw, density_count, density_mask = thr_density.result
+                    
+                    # Attente Density
+                    thr_density.join()
+                    density_time = time.time() - t_loop_start
+                    
+                    import psutil
+                    cpu_usage = psutil.cpu_percent()
+                    
+                    if self.density_tiling:
+                        _, quad_res_color, quad_res_counts, quad_res_masks = thr_density.result
+                        density_count = sum(quad_res_counts)
+                        
+                        # Stitching 4K
+                        h_4k, w_4k = frame_with_bbox.shape[:2]
+                        mid_h, mid_w = h_4k // 2, w_4k // 2
+                        
+                        density_raw = np.zeros((h_4k, w_4k, 3), dtype=np.uint8)
+                        density_mask = np.zeros((h_4k, w_4k), dtype=np.uint8)
+                        
+                        # Placement explicite pour éviter les erreurs de décalage
+                        density_raw[0:mid_h, 0:mid_w] = cv2.resize(quad_res_color[0], (mid_w, mid_h))
+                        density_raw[0:mid_h, mid_w:w_4k] = cv2.resize(quad_res_color[1], (w_4k-mid_w, mid_h))
+                        density_raw[mid_h:h_4k, 0:mid_w] = cv2.resize(quad_res_color[2], (mid_w, h_4k-mid_h))
+                        density_raw[mid_h:h_4k, mid_w:w_4k] = cv2.resize(quad_res_color[3], (w_4k-mid_w, h_4k-mid_h))
+                        
+                        density_mask[0:mid_h, 0:mid_w] = cv2.resize(quad_res_masks[0], (mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
+                        density_mask[0:mid_h, mid_w:w_4k] = cv2.resize(quad_res_masks[1], (w_4k-mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
+                        density_mask[mid_h:h_4k, 0:mid_w] = cv2.resize(quad_res_masks[2], (mid_w, h_4k-mid_h), interpolation=cv2.INTER_NEAREST)
+                        density_mask[mid_h:h_4k, mid_w:w_4k] = cv2.resize(quad_res_masks[3], (w_4k-mid_w, h_4k-mid_h), interpolation=cv2.INTER_NEAREST)
+                    else:
+                        _, density_raw, density_count, density_mask = thr_density.result
+                        # Resize à la taille de la frame YOLO
+                        target_w, target_h = frame_with_bbox.shape[1], frame_with_bbox.shape[0]
+                        density_raw = cv2.resize(density_raw, (target_w, target_h))
+                        density_mask = cv2.resize(density_mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
                     
                     t_loop_end = time.time()
                     total_process_time = t_loop_end - t_loop_start
                     
-                    # Resize density elements to match frame_with_bbox shape
-                    target_w, target_h = frame_with_bbox.shape[1], frame_with_bbox.shape[0]
-                    density_raw = cv2.resize(density_raw, (target_w, target_h))
-                    density_mask = cv2.resize(density_mask, (target_w, target_h))
+                    # Logique d'affichage console améliorée
+                    print(f"Metrics: YOLO={yolo_count} ({yolo_time:.3f}s) | Density={density_count:.1f} ({density_time:.3f}s) | CPU: {cpu_usage}% | Total: {total_process_time:.3f}s | FPS: {1.0/total_process_time:.2f}")
                     
                     # Superpose la carte de densité sur l'image avec bbox
-                    # On réduit l'alpha (0.2) pour mieux voir le fond, les cercles feront le focus
-                    overlay2 = cv2.addWeighted(frame_with_bbox, 0.8, density_raw, 0.2, 0)
+                    # On utilise le masque pour n'ajouter de la couleur QUE sur les zones denses
+                    # Cela évite le fond bleu/voile sur toute l'image
+                    mask_3ch = cv2.cvtColor(density_mask, cv2.COLOR_GRAY2BGR)
+                    heatmap_on_black = cv2.bitwise_and(density_raw, mask_3ch)
+                    overlay2 = cv2.addWeighted(frame_with_bbox, 1.0, heatmap_on_black, 0.6, 0)
                     
                     # --- DESSIN DES CERCLES ROUGES OPAQUES ---
-                    # On les dessine APRES le mélange pour qu'ils ne soient pas transparents
-                    contours, _ = cv2.findContours(density_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    # Dilater le masque pour regrouper les petits points de densité en blocs
+                    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))
+                    density_mask_dilated = cv2.dilate(density_mask, kernel_dilate, iterations=1)
+                    
+                    contours, _ = cv2.findContours(density_mask_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     for cnt in contours:
-                        if cv2.contourArea(cnt) > 50: 
+                        if cv2.contourArea(cnt) > 200: 
                             (x, y), radius = cv2.minEnclosingCircle(cnt)
-                            cv2.circle(overlay2, (int(x), int(y)), int(radius) + 10, (0, 0, 255), 2)
+                            cv2.circle(overlay2, (int(x), int(y)), int(radius) + 10, (0, 0, 255), 3)
 
                     # Affiche les deux compteurs en haut
                     cv2.putText(overlay2, f'Density Count: {density_count:.2f}', (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,0,255), 3)
                     yolo_label = self.yolo_counter.model_name
                     cv2.putText(overlay2, f'{yolo_label} People: {yolo_count}', (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,0), 3)
-                    # Affiche la dernière valeur moyenne max sous le compteur YOLO
+                    # Affiche la dernière valeur moyenne sous le compteur YOLO
                     if log_data:
-                        last_max = log_data[-1][3]
-                        cv2.putText(overlay2, f'Last Max Avg: {last_max:.2f}', (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,255), 3)
-                    # Resize preview to 1080p for display
-                    preview_1080p = cv2.resize(overlay2, (1920, 1080))
+                        last_avg = log_data[-1][3]
+                        cv2.putText(overlay2, f'Average ({AVERAGING_PERIOD_SECONDS}s): {last_avg:.2f}', (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,255), 3)
+
+                    # --- RÉCUPÉRATION DE LA TAILLE ACTUELLE DE LA FENÊTRE ---
+                    # Cela permet à l'image de s'adapter si l'utilisateur redimensionne ou maximise la fenêtre
+                    try:
+                        win_rect = cv2.getWindowImageRect("People Count")
+                        if win_rect:
+                            _, _, win_w, win_h = win_rect
+                        else:
+                            win_w, win_h = 1280, 720
+                        if win_w <= 0 or win_h <= 0:
+                            win_w, win_h = 1280, 720
+                    except Exception:
+                        win_w, win_h = 1280, 720
+
+                    h_orig, w_orig = overlay2.shape[:2]
+                    # On calcule le ratio pour garder l'aspect
+                    scale_w = win_w / w_orig
+                    scale_h = win_h / h_orig
+                    scale = min(scale_w, scale_h)
                     
-                    # Draw mini graph
-                    self._draw_mini_graph(preview_1080p)
+                    target_w = int(w_orig * scale)
+                    target_h = int(h_orig * scale)
+                    
+                    # On crée un fond noir à la taille de la fenêtre pour éviter les traînées
+                    preview_frame = np.zeros((win_h, win_w, 3), dtype=np.uint8)
+                    
+                    # On centre l'image redimensionnée dans la fenêtre
+                    resized = cv2.resize(overlay2, (target_w, target_h))
+                    y_offset = (win_h - target_h) // 2
+                    x_offset = (win_w - target_w) // 2
+                    preview_frame[y_offset:y_offset+target_h, x_offset:x_offset+target_w] = resized
+                    
+                    # On dessine le graphique sur l'image redimensionnée et centrée
+                    self._draw_mini_graph(preview_frame)
                     
                     # Affiche le FPS en haut à droite
                     total_time = time.time() - start_time
                     fps = 1.0 / total_time if total_time > 0 else 0
-                    cv2.putText(preview_1080p, f'FPS: {fps:.2f}', (1700, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+                    cv2.putText(preview_frame, f'FPS: {fps:.2f}', (win_w - 150, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                     
-                    cv2.imshow(f"People Count", preview_1080p)
+                    cv2.imshow("People Count", preview_frame)
                     print(f"Parallel Inference: YOLO={yolo_count}, Density={density_count:.2f} | Time: {total_process_time:.3f}s | FPS: {fps:.2f}")
                     
                     # Update mini-graph history at every frame for live feedback (YOLO, Density, Average)
@@ -273,14 +394,16 @@ class CameraAppPipeline:
                         if counts_yolo and counts_density:
                             avg_yolo = sum(counts_yolo) / len(counts_yolo)
                             avg_density = sum(counts_density) / len(counts_density)
+                            avg_combined = (avg_yolo + avg_density) / 2.0
                             max_count = max(avg_yolo, avg_density)
                             now_dt = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             print(f"Average YOLO ({yolo_label}) People (last {AVERAGING_PERIOD_SECONDS} sec): {avg_yolo:.2f}")
                             print(f"Average Density People (last {AVERAGING_PERIOD_SECONDS} sec): {avg_density:.2f}")
+                            print(f"Average Combined (last {AVERAGING_PERIOD_SECONDS} sec): {avg_combined:.2f}")
                             print(f"Max People Count (last {AVERAGING_PERIOD_SECONDS} sec): {max_count:.2f}")
-                            writer.writerow([now_dt, f"{avg_yolo:.2f}", f"{avg_density:.2f}", f"{max_count:.2f}"])
+                            writer.writerow([now_dt, f"{avg_yolo:.2f}", f"{avg_density:.2f}", f"{avg_combined:.2f}", f"{max_count:.2f}"])
                             csvfile.flush()
-                            log_data.append((now_dt, avg_yolo, avg_density, max_count))
+                            log_data.append((now_dt, avg_yolo, avg_density, avg_combined, max_count))
                         
                         counts_yolo = []
                         counts_density = []
@@ -294,14 +417,16 @@ class CameraAppPipeline:
                 print("Camera released and application closed.")
                 # Génère la courbe à partir du CSV
                 if log_data:
-                    times = [dt for dt, _, _, _ in log_data]
-                    yolo_vals = [y for _, y, _, _ in log_data]
-                    density_vals = [d for _, _, d, _ in log_data]
-                    max_vals = [m for _, _, _, m in log_data]
+                    times = [dt for dt, _, _, _, _ in log_data]
+                    yolo_vals = [y for _, y, _, _, _ in log_data]
+                    density_vals = [d for _, _, d, _, _ in log_data]
+                    avg_combined_vals = [a for _, _, _, a, _ in log_data]
+                    
                     plt.figure(figsize=(14, 7))
-                    plt.plot(times, yolo_vals, marker='o', markersize=4, label='YOLO')
-                    plt.plot(times, density_vals, marker='x', markersize=4, label='Density')
-                    plt.plot(times, max_vals, marker='s', markersize=4, label='Max')
+                    plt.plot(times, yolo_vals, marker='o', markersize=4, label='YOLO', color='green', alpha=0.6)
+                    plt.plot(times, density_vals, marker='x', markersize=4, label='Density', color='red', alpha=0.6)
+                    plt.plot(times, avg_combined_vals, marker='d', markersize=4, label='Average (Combined)', color='cyan', linewidth=2)
+                    
                     # Affiche un label de temps toutes les N points pour éviter la surcharge
                     N = max(1, len(times)//20)
                     plt.xticks([i for i in range(0, len(times), N)], [times[i] for i in range(0, len(times), N)], rotation=45)
