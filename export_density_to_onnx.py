@@ -1,6 +1,8 @@
 import os
 import sys
-sys.path.append(r"E:\AI\lwcc")
+# Try relative path first, then absolute from sys.argv or env
+root = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(root, "external", "lwcc"))
 import torch
 from pathlib import Path
 from lwcc.models.DMCount import make_model as make_dmcount
@@ -10,6 +12,14 @@ def export_dmcount_qnrf():
     model_weights = "QNRF"
     weights_path = os.path.join(str(Path.home()), ".lwcc", "weights", f"{model_name}_{model_weights}.pth")
     
+    onnx_dir = os.path.join(root, "models", "onnx")
+    os.makedirs(onnx_dir, exist_ok=True)
+    onnx_path = os.path.join(onnx_dir, "dm_count_qnrf.onnx")
+
+    if os.path.exists(onnx_path):
+        print(f"ONNX already exists: {onnx_path}")
+        return
+
     if not os.path.exists(weights_path):
         print(f"Weights not found at {weights_path}")
         return
@@ -30,16 +40,15 @@ def export_dmcount_qnrf():
     model.eval()
 
     # DUMMY INPUT with Batch support (B, C, H, W)
-    # We use a 1080p-ish size for the ONNX export, but we make it dynamic
     dummy_input = torch.randn(1, 3, 1080, 1920)
-    onnx_path = "dm_count_qnrf.onnx"
     
+    print(f"Exporting DM-Count QNRF to {onnx_path} (opset 18)...")
     torch.onnx.export(
         model,
         dummy_input,
         onnx_path,
         export_params=True,
-        opset_version=12,
+        opset_version=18,
         do_constant_folding=True,
         input_names=['input'],
         output_names=['output'],

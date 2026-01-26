@@ -1,11 +1,15 @@
 import tensorrt as trt
-import torch # Import torch first to ensure CUDA DLLs are loaded on Windows
 import sys
 import os
 
 def build_engine(onnx_path, engine_path, max_batch_size=1):
     logger = trt.Logger(trt.Logger.INFO)
-    builder = trt.Builder(logger)
+    try:
+        builder = trt.Builder(logger)
+    except Exception as e:
+        print(f"TensorRT Builder creation failed: {e}")
+        print("Make sure CUDA and TensorRT are properly installed and visible to the Python environment.")
+        return False
     config = builder.create_builder_config()
     
     # 2GB workspace
@@ -15,12 +19,21 @@ def build_engine(onnx_path, engine_path, max_batch_size=1):
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
     parser = trt.OnnxParser(network, logger)
     
-    with open(onnx_path, 'rb') as model:
-        if not parser.parse(model.read()):
-            print('ERROR: Failed to parse the ONNX file.')
-            for error in range(parser.num_errors):
-                print(parser.get_error(error))
-            return False
+    # Use absolute path and change dir to handle external weights (.onnx.data)
+    onnx_abs = os.path.abspath(onnx_path)
+    onnx_dir = os.path.dirname(onnx_abs)
+    old_cwd = os.getcwd()
+    os.chdir(onnx_dir)
+    
+    try:
+        with open(onnx_abs, 'rb') as model:
+            if not parser.parse(model.read()):
+                print('ERROR: Failed to parse the ONNX file.')
+                for error in range(parser.num_errors):
+                    print(parser.get_error(error))
+                return False
+    finally:
+        os.chdir(old_cwd)
     
     # --- CONFIGURATION DU BATCHING DYNAMIQUE ---
     # On définit un profil d'optimisation pour supporter de 1 à max_batch_size images
@@ -31,20 +44,26 @@ def build_engine(onnx_path, engine_path, max_batch_size=1):
         
         # On s'assure que les dimensions dynamiques (-1) sont remplacées par des valeurs fixes dans le profil
         # On part sur du 1080p par défaut si c'est dynamique
-        def fix_dims(dims, b):
+        def fix_dims(dims, b, model_name):
             new_dims = list(dims)
             new_dims[0] = b # Always set batch
+            is_density = "dm_count" in model_name.lower() or "csrnet" in model_name.lower() or "sfanet" in model_name.lower() or "bay" in model_name.lower()
+            
             for i in range(1, len(new_dims)):
                 if new_dims[i] <= 0: # If dynamic, provide a default
                     if i == 1: new_dims[i] = 3
-                    elif i == 2: new_dims[i] = 640 # Safer default for YOLO
-                    elif i == 3: new_dims[i] = 640
-                    else: new_dims[i] = 640
+                    elif i == 2: 
+                        new_dims[i] = 1080 if is_density else 640
+                    elif i == 3: 
+                        new_dims[i] = 1920 if is_density else 640
+                    else: 
+                        new_dims[i] = 640
             return new_dims
 
-        min_shape = fix_dims(input_shape, 1)
-        opt_shape = fix_dims(input_shape, max_batch_size)
-        max_shape = fix_dims(input_shape, max_batch_size)
+        model_filename = os.path.basename(onnx_path)
+        min_shape = fix_dims(input_shape, 1, model_filename)
+        opt_shape = fix_dims(input_shape, max_batch_size, model_filename)
+        max_shape = fix_dims(input_shape, max_batch_size, model_filename)
         
         profile.set_shape(input_name, min_shape, opt_shape, max_shape)
         config.add_optimization_profile(profile)

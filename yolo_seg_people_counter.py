@@ -131,10 +131,13 @@ class YoloSegPeopleCounter:
                 if x2 <= x1 or y2 <= y1: continue
 
                 # Dessin du segment (Remplissage + Contour au lieu de BBox)
-                try:
-                    mask_crop = all_masks[i]
-                    if mask_crop.size > 0:
-                        mask_bool = mask_crop > 0
+                mask_crop = all_masks[i]
+                has_mask = mask_crop is not None and getattr(mask_crop, 'size', 0) > 0
+
+                if has_mask:
+                    try:
+                        # Seuil de confiance pour le masque (standard YOLO = 0.5)
+                        mask_bool = mask_crop > 0.5
                         
                         bw, bh = x2 - x1, y2 - y1
                         if bw > 2 and bh > 2:
@@ -150,12 +153,17 @@ class YoloSegPeopleCounter:
                             # 2. Contour vert foncé (directement sur image_out)
                             contours, _ = cv2.findContours(m_resized, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                             for cnt in contours:
-                                # On décale le contour à sa position réelle sur l'image 4K
                                 cnt[:, :, 0] += x1
                                 cnt[:, :, 1] += y1
                                 cv2.drawContours(image_out, [cnt], -1, (0, 100, 0), 2)
-                except Exception:
-                    pass
+                    except Exception as e:
+                        print(f"[WARN] Mask rendering failed: {e}")
+                else:
+                    # Fallback BBox classique si pas de segmentation
+                    cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    # Petit label de confiance
+                    label = f"{all_scores[i]:.2f}"
+                    cv2.putText(image_out, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             
             # Fusion avec transparence (alpha=0.3)
             cv2.addWeighted(overlay, 0.3, image_out, 0.7, 0, image_out)
@@ -184,7 +192,7 @@ class YoloSegPeopleCounter:
             input_data = np.ascontiguousarray(input_data)
             self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
             
-            # Configuration des adresses des tenseurs pour TensorRT 10+ (Impératif pour execute_async_v3)
+            # Configuration des adresses des tenseurs pour TensorRT 10+
             self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
             for inp in self.trt_inputs:
                 self.trt_context.set_tensor_address(inp['name'], inp['device'])
@@ -198,50 +206,54 @@ class YoloSegPeopleCounter:
             self.cudart.cudaStreamSynchronize(self.trt_stream)
 
             # Post-process
-            preds = self.outputs_ordered[0]['host'] # [32, 116, 8400]
-            protos = self.outputs_ordered[1]['host'] # [32, 32, 160, 160]
+            preds = self.outputs_ordered[0]['host'] # [Batch, C, N]
+            has_masks = self.outputs_ordered[1] is not None
+            protos = self.outputs_ordered[1]['host'] if has_masks else None
 
             for j in range(actual_b):
-                p = preds[j].T
+                p = preds[j]
+                if p.shape[0] < p.shape[1]: p = p.T # Transpose si [C, N] -> [N, C]
+                
                 scores = p[:, 4 + self.person_class_id]
-                mask_idx = scores >= self.confidence_threshold
-                if not np.any(mask_idx): continue
+                mask_idx = np.where(scores >= self.confidence_threshold)[0]
+                if len(mask_idx) == 0: continue
 
                 boxes = p[mask_idx, :4]
                 scores = scores[mask_idx]
-                coeffs = p[mask_idx, 4+80:] # 32 coefficients pour les masques
                 
                 # Rescale boxes
-                x, y, sw_m, sh_m, ow, oh = metadata[i+j]
-                # sw_m = qw/640 (scale relative au tile 640)
-                # sw = ow / target_w
+                x_offset, y_offset, sw_m, sh_m, ow, oh = metadata[i+j]
                 sw, sh = ow / target_w, oh / target_h
                 
-                x1 = (boxes[:, 0] - boxes[:, 2]/2) * sw + x
-                y1 = (boxes[:, 1] - boxes[:, 3]/2) * sh + y
-                x2 = (boxes[:, 0] + boxes[:, 2]/2) * sw + x
-                y2 = (boxes[:, 1] + boxes[:, 3]/2) * sh + y
+                x1 = (boxes[:, 0] - boxes[:, 2]/2) * sw + x_offset
+                y1 = (boxes[:, 1] - boxes[:, 3]/2) * sh + y_offset
+                x2 = (boxes[:, 0] + boxes[:, 2]/2) * sw + x_offset
+                y2 = (boxes[:, 1] + boxes[:, 3]/2) * sh + y_offset
                 
-                # Masques
-                m_protos = protos[j] # [32, 160, 160]
-                m_protos_flat = m_protos.reshape(32, -1)
-                m_raw = (coeffs @ m_protos_flat).reshape(-1, 160, 160)
-                
-                for k in range(len(scores)):
-                    # Box locale dans la tuile (640x640)
-                    bx, by, bw_t, bh_t = boxes[k]
-                    # Conversion vers la grille du masque (160x160) -> stride de 4
-                    mx1 = max(0, int((bx - bw_t/2) / 4))
-                    my1 = max(0, int((by - bh_t/2) / 4))
-                    mx2 = min(160, int((bx + bw_t/2) / 4))
-                    my2 = min(160, int((by + bh_t/2) / 4))
+                if has_masks:
+                    coeffs = p[mask_idx, 4+80:4+80+32]
+                    m_protos = protos[j] # [32, 160, 160]
+                    m_protos_flat = m_protos.reshape(32, -1)
+                    # Calcul des masques sigmoïdes
+                    m_raw = 1 / (1 + np.exp(-(coeffs @ m_protos_flat))) 
+                    m_raw = m_raw.reshape(-1, 160, 160)
                     
-                    # On ne stocke que la partie du masque correspondant à la personne
-                    person_mask_crop = m_raw[k, my1:my2, mx1:mx2]
-                    
-                    all_boxes.append([x1[k], y1[k], x2[k], y2[k]])
-                    all_scores.append(scores[k])
-                    all_masks.append(person_mask_crop)
+                    for k in range(len(mask_idx)):
+                        bx, by, bw_t, bh_t = boxes[k]
+                        mx1 = max(0, int((bx - bw_t/2) / 4))
+                        my1 = max(0, int((by - bh_t/2) / 4))
+                        mx2 = min(160, int((bx + bw_t/2) / 4))
+                        my2 = min(160, int((by + bh_t/2) / 4))
+                        
+                        person_mask_crop = m_raw[k, my1:my2, mx1:mx2]
+                        all_boxes.append([x1[k], y1[k], x2[k], y2[k]])
+                        all_scores.append(scores[k])
+                        all_masks.append(person_mask_crop)
+                else:
+                    for k in range(len(mask_idx)):
+                        all_boxes.append([x1[k], y1[k], x2[k], y2[k]])
+                        all_scores.append(scores[k])
+                        all_masks.append(None)
 
         return np.array(all_boxes), np.array(all_scores), all_masks
 
@@ -284,25 +296,23 @@ class YoloSegPeopleCounter:
                 
                 # Critère 1 : Inclusion forte de la BBox (souvent suffisant pour les tuiles)
                 min_a = min(areas[i], areas[other_idx])
+                iou = inter_area[idx] / (areas[i] + areas[other_idx] - inter_area[idx] + 1e-6)
                 inclusion = inter_area[idx] / (min_a + 1e-6)
                 
+                # Si IoU standard est élevé, on supprime
+                if iou > iou_threshold:
+                    to_suppress[idx] = True
+                    continue
+
+                # Si l'inclusion est extrême (une petite boîte dans une grosse)
                 if inclusion > 0.85:
                     to_suppress[idx] = True
                     continue
                 
-                # Critère 2 : Si l'inclusion est modérée (>40%), on check le masque
-                if inclusion > 0.40:
-                    # On compare les masques 160x160
-                    # Pour faire simple sans reprojection lourde :
-                    # On regarde si les pics d'activation des masques pointent vers la même zone
-                    # (Heuristique rapide : centroide du masque reprojecté)
-                    m1 = masks[i] > 0 # Logits > 0 -> mask
-                    m2 = masks[other_idx] > 0
-                    
-                    # Si un masque est presque entièrement contenu dans la zone de l'autre
-                    # C'est probablement une "partie" (tête, jambe) détectée par une tuile 
-                    # qui appartient à un "tout" détecté par la passe globale.
-                    to_suppress[idx] = True # Pour l'instant, fusion agressive si inclusion BBox + Segments
+                # Critère 2 : Si l'inclusion est modérée et qu'on a des masques
+                if inclusion > 0.40 and masks[i] is not None and masks[other_idx] is not None:
+                    # Heuristique : si les masques se chevauchent aussi fortement
+                    to_suppress[idx] = True 
                     
             inds = np.where(~to_suppress)[0]
             order = order[inds + 1]

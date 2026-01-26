@@ -150,9 +150,47 @@ class PeopleCounterProcessor:
             print(f"PeopleCounterProcessor running on device: {device_str}")
 
     def process(self, frame):
-        # Utilise process_batch pour une seule frame pour éviter la duplication de code
-        _, colors, counts, masks = self.process_batch([frame])
-        return frame, colors[0], counts[0], masks[0]
+        """
+        Traite une seule image et retourne (frame, color_map, count, mask).
+        """
+        # Logic for single frame processing based on backend
+        if self.backend == "tensorrt" and self.trt_context is not None:
+             _, colors, counts, masks = self.process_batch([frame])
+             return frame, colors[0], counts[0], masks[0]
+        
+        elif self.backend == "openvino" and self.ov_compiled_model is not None:
+            # Code OpenVINO optimisé pour une seule frame
+            with self.lock:
+                # Preprocess
+                h, c, target_h, target_w = self.ov_input_shape or (1, 3, 1080, 1920)
+                blob = cv2.resize(frame, (target_w, target_h))
+                blob = blob.transpose((2, 0, 1)) # HWC to CHW
+                blob = blob.reshape((1, 3, target_h, target_w))
+                
+                # Inference
+                results = self.ov_compiled_model(blob)[self.ov_output]
+                density_map = results[0, 0]
+                
+                # Post-process (identique à process_batch)
+                d_norm = cv2.normalize(density_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+                d_norm = cv2.resize(d_norm, (frame.shape[1], frame.shape[0]))
+                d_color = cv2.applyColorMap(d_norm, cv2.COLORMAP_JET)
+                _, mask = cv2.threshold(d_norm, self.density_threshold, 255, cv2.THRESH_BINARY)
+                mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+                d_color = cv2.bitwise_and(d_color, mask_3ch)
+                
+                count = int(np.sum(density_map))
+                if count < 0.5: count = 0
+                return frame, d_color, count, mask
+
+        else:
+            # Fallback PyTorch / LWCC direct
+            # On utilise lwcc.get_count_from_frame si dispo
+            count = get_count_from_frame(frame, model=self.model_name, weights=self.model_weights, return_density=False)
+            # Pour torch, on va juste retourner un masque vide ou simulé si on n'a pas la carte
+            # mais lwcc ne expose pas facilement la carte sans refaire l'inférence.
+            # On se contente d'un retour minimaliste ou on pourrait importer les modèles lwcc ici.
+            return frame, np.zeros_like(frame), int(count), np.zeros(frame.shape[:2], dtype=np.uint8)
 
     def process_batch(self, frames):
         """
@@ -273,17 +311,73 @@ class PeopleCounterProcessor:
             return frames, final_colors, final_counts, final_masks
 
         elif self.backend == "openvino" and self.ov_compiled_model is not None:
-            # OpenVINO supporte très bien le batching dynamique par défaut souvent
-            all_counts, all_colors, final_masks = [], [], []
-            # ... (Logique similaire simplifiée pour OpenVINO)
-            # Pour l'instant on garde le séquentiel protégé par lock si besoin
-            for f in frames:
-                all_counts.append(self.process(f)[2])
-                all_colors.append(self.process(f)[1])
-                final_masks.append(self.process(f)[3])
-            return frames, all_colors, all_counts, final_masks
+            # Traitement par batch optimisé pour OpenVINO
+            num_frames = len(frames)
+            all_counts = [0.0] * num_frames
+            all_colors = [None] * num_frames
+            all_masks = [None] * num_frames
+            
+            # Dimensions attendues
+            try:
+                ov_shape = list(self.ov_input.get_shape())
+                expected_b = ov_shape[0] if ov_shape[0] > 0 else num_frames
+                c, target_h, target_w = ov_shape[1], ov_shape[2], ov_shape[3]
+            except Exception:
+                expected_b, c, target_h, target_w = num_frames, 3, 1080, 1920
+
+            # Optimisation: limiter le batch max pour éviter les pics de RAM
+            max_ov_batch = min(expected_b, 4) 
+            
+            with self.lock:
+                for i in range(0, num_frames, max_ov_batch):
+                    chunk = frames[i:i+max_ov_batch]
+                    actual_b = len(chunk)
+                    
+                    # Preprocess batch
+                    input_blob = np.zeros((actual_b, c, target_h, target_w), dtype=np.float32)
+                    for j, f in enumerate(chunk):
+                        blob = cv2.resize(f, (target_w, target_h))
+                        blob = blob.transpose((2, 0, 1)) # HWC to CHW
+                        input_blob[j] = blob.astype(np.float32) / 255.0
+
+                    # Inférence batch
+                    try:
+                        res = self.ov_compiled_model(input_blob)[self.ov_output]
+                    except Exception as e:
+                        # Fallback séquentiel si le modèle ne supporte pas le batching dynamique
+                        # print(f"[DEBUG] OpenVINO batch inference failed, falling back to sequential: {e}")
+                        res = np.zeros((actual_b, 1, target_h // 8, target_w // 8), dtype=np.float32)
+                        for j in range(actual_b):
+                            single_blob = input_blob[j:j+1]
+                            res[j:j+1] = self.ov_compiled_model(single_blob)[self.ov_output]
+                    
+                    for j in range(actual_b):
+                        density_map = res[j, 0]
+                        
+                        # Post-process (identique au mode single)
+                        d_norm = cv2.normalize(density_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+                        d_norm = cv2.resize(d_norm, (chunk[j].shape[1], chunk[j].shape[0]))
+                        d_color = cv2.applyColorMap(d_norm, cv2.COLORMAP_JET)
+                        _, mask = cv2.threshold(d_norm, self.density_threshold, 255, cv2.THRESH_BINARY)
+                        mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+                        d_color = cv2.bitwise_and(d_color, mask_3ch)
+                        
+                        count = float(np.sum(density_map))
+                        if count < 0.5: count = 0
+                        
+                        abs_idx = i + j
+                        all_counts[abs_idx] = count
+                        all_colors[abs_idx] = d_color
+                        all_masks[abs_idx] = mask
+            
+            return frames, all_colors, all_counts, all_masks
             
         else:
-            # Fallback PyTorch (Torch batching)
-            results = [self.process(f) for f in frames]
-            return [r[0] for r in results], [r[1] for r in results], [r[2] for r in results], [r[3] for r in results]
+            # Fallback PyTorch
+            all_counts, all_colors, final_masks = [], [], []
+            for f in frames:
+                _, c_map, count, mask = self.process(f)
+                all_colors.append(c_map)
+                all_counts.append(count)
+                final_masks.append(mask)
+            return frames, all_colors, all_counts, final_masks

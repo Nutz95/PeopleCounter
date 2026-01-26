@@ -41,18 +41,27 @@ if [ "$RES" == "1080p" ]; then
     echo "Mode : 1080p (Optimisé Performance)"
     export CAMERA_WIDTH=1920
     export CAMERA_HEIGHT=1080
-    export LWCC_TRT_ENGINE=dm_count.engine
+    export LWCC_TRT_ENGINE="models/tensorrt/dm_count_qnrf.engine"
 else
     echo "Mode : 4K (Optimisé Précision)"
     export CAMERA_WIDTH=3840
     export CAMERA_HEIGHT=2160
     # Note : On utilise l'engine standard (1080p profile) même en 4K car on resize les quadrants à 1000px max
-    export LWCC_TRT_ENGINE=dm_count.engine
+    export LWCC_TRT_ENGINE="models/tensorrt/dm_count_qnrf.engine"
+fi
+
+# Resolution du chemin YOLO
+# Si l'argument finit par .engine et n'est pas un chemin absolu, on cherche dans models/tensorrt
+if [[ "$YOLO_MODEL_ARG" == *.engine ]] && [[ "$YOLO_MODEL_ARG" != */* ]] && [[ "$YOLO_MODEL_ARG" != *\\* ]]; then
+    export YOLO_MODEL="models/tensorrt/$YOLO_MODEL_ARG"
+elif [[ "$YOLO_MODEL_ARG" == *.pt ]] && [[ "$YOLO_MODEL_ARG" != */* ]] && [[ "$YOLO_MODEL_ARG" != *\\* ]]; then
+    export YOLO_MODEL="models/pt/$YOLO_MODEL_ARG"
+else
+    export YOLO_MODEL="$YOLO_MODEL_ARG"
 fi
 
 # Configuration YOLO : Utilise TensorRT sur la RTX 5060 Ti
 export YOLO_BACKEND=tensorrt_native
-export YOLO_MODEL=$YOLO_MODEL_ARG
 export YOLO_DEVICE=cuda
 
 # Configuration LWCC : Utilise TensorRT sur la RTX 5060 Ti

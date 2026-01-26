@@ -82,8 +82,16 @@ class CameraAppPipeline:
         elif yolo_backend == 'tensorrt_native':
             if not yolo_model.endswith('.engine'):
                 engine_file = f"{yolo_model}.engine"
-                if os.path.isfile(engine_file):
+                # check models/ directory first
+                models_path = os.path.join(os.getcwd(), 'models', engine_file)
+                if os.path.isfile(models_path):
+                    yolo_model = models_path
+                elif os.path.isfile(engine_file):
                     yolo_model = engine_file
+            else:
+                # if user passed bare engine name, look in models/
+                if not os.path.isabs(yolo_model) and os.path.isfile(os.path.join(os.getcwd(), 'models', yolo_model)):
+                    yolo_model = os.path.join(os.getcwd(), 'models', yolo_model)
         
         yolo_device = os.environ.get('YOLO_DEVICE')
         if not yolo_device:
