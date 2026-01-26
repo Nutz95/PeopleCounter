@@ -288,9 +288,49 @@ class YoloSegPeopleCounter:
     def _infer_batch(self, tiles, metadata):
         if self.backend == 'openvino_native':
             return self._infer_batch_openvino(tiles, metadata)
+        
+        all_boxes, all_scores, all_masks = [], [], []
+
+        if self.backend not in ('tensorrt_native', 'openvino_native'):
+            # Fallback Ultralytics (PyTorch / CPU)
+            results = self.model(tiles, conf=self.confidence_threshold, verbose=False, task='segment')
+            for j, r in enumerate(results):
+                x_offset, y_offset, _, _, ow, oh = metadata[j]
+                sw, sh = ow / 640, oh / 640
+                if r.boxes:
+                    mask_person = r.boxes.cls == self.person_class_id
+                    boxes = r.boxes.xyxy[mask_person].cpu().numpy()
+                    scores = r.boxes.conf[mask_person].cpu().numpy()
+                    if r.masks is not None:
+                        masks_data = r.masks.data[mask_person].cpu().numpy() 
+                        for k in range(len(boxes)):
+                            bx1, by1, bx2, by2 = boxes[k]
+                            mh, mw = masks_data[k].shape[:2]
+                            scalew, scaleh = mw / 640.0, mh / 640.0
+                            mx1, my1 = max(0, int(bx1 * scalew)), max(0, int(by1 * scaleh))
+                            mx2, my2 = min(mw, int(bx2 * scalew)), min(mh, int(by2 * scaleh))
+                            
+                            if mx2 > mx1 and my2 > my1:
+                                m_crop = masks_data[k, my1:my2, mx1:mx2]
+                                # Binarisation du masque sigmoid si nécessaire (YOLO output est souvent entre 0 et 1)
+                                if m_crop.max() <= 1.01:
+                                    m_crop = (m_crop > 0.5).astype(np.float32)
+                            else:
+                                m_crop = None
+                            
+                            all_boxes.append([bx1 * sw + x_offset, by1 * sh + y_offset, bx2 * sw + x_offset, by2 * sh + y_offset])
+                            all_scores.append(scores[k])
+                            all_masks.append(m_crop)
+                    else:
+                        for k in range(len(boxes)):
+                            all_boxes.append([boxes[k][0] * sw + x_offset, boxes[k][1] * sh + y_offset, boxes[k][2] * sw + x_offset, boxes[k][3] * sh + y_offset])
+                            all_scores.append(scores[k])
+                            all_masks.append(None)
+            return np.array(all_boxes), np.array(all_scores), all_masks
             
         batch_size = 32
         target_h, target_w = 640, 640
+        # ... suite pour TensorRT
         all_boxes, all_scores, all_masks = [], [], []
 
         def preprocess(tile):

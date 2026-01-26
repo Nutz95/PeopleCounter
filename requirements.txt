@@ -42,7 +42,7 @@ pillow==12.0.0
 polars==1.33.1
 protobuf==3.20.3
 psutil==7.2.1
-nvidia-ml-py
+pynvml==13.0.1
 pyparsing==3.2.3
 pyreadline3==3.5.4
 PySocks==1.7.1

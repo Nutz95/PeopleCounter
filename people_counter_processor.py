@@ -198,10 +198,14 @@ class PeopleCounterProcessor:
         else:
             # Fallback PyTorch / LWCC direct
             # On utilise lwcc.get_count_from_frame si dispo
-            count = get_count_from_frame(frame, model=self.model_name, weights=self.model_weights, return_density=False)
-            # Pour torch, on va juste retourner un masque vide ou simulé si on n'a pas la carte
-            # mais lwcc ne expose pas facilement la carte sans refaire l'inférence.
-            # On se contente d'un retour minimaliste ou on pourrait importer les modèles lwcc ici.
+            try:
+                # Force CPU pour éviter des conflits CUDA si on est en mode FALLBACK
+                count = get_count_from_frame(frame, model_name=self.model_name, model_weights=self.model_weights, return_density=False, use_gpu=False)
+            except Exception as e:
+                print(f"[ERROR] LWCC CPU Inference failed: {e}")
+                count = 0
+            
+            # Pour torch, on va juste retourner un masque vide ou simulé
             return frame, np.zeros_like(frame), int(count), np.zeros(frame.shape[:2], dtype=np.uint8)
 
     def process_batch(self, frames):

@@ -6,10 +6,10 @@ cls
 echo ==========================================
 echo    PEOPLE COUNTER - HARDWARE SELECTOR
 echo ==========================================
-echo 1) EXTREME   (NVIDIA RTX 5060 Ti only)
-echo 2) HYBRID    (Intel NPU for YOLO + iGPU for Density)
-echo 3) BALANCED  (NVIDIA for Density + iGPU for YOLO)
-echo 4) FALLBACK  (CPU only)
+echo 1) EXTREME   (NVIDIA RTX 5060 Ti + YOLO Seg)
+echo 2) HYBRID    (Intel NPU for YOLO Seg + iGPU for Density)
+echo 3) TRIPLE     (Intel iGPU for YOLO Seg + NVIDIA for Density)
+echo 4) FALLBACK  (CPU only + YOLO Seg)
 echo 5) EXIT
 echo ==========================================
 set /p choice="Select your configuration [1-5]: "
@@ -28,7 +28,9 @@ echo Loading %CFG% configuration...
 for /f "tokens=1,2 delims==" %%a in (scripts/configs/%CFG%.env) do (
     set "line=%%a"
     if not "!line:~0,1!"=="#" (
-        set "%%a=%%b"
+        set "key=%%a"
+        set "key=!key:export =!"
+        set "!key!=%%b"
     )
 )
 
