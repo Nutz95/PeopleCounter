@@ -125,7 +125,13 @@ class YoloPeopleCounter:
             except Exception:
                 pass
             ov_model = core.read_model(model_name)
-            self.ov_compiled_model = core.compile_model(ov_model, self.device)
+            
+            # Sécurité : OpenVINO ne supporte pas le mot clé "cuda"
+            exec_device = self.device
+            if exec_device == "cuda":
+                exec_device = "GPU"
+                
+            self.ov_compiled_model = core.compile_model(ov_model, exec_device)
             self.ov_input = self.ov_compiled_model.inputs[0]
             self.ov_output = self.ov_compiled_model.outputs[0]
             try:

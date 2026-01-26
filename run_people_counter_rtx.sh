@@ -60,12 +60,20 @@ else
     export YOLO_MODEL="$YOLO_MODEL_ARG"
 fi
 
-# Configuration YOLO : Utilise TensorRT sur la RTX 5060 Ti
-export YOLO_BACKEND=tensorrt_native
-export YOLO_DEVICE=cuda
+# Configuration YOLO : Sélection automatique du backend si non défini
+export YOLO_BACKEND=${YOLO_BACKEND:-tensorrt_native}
 
-# Configuration LWCC : Utilise TensorRT sur la RTX 5060 Ti
-export LWCC_BACKEND=tensorrt
+# Configuration du Device : On ne force pas "cuda" si on est en OpenVINO
+if [ "$YOLO_BACKEND" == "openvino_native" ]; then
+    export YOLO_DEVICE=${YOLO_DEVICE:-GPU}
+elif [ "$YOLO_BACKEND" == "openvino" ]; then
+    export YOLO_DEVICE=${YOLO_DEVICE:-GPU}
+else
+    export YOLO_DEVICE=${YOLO_DEVICE:-cuda}
+fi
+
+# Configuration LWCC : Utilise TensorRT par défaut
+export LWCC_BACKEND=${LWCC_BACKEND:-tensorrt}
 
 echo "Démarrage du People Counter (MODE FULL RTX) :"
 echo " - Résolution : $RES"

@@ -113,7 +113,8 @@ class CameraAppPipeline:
             self.yolo_counter = YoloSegPeopleCounter(
                 model_path=yolo_model,
                 confidence_threshold=yolo_conf,
-                backend=yolo_backend
+                backend=yolo_backend,
+                device=yolo_device
             )
         else:
             self.yolo_counter = YoloPeopleCounter(
@@ -271,17 +272,19 @@ class CameraAppPipeline:
                         thr_density = ModelThread(self.processor.process, frame)
                     
                     # On lance les deux threads
+                    t_yolo_start = time.time()
+                    t_density_start = time.time()
                     thr_yolo.start()
                     thr_density.start()
                     
                     # Attente YOLO
                     thr_yolo.join()
-                    yolo_time = time.time() - t_loop_start
+                    yolo_time = time.time() - t_yolo_start
                     yolo_count, frame_with_bbox = thr_yolo.result
                     
                     # Attente Density
                     thr_density.join()
-                    density_time = time.time() - t_loop_start
+                    density_time = time.time() - t_density_start
                     
                     import psutil
                     cpu_usage = psutil.cpu_percent()

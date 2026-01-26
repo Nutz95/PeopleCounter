@@ -6,12 +6,13 @@ import tensorrt as trt
 import torch
 
 class YoloSegPeopleCounter:
-    def __init__(self, model_path, confidence_threshold=0.25, backend='tensorrt_native'):
+    def __init__(self, model_path, confidence_threshold=0.25, backend='tensorrt_native', device='cuda'):
         self.model_path = model_path
-        self.model_name = os.path.basename(model_path) # Ajout de model_name pour la compatibilité HUD
+        self.model_name = os.path.basename(model_path)
         self.confidence_threshold = confidence_threshold
         self.backend = backend
-        self.person_class_id = 0  # COCO: Person is 0
+        self.device = device
+        self.person_class_id = 0
         
         self.trt_context = None
         self.trt_engine = None
@@ -20,12 +21,47 @@ class YoloSegPeopleCounter:
         self.trt_stream = None
         self.cudart = None
         
+        # OpenVINO specific
+        self.ov_compiled_model = None
+        self.ov_input = None
+        self.ov_output = None
+
         if self.backend == 'tensorrt_native':
             self._init_trt_backend()
+        elif self.backend == 'openvino_native':
+            self._init_openvino_backend()
         else:
-            # Placeholder for fallback (ultralytics)
+            # Fallback (ultralytics)
             from ultralytics import YOLO
-            self.model = YOLO(model_path)
+            self.model = YOLO(model_path, task='segment')
+            if self.backend != 'openvino':
+                self.model.to(self.device)
+
+    def _init_openvino_backend(self):
+        import openvino as ov
+        core = ov.Core()
+        
+        model_path = self.model_path
+        if os.path.isdir(model_path):
+            xml_candidates = [p for p in os.listdir(model_path) if p.lower().endswith('.xml')]
+            if xml_candidates:
+                model_path = os.path.join(model_path, xml_candidates[0])
+        
+        ov_model = core.read_model(model_path)
+        
+        exec_device = self.device
+        if exec_device == "cuda": exec_device = "GPU"
+        
+        self.ov_compiled_model = core.compile_model(ov_model, exec_device)
+        self.ov_input = self.ov_compiled_model.inputs[0]
+        self.ov_output = self.ov_compiled_model.outputs[0]
+        self.ov_outputs = self.ov_compiled_model.outputs
+        
+        try:
+            self.ov_input_shape = list(self.ov_input.get_shape())
+            print(f"YOLO Segmentation OpenVINO loaded: {exec_device} (Shape: {self.ov_input_shape})")
+        except Exception:
+            pass
 
     def _init_trt_backend(self):
         from cuda.bindings import runtime as cudart
@@ -69,6 +105,85 @@ class YoloSegPeopleCounter:
                     self.outputs_ordered[0] = out_info
                 elif len(out_shape) == 4: # Probablement les prototypes (B, 32, 160, 160)
                     self.outputs_ordered[1] = out_info
+
+    def _infer_batch_openvino(self, tiles, metadata):
+        target_h, target_w = 640, 640
+        all_boxes, all_scores, all_masks = [], [], []
+        
+        # Batch size automatique selon le modèle ou 4 par défaut
+        try:
+            batch_size = self.ov_input_shape[0] if self.ov_input_shape[0] > 0 else 4
+        except Exception:
+            batch_size = 4
+
+        for i in range(0, len(tiles), batch_size):
+            chunk = tiles[i:i+batch_size]
+            actual_b = len(chunk)
+            
+            input_data = np.zeros((actual_b, 3, target_h, target_w), dtype=np.float32)
+            for j, tile in enumerate(chunk):
+                if tile.shape[:2] != (target_h, target_w):
+                    tile = cv2.resize(tile, (target_w, target_h))
+                input_data[j] = np.transpose(tile.astype(np.float32) / 255.0, (2, 0, 1))
+
+            # Inférence
+            results = self.ov_compiled_model(input_data)
+            
+            # Post-process (Identification des sorties par nom ou forme)
+            # YOLOv11-seg OpenVINO a généralement 2 sorties : une pour les preds, une pour les protos
+            preds = None
+            protos = None
+            for out in self.ov_outputs:
+                shape = list(out.get_shape())
+                if len(shape) == 3: preds = results[out]
+                if len(shape) == 4: protos = results[out]
+
+            if preds is None: continue
+
+            for j in range(actual_b):
+                p = preds[j]
+                if p.shape[0] < p.shape[1]: p = p.T
+                
+                scores = p[:, 4 + self.person_class_id]
+                mask_idx = np.where(scores >= self.confidence_threshold)[0]
+                if len(mask_idx) == 0: continue
+
+                boxes = p[mask_idx, :4]
+                scores = scores[mask_idx]
+                
+                x_offset, y_offset, sw_m, sh_m, ow, oh = metadata[i+j]
+                sw, sh = ow / target_w, oh / target_h
+                
+                x1 = (boxes[:, 0] - boxes[:, 2]/2) * sw + x_offset
+                y1 = (boxes[:, 1] - boxes[:, 3]/2) * sh + y_offset
+                x2 = (boxes[:, 0] + boxes[:, 2]/2) * sw + x_offset
+                y2 = (boxes[:, 1] + boxes[:, 3]/2) * sh + y_offset
+                
+                if protos is not None:
+                    coeffs = p[mask_idx, 4+80:4+80+32]
+                    m_protos = protos[j]
+                    m_protos_flat = m_protos.reshape(32, -1)
+                    m_raw = 1 / (1 + np.exp(-(coeffs @ m_protos_flat))) 
+                    m_raw = m_raw.reshape(-1, 160, 160)
+                    
+                    for k in range(len(mask_idx)):
+                        bx, by, bw_t, bh_t = boxes[k]
+                        mx1 = max(0, int((bx - bw_t/2) / 4))
+                        my1 = max(0, int((by - bh_t/2) / 4))
+                        mx2 = min(160, int((bx + bw_t/2) / 4))
+                        my2 = min(160, int((by + bh_t/2) / 4))
+                        
+                        person_mask_crop = m_raw[k, my1:my2, mx1:mx2]
+                        all_boxes.append([x1[k], y1[k], x2[k], y2[k]])
+                        all_scores.append(scores[k])
+                        all_masks.append(person_mask_crop)
+                else:
+                    for k in range(len(mask_idx)):
+                        all_boxes.append([x1[k], y1[k], x2[k], y2[k]])
+                        all_scores.append(scores[k])
+                        all_masks.append(None)
+
+        return np.array(all_boxes), np.array(all_scores), all_masks
 
     def count_people(self, image, tile_size=640, draw_boxes=True, use_tiling=True):
         image_rgb = image[..., ::-1].copy()
@@ -171,6 +286,9 @@ class YoloSegPeopleCounter:
         return int(total_count), image_out if draw_boxes else int(total_count)
 
     def _infer_batch(self, tiles, metadata):
+        if self.backend == 'openvino_native':
+            return self._infer_batch_openvino(tiles, metadata)
+            
         batch_size = 32
         target_h, target_w = 640, 640
         all_boxes, all_scores, all_masks = [], [], []

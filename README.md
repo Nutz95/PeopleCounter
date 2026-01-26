@@ -8,35 +8,35 @@ Outil de comptage de personnes depuis une caméra (4K) utilisant YOLO et LWCC.
 
 ## Installation rapide
 
-1. Créer l'environnement virtuel:
+1. Créer l'environnement virtuel :
 
 ```bash
 python -m venv .venv
 ```
 
-2. Activer l'environnement:
+2. Activer l'environnement :
 
-- PowerShell:
+- **PowerShell** :
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 
-- Git Bash / WSL / Linux / macOS:
+- **Git Bash / WSL / Linux / macOS** :
 
 ```bash
 source .venv/Scripts/activate
 ```
 
-3. Installer les dépendances (depuis `requirements.txt`):
+3. Installer les dépendances (depuis `requirements.txt`) :
 
-PowerShell:
+**PowerShell** :
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Git Bash / WSL:
+**Git Bash / WSL** :
 
 ```bash
 .venv/Scripts/python.exe -m pip install -r requirements.txt
@@ -46,7 +46,7 @@ Git Bash / WSL:
 
 ## Préparer les modèles (optionnel / long)
 
-Exécuter `setup.sh` (Git Bash / WSL recommandé) pour télécharger les modèles et générer des moteurs TensorRT:
+Exécuter `setup.sh` (Git Bash / WSL recommandé) pour télécharger les modèles et générer des moteurs TensorRT :
 
 ```bash
 ./setup.sh
@@ -84,22 +84,26 @@ Arguments:
 
 Exemples (optimisés):
 
-### Démo principale (segmentation + tiling):
+### Démo principale (segmentation + tiling)
+
 ```bash
 ./run_people_counter_rtx.sh 4k yolo11s-seg.engine 0.5 1 0 50 1 1
 ```
 
-### Standard 4K avec détection (YOLOv12):
+### Standard 4K avec détection (YOLOv12)
+
 ```bash
 ./run_people_counter_rtx.sh 4k yolo12s.engine
 ```
 
-### 4K avec réduction de bruit (niveau 1):
+### 4K avec réduction de bruit (niveau 1)
+
 ```bash
 ./run_people_counter_rtx.sh 4k yolo12m.engine 0.70 1 1 15 1
 ```
 
 Paramètres courts:
+
 - Résolution: `4k` ou `1080p`
 - Modèle: nom du fichier `.engine` / `.onnx` / `.pt`
 - `YOLO_SEG`: active la fusion par segmentation (nécessite un modèle `-seg`)
@@ -111,26 +115,68 @@ Paramètres courts:
 
 ## Exemples multi-backend (env vars)
 
-TensorRT (NVIDIA):
+**TensorRT (NVIDIA - Par défaut) :**
+
 ```bash
 export YOLO_BACKEND=tensorrt_native
 export YOLO_MODEL=yolo11s-seg.engine
 ./run_people_counter_rtx.sh 4k $YOLO_MODEL 0.5 1 0 50 1 1
 ```
 
-OpenVINO (Intel NPU / Arc):
+**OpenVINO (Intel NPU / Arc) :**
+
 ```bash
+# Note: YOLO_MODEL doit correspondre au nom du dossier dans models/openvino/
 export YOLO_BACKEND=openvino_native
-export YOLO_OPENVINO_DIR=path/to/yolo_openvino_model
-./run_people_counter_rtx.sh 4k yolo11s 0.5 1 0 50 1 0
+export YOLO_OPENVINO_DIR=models/openvino/yolo12s_openvino_model
+./run_people_counter_rtx.sh 4k yolo12s 0.5 1 0 50 1 0
 ```
 
-CPU (PyTorch / Ultralytics):
+**CPU (PyTorch / Ultralytics) :**
+
 ```bash
 export YOLO_BACKEND=torch
 export YOLO_MODEL=yolo11s.pt
 ./run_people_counter_rtx.sh 4k yolo11s.pt 0.5 1 0 50 1 0
 ```
+
+## Configuration Hétérogène (Multi-GPU/NPU)
+
+L'application permet de répartir la charge de calcul sur les différentes puces de votre machine.
+
+### Paramétrage manuel (Variables d'environnement) :
+
+| Variable | Usage | Valeurs possibles |
+| :--- | :--- | :--- |
+| `YOLO_BACKEND` | Moteur YOLO | `tensorrt_native`, `openvino_native`, `torch` |
+| `YOLO_DEVICE` | Puce pour YOLO | `cuda` (RTX), `GPU` (Arc), `NPU` (AI Boost), `CPU` |
+| `LWCC_BACKEND` | Moteur Densité | `tensorrt`, `openvino`, `torch` |
+| `OPENVINO_DEVICE` | Puce pour Densité OV | `GPU`, `NPU`, `CPU` |
+
+### Exemples de profils :
+
+**1. Mode Full RTX (NVIDIA uniquement) :**
+```bash
+export YOLO_BACKEND=tensorrt_native && export LWCC_BACKEND=tensorrt
+./run_people_counter_rtx.sh 4k yolo12s.engine
+```
+
+**2. Mode Hybrid Intel (Zéro charge RTX) :**
+```bash
+export YOLO_BACKEND=openvino_native && export YOLO_DEVICE=NPU
+export LWCC_BACKEND=openvino && export OPENVINO_DEVICE=GPU
+./run_people_counter_rtx.sh 4k yolo12s
+```
+
+## Menu de lancement (Interactif)
+
+Pour faciliter le choix, utilisez le lanceur interactif :
+
+```bash
+./launcher.sh
+```
+
+Il propose des préréglages optimisés pour votre matériel (RTX 5060 + Intel Core Ultra).
 
 ## Support
 

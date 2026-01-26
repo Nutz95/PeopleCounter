@@ -124,8 +124,20 @@ class PeopleCounterProcessor:
                 self.backend = "openvino"
 
         if self.backend == "openvino":
-            xml_path = os.path.join(str(Path.home()), ".lwcc", "openvino", f"{model_name}_{model_weights}.xml")
-            if os.path.isfile(xml_path):
+            # On cherche d'abord dans models/openvino, puis dans le home
+            xml_name = f"{model_name.lower().replace('-', '_')}_{model_weights.lower()}.xml"
+            candidates = [
+                os.path.join("models", "openvino", xml_name),
+                os.path.join(str(Path.home()), ".lwcc", "openvino", xml_name)
+            ]
+            
+            xml_path = None
+            for c in candidates:
+                if os.path.isfile(c):
+                    xml_path = c
+                    break
+
+            if xml_path:
                 try:
                     import openvino as ov
                     core = ov.Core()
