@@ -9,6 +9,8 @@ import numpy as np
 from PIL import Image
 import torch
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 class PeopleCounterProcessor:
     def __init__(self, model_name="CSRNet", model_weights="SHA", backend="torch", openvino_device="GPU", density_threshold=15):
@@ -36,6 +38,10 @@ class PeopleCounterProcessor:
         self.trt_bindings = []
         self.cudart = None
         self.lock = threading.Lock() # Lock pour éviter les accès concurrents au contexte TRT/OpenVINO
+        self.last_device = "Unknown"
+        self.last_perf = {'preprocess': 0, 'h2d': 0, 'infer': 0, 'd2h': 0, 'postprocess': 0}
+        max_workers = min(32, (os.cpu_count() or 4) * 2)
+        self.pool = ThreadPoolExecutor(max_workers=max_workers)
 
         if self.backend == "tensorrt":
             engine_path = os.environ.get("LWCC_TRT_ENGINE", "dm_count.engine")
@@ -44,6 +50,7 @@ class PeopleCounterProcessor:
                     import tensorrt as trt
                     from cuda.bindings import runtime as cudart
                     self.cudart = cudart
+                    self.last_device = "GPU (TensorRT)"
                     logger = trt.Logger(trt.Logger.INFO)
                     with open(engine_path, "rb") as f, trt.Runtime(logger) as runtime:
                         self.trt_engine = runtime.deserialize_cuda_engine(f.read())
@@ -60,6 +67,8 @@ class PeopleCounterProcessor:
                         dtype = self.trt_engine.get_tensor_dtype(name)
                         shape = list(self.trt_engine.get_tensor_shape(name))
                         
+                        is_density = any(word in self.model_name.lower() or word in engine_path.lower() for word in ["dm_count", "csrnet", "sfanet", "bay", "density"])
+
                         # Fix for dynamic/corrupted shapes
                         if any(s < 0 or s > 1e6 for s in shape):
                             try:
@@ -67,26 +76,29 @@ class PeopleCounterProcessor:
                                 for p_idx in range(self.trt_engine.num_optimization_profiles):
                                     p_shape = self.trt_engine.get_tensor_profile_shape(name, p_idx)
                                     if p_shape and len(p_shape) >= 3:
-                                        max_shape = p_shape[2]
+                                        # On prend la forme OPTIMALE (index 1 dans p_shape)
+                                        opt_shape = p_shape[1] 
                                         for j in range(len(shape)):
                                             if shape[j] < 0 or shape[j] > 1e6:
-                                                shape[j] = max(shape[j], max_shape[j])
-                                print(f"[DEBUG] Density: Resolved shape for {name}: {shape}")
+                                                shape[j] = opt_shape[j]
+                                print(f"[DEBUG] Density: Resolved shape for {name} from profile: {shape}")
                             except Exception as e:
                                 print(f"[WARN] Profile shape lookup failed for {name}: {e}")
-                                # Fallback structurel pour DM-Count/CSRNet
-                                b_max = 4
+                                # Fallback structurel pour DM-Count/CSRNet (Batch accru et résolution optimisée)
+                                b_max = 8
                                 if "input" in name.lower():
-                                    shape = [b_max, 3, 1080, 1920]
+                                    shape = [b_max, 3, 544, 960] if is_density else [b_max, 3, 640, 640]
                                 else:
                                     # Pour DM-Count, la sortie est divisée par 8
-                                    shape = [b_max, 1, 1080 // 8, 1920 // 8]
+                                    shape = [b_max, 1, 544 // 8, 960 // 8] if is_density else [b_max, 1, 640, 640]
                                 print(f"[DEBUG] Density: Using fallback shape for {name}: {shape}")
                         
-                        # Nettoyage final pour s'assurer qu'on n'a plus de -1
-                        for j in range(len(shape)):
-                            if shape[j] < 1 or shape[j] > 1e6:
-                                shape[j] = 1
+                        # Si c'est un modèle de densité, on garde la résolution d'origine (1080p recommandé pour précision)
+                        # La réduction à 544p entraînait des sur-comptages sur les gros plans
+                        if is_density and "input" in name.lower() and shape[2] == 1080:
+                            print(f"[INFO] Performance: Using native resolution for density model {name} (1080p).")
+                            shape[2] = 1080
+                            shape[3] = 1920
 
                         shape = tuple(shape)
                         print(f"[DEBUG] Density: Final allocation shape for {name}: {shape}")
@@ -143,6 +155,10 @@ class PeopleCounterProcessor:
                     core = ov.Core()
                     ov_model = core.read_model(xml_path)
                     self.ov_compiled_model = core.compile_model(ov_model, self.openvino_device)
+                    try:
+                        self.last_device = self.ov_compiled_model.get_property("FULL_DEVICE_NAME")
+                    except:
+                        self.last_device = f"OpenVINO ({self.openvino_device})"
                     self.ov_input = self.ov_compiled_model.inputs[0]
                     self.ov_output = self.ov_compiled_model.outputs[0]
                     try:
@@ -157,7 +173,7 @@ class PeopleCounterProcessor:
                 print(f"[WARN] OpenVINO IR not found at {xml_path}, falling back to torch.")
                 self.backend = "torch"
 
-        if self.backend != "openvino":
+        if self.backend == "torch":
             device_str = "cuda" if torch.cuda.is_available() else "cpu"
             print(f"PeopleCounterProcessor running on device: {device_str}")
 
@@ -167,6 +183,8 @@ class PeopleCounterProcessor:
         """
         # Logic for single frame processing based on backend
         if self.backend == "tensorrt" and self.trt_context is not None:
+             # Pour la densité, on tente d'optimiser en réduisant la résolution des tiles si nécessaire
+             # Les modèles de densité supportent bien le passage à une résolution inférieure (ex: 540p)
              _, colors, counts, masks = self.process_batch([frame])
              return frame, colors[0], counts[0], masks[0]
         
@@ -218,27 +236,18 @@ class PeopleCounterProcessor:
 
         if self.backend == "tensorrt" and self.trt_context is not None:
             # Récupération des dimensions attendues (Batch, C, H, W)
-            # trt_input_shape[0] peut être -1 si dynamique
             b, c, target_h, target_w = self.trt_input_shape
-            
-            # Si l'engine est fixe (ex: batch=1) et qu'on envoie plus, 
-            # on est obligé de traiter en boucle, mais on garde le lock une seule fois
             max_batch = b if b > 0 else num_frames 
             
             all_counts = []
             all_colors = []
             all_masks = []
+            self.last_perf = {'preprocess': 0, 'h2d': 0, 'infer': 0, 'd2h': 0, 'postprocess': 0}
 
             with self.lock:
-                # Si l'engine ne supporte pas le batching dynamique ou suffisant,
-                # on traite quand même par paquets pour optimiser le lock.
-                from concurrent.futures import ThreadPoolExecutor
-                
-                def process_quad_static(f, target_h, target_w, model_name):
-                    # Redimensionnement vers la taille d'entrée du modèle
+                def process_quad_local(f, target_h, target_w):
                     if f.shape[0] != target_h or f.shape[1] != target_w:
                         f = cv2.resize(f, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-                    
                     img_rgb = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
                     img_floated = img_rgb.astype(np.float32) / 255.0
                     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -250,79 +259,83 @@ class PeopleCounterProcessor:
                     batch_chunk = frames[i:i+max_batch]
                     actual_b = len(batch_chunk)
                     
-                    # Preprocess complet du batch (optimisé et parallélisé)
+                    t0 = time.time()
                     batch_imgs = np.zeros((actual_b, c, target_h, target_w), dtype=np.float32)
-                    
-                    with ThreadPoolExecutor(max_workers=min(4, actual_b)) as executor:
-                        futures = [executor.submit(process_quad_static, batch_chunk[j], target_h, target_w, self.model_name) for j in range(actual_b)]
-                        for j, future in enumerate(futures):
-                            batch_imgs[j] = future.result()
-                    
+                    processed = [process_quad_local(f, target_h, target_w) for f in batch_chunk]
+                    for j, img in enumerate(processed): batch_imgs[j] = img
                     input_data = np.ascontiguousarray(batch_imgs)
+                    self.last_perf['preprocess'] += time.time() - t0
                     
                     # Copy to device
                     required_size = input_data.nbytes
-                    if self.trt_inputs[0]['nbytes'] < required_size:
-                        # Sequential fallback
-                        for j in range(actual_b):
-                            single_img = batch_imgs[j:j+1]
-                            single_data = np.ascontiguousarray(single_img)
-                            self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], single_data.ctypes.data, single_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
-                            self.trt_context.set_input_shape(self.trt_inputs[0]['name'], (1, c, target_h, target_w))
-                            self.trt_context.execute_async_v3(self.trt_stream)
-                            self.cudart.cudaStreamSynchronize(self.trt_stream)
-                            for output in self.trt_outputs:
-                                self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
-                            self.cudart.cudaStreamSynchronize(self.trt_stream)
-                            
-                            res = self.trt_outputs[0]['host']
-                            all_counts.append(float(np.sum(res)))
-                            all_colors.append(res[0, 0, :, :].copy())
-                    else:
-                        # Real batch inference
-                        # print(f"[DEBUG] Density: Executing batch of size {actual_b}")
-                        self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, required_size, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
-                        self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
-                        self.trt_context.execute_async_v3(self.trt_stream)
-                        self.cudart.cudaStreamSynchronize(self.trt_stream)
-                        
-                        # Récupérer la forme réelle de la sortie pour ce batch
-                        out_name = self.trt_outputs[0]['name']
-                        out_shape = self.trt_context.get_tensor_shape(out_name)
-                        real_h, real_w = out_shape[2], out_shape[3]
-                        
-                        for output in self.trt_outputs:
-                            self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
-                        self.cudart.cudaStreamSynchronize(self.trt_stream)
-                        
-                        res = self.trt_outputs[0]['host'] # Buffer d'allocation
-                        for j in range(actual_b):
-                            # On ne prend que la zone réellement générée par le modèle
-                            density_map = res[j, 0, :real_h, :real_w]
-                            all_counts.append(float(np.sum(density_map)))
-                            all_colors.append(density_map.copy())
+                    t1 = time.time()
+                    self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, required_size, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
+                    self.last_perf['h2d'] += time.time() - t1
+
+                    t2 = time.time()
+                    self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
+                    self.trt_context.execute_async_v3(self.trt_stream)
+                    self.cudart.cudaStreamSynchronize(self.trt_stream)
+                    self.last_perf['infer'] += time.time() - t2
+                    
+                    t3 = time.time()
+                    for output in self.trt_outputs:
+                        self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
+                    self.cudart.cudaStreamSynchronize(self.trt_stream)
+                    self.last_perf['d2h'] += time.time() - t3
+                    
+                    t4 = time.time()
+                    res = self.trt_outputs[0]['host'] # Buffer d'allocation
+                    out_name = self.trt_outputs[0]['name']
+                    out_shape = self.trt_context.get_tensor_shape(out_name)
+                    real_h, real_w = out_shape[2], out_shape[3]
+                    
+                    for j in range(actual_b):
+                        # On ne prend que la zone réellement générée par le modèle
+                        density_map = res[j, 0, :real_h, :real_w]
+                        all_counts.append(float(np.sum(density_map)))
+                        all_colors.append(density_map.copy())
+                    self.last_perf['postprocess'] += time.time() - t4
 
             # Post-processing commun
+            t_final_start = time.time()
             final_colors, final_counts, final_masks = [], [], []
             for idx, density in enumerate(all_colors):
                 orig_frame = frames[idx]
-                d_norm = cv2.normalize(density, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+                
+                # --- FILTRAGE DU BRUIT ---
+                # On élimine le bruit de fond très faible qui pollue le comptage et la heatmap
+                density[density < 0.001] = 0
+                
+                # Normalisation intelligente : on utilise le max seulement s'il est significatif
+                d_max = density.max()
+                if d_max > 0.005:
+                    # On normalise par rapport au max pour avoir une belle heatmap, 
+                    # mais on plafonne pour ne pas saturer le bruit.
+                    d_norm = np.clip((density / max(d_max, 0.05)) * 255, 0, 255).astype(np.uint8)
+                else:
+                    d_norm = np.zeros(density.shape, dtype=np.uint8)
+
                 d_norm = cv2.resize(d_norm, (orig_frame.shape[1], orig_frame.shape[0]), interpolation=cv2.INTER_LINEAR)
                 d_color = cv2.applyColorMap(d_norm, cv2.COLORMAP_JET)
                 
                 # Masque binaire pour isoler les pics de densité
                 _, mask = cv2.threshold(d_norm, self.density_threshold, 255, cv2.THRESH_BINARY)
                 
-                # Appliquer le masque à d_color pour mettre le fond bleu en noir (0,0,0)
+                # Appliquer le masque à d_color
                 mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
                 d_color = cv2.bitwise_and(d_color, mask_3ch)
                 
-                c = all_counts[idx]
-                if c < 0.5: c = 0
+                c = float(np.sum(density)) # On re-calcule après filtrage
+                # Seuil de bruit : on ignore les résidus < 0.2
+                if c < 0.2: c = 0.0
                 
                 final_colors.append(d_color)
-                final_counts.append(int(c))
+                final_counts.append(c)
                 final_masks.append(mask)
+
+            self.last_perf['postprocess'] += time.time() - t_final_start
+            print(f"  [DENS DETAILED] Pre={self.last_perf['preprocess']*1000:.1f}ms | Infer={self.last_perf['infer']*1000:.1f}ms | Post={self.last_perf['postprocess']*1000:.1f}ms")
             
             return frames, final_colors, final_counts, final_masks
 
@@ -334,12 +347,20 @@ class PeopleCounterProcessor:
             all_masks = [None] * num_frames
             
             # Dimensions attendues
+            is_density = any(word in self.model_name.lower() for word in ["dm_count", "csrnet", "sfanet", "bay", "density"])
             try:
                 ov_shape = list(self.ov_input.get_shape())
                 expected_b = ov_shape[0] if ov_shape[0] > 0 else num_frames
                 c, target_h, target_w = ov_shape[1], ov_shape[2], ov_shape[3]
+                
+                # Optimisation de résolution pour la densité
+                if is_density and target_h == 1080:
+                    target_h, target_w = 544, 960
             except Exception:
-                expected_b, c, target_h, target_w = num_frames, 3, 1080, 1920
+                if is_density:
+                    expected_b, c, target_h, target_w = num_frames, 3, 544, 960
+                else:
+                    expected_b, c, target_h, target_w = num_frames, 3, 1080, 1920
 
             # Optimisation: limiter le batch max pour éviter les pics de RAM
             max_ov_batch = min(expected_b, 4) 
@@ -356,13 +377,13 @@ class PeopleCounterProcessor:
                         blob = blob.transpose((2, 0, 1)) # HWC to CHW
                         input_blob[j] = blob.astype(np.float32) / 255.0
 
-                    # Inférence batch
+                    # Inférence batch (Optimisée OpenVINO)
                     try:
                         res = self.ov_compiled_model(input_blob)[self.ov_output]
                     except Exception as e:
-                        # Fallback séquentiel si le modèle ne supporte pas le batching dynamique
-                        # print(f"[DEBUG] OpenVINO batch inference failed, falling back to sequential: {e}")
-                        res = np.zeros((actual_b, 1, target_h // 8, target_w // 8), dtype=np.float32)
+                        # Fallback séquentiel
+                        res_shape = list(self.ov_output.get_shape())
+                        res = np.zeros((actual_b, res_shape[1], res_shape[2], res_shape[3]), dtype=np.float32)
                         for j in range(actual_b):
                             single_blob = input_blob[j:j+1]
                             res[j:j+1] = self.ov_compiled_model(single_blob)[self.ov_output]

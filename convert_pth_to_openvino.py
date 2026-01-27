@@ -34,7 +34,9 @@ def convert_pth_to_onnx(model_name, model_weights, pth_path, onnx_path):
     
     print(f"[INFO] Loading {model_name} weights from {pth_path}")
     model = None
-    dummy_input = torch.randn(1, 3, 1072, 1920)
+    # On utilise 544x960 car 544 est un multiple de 16 (requis par SFANet)
+    target_h, target_w = 544, 960
+    dummy_input = torch.randn(1, 3, target_h, target_w)
     if model_name == "CSRNet":
         model = make_csrnet(model_weights)
     elif model_name == "SFANet":
@@ -47,10 +49,31 @@ def convert_pth_to_onnx(model_name, model_weights, pth_path, onnx_path):
         return False
     
     model.eval()
-    print(f"[INFO] Exporting to ONNX: {onnx_path} (opset 18)")
-    torch.onnx.export(model, dummy_input, onnx_path, opset_version=18, 
-                      input_names=['input'], output_names=['output'],
-                      dynamic_axes={'input':{0:'batch', 2:'height', 3:'width'}, 'output':{0:'batch', 2:'height', 3:'width'}})
+    print(f"[INFO] Exporting to ONNX: {onnx_path} (opset 18, resolution {target_h}x{target_w})")
+    
+    # Pour éviter les erreurs avec les nouvelles versions de PyTorch (Dynamo), 
+    # on désactive temporairement le tracking dynamique si ça pose problème ou on utilise fixed shapes.
+    try:
+        torch.onnx.export(
+            model, 
+            dummy_input, 
+            onnx_path, 
+            opset_version=18, 
+            input_names=['input'], 
+            output_names=['output'],
+            # On retire dynamic_axes pour SFANet si nécessaire, ou on tente un export plus "safe"
+            dynamic_axes={'input':{0:'batch'}, 'output':{0:'batch'}} if model_name != "SFANet" else None
+        )
+    except Exception as e:
+        print(f"[WARN] Standard export failed, trying fixed shape export for {model_name}: {e}")
+        torch.onnx.export(
+            model, 
+            dummy_input, 
+            onnx_path, 
+            opset_version=18, 
+            input_names=['input'], 
+            output_names=['output']
+        )
     return True
 
 def convert_onnx_to_openvino(onnx_path, output_dir):

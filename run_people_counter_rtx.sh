@@ -10,20 +10,20 @@ fi
 
 # Choix de la résolution via argument (./run_people_counter_rtx.sh 1080p ou 4k)
 RES=${1:-4k}
-# Choix du modèle YOLO via argument (./run_people_counter_rtx.sh 4k yolo12s.engine)
-YOLO_MODEL_ARG=${2:-yolo12m.engine}
-# Seuil de confiance YOLO (./run_people_counter_rtx.sh 4k yolo12x.engine 0.65)
+# Choix du modèle YOLO via argument (./run_people_counter_rtx.sh 4k yolo26s.engine)
+YOLO_MODEL_ARG=${2:-yolo26s.engine}
+# Seuil de confiance YOLO (./run_people_counter_rtx.sh 4k yolo26x.engine 0.65)
 CONF_ARG=${3:-0.65}
-# Activation Tiling YOLO (./run_people_counter_rtx.sh 4k yolo12x.engine 0.65 1)
+# Activation Tiling YOLO (./run_people_counter_rtx.sh 4k yolo26x.engine 0.65 1)
 YOLO_TILING_ARG=${4:-1}
-# Activation Tiling Densité 2x2 (./run_people_counter_rtx.sh 4k yolo12x.engine 0.65 1 0)
+# Activation Tiling Densité 2x2 (./run_people_counter_rtx.sh 4k yolo26x.engine 0.65 1 0)
 DENSITY_TILING_ARG=${5:-0}
-# Seuil de détection Densité (./run_people_counter_rtx.sh 4k yolo12x.engine 0.65 1 0 15)
+# Seuil de détection Densité (./run_people_counter_rtx.sh 4k yolo26x.engine 0.65 1 0 15)
 DENSITY_THRESHOLD_ARG=${6:-15}
-# Réduction de bruit (./run_people_counter_rtx.sh 4k yolo12x.engine 0.65 1 0 15 0)
+# Réduction de bruit (./run_people_counter_rtx.sh 4k yolo26x.engine 0.65 1 0 15 0)
 # 0: Désactivé, 1-5: Intensité du flou Gaussien
 DENOISE_ARG=${7:-0}
-# Mode Segmentation YOLO (./run_people_counter_rtx.sh 4k yolo11s-seg.engine 0.65 1 0 15 1 1)
+# Mode Segmentation YOLO (./run_people_counter_rtx.sh 4k yolo26s-seg.engine 0.65 1 0 15 1 1)
 # 0: Détection (BBox), 1: Segmentation (pour fusion précise)
 YOLO_SEG_ARG=${8:-0}
 

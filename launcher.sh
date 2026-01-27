@@ -16,32 +16,29 @@ read -p "Votre choix [1-5]: " choice
 case $choice in
     1)
         source ./scripts/configs/rtx_extreme.env
-        MODEL="yolo11s-seg.engine"
-        SEG=1
         ;;
     2)
         source ./scripts/configs/intel_hybrid.env
-        MODEL="yolo11s-seg"
-        SEG=1
         ;;
     3)
         source ./scripts/configs/balanced_tri_chip.env
-        MODEL="yolo11s-seg.engine"
-        SEG=1
         ;;
     4)
         source ./scripts/configs/cpu_fallback.env
-        MODEL="yolo11s-seg.pt"
-        SEG=1
         ;;
     5)
         exit 0
         ;;
-    *)
-        echo "Choix invalide."
-        exit 1
-        ;;
 esac
 
+# Utilisation des variables définies dans les fichiers .env avec valeurs par défaut si absentes
+MODEL=${YOLO_MODEL:-"yolo11n.pt"}
+CONF=${CONF:-0.65}
+SEG=${YOLO_SEG:-0}
+
 echo "Lancement avec le profil sélectionné..."
-./run_people_counter_rtx.sh 4k $MODEL 0.5 1 0 50 1 $SEG
+echo " - Modèle : $MODEL"
+echo " - Backend YOLO : $YOLO_BACKEND ($YOLO_DEVICE)"
+echo " - Segmentation : $SEG"
+
+./run_people_counter_rtx.sh 4k "$MODEL" "$CONF" 1 0 15 1 "$SEG"

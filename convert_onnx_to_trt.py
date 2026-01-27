@@ -53,9 +53,9 @@ def build_engine(onnx_path, engine_path, max_batch_size=1):
                 if new_dims[i] <= 0: # If dynamic, provide a default
                     if i == 1: new_dims[i] = 3
                     elif i == 2: 
-                        new_dims[i] = 1080 if is_density else 640
+                        new_dims[i] = 544 if is_density else 640
                     elif i == 3: 
-                        new_dims[i] = 1920 if is_density else 640
+                        new_dims[i] = 960 if is_density else 640
                     else: 
                         new_dims[i] = 640
             return new_dims
@@ -82,8 +82,8 @@ def build_engine(onnx_path, engine_path, max_batch_size=1):
 
 if __name__ == "__main__":
     # Usage: python convert_onnx_to_trt.py model.onnx model.engine [max_batch]
-    onnx = sys.argv[1] if len(sys.argv) > 1 else 'yolo12x.onnx'
-    engine = sys.argv[2] if len(sys.argv) > 2 else 'yolo12x.engine'
+    onnx = sys.argv[1] if len(sys.argv) > 1 else 'yolo26x.onnx'
+    engine = sys.argv[2] if len(sys.argv) > 2 else 'yolo26x.engine'
     batch = int(sys.argv[3]) if len(sys.argv) > 3 else 1
     
     if os.path.exists(onnx):

@@ -40,9 +40,11 @@ def export_dmcount_qnrf():
     model.eval()
 
     # DUMMY INPUT with Batch support (B, C, H, W)
-    dummy_input = torch.randn(1, 3, 1080, 1920)
+    # On utilise 544x960 car 544 est un multiple de 16 (requis par SFANet et plus stable pour VGG)
+    target_h, target_w = 544, 960
+    dummy_input = torch.randn(1, 3, target_h, target_w)
     
-    print(f"Exporting DM-Count QNRF to {onnx_path} (opset 18)...")
+    print(f"Exporting DM-Count QNRF to {onnx_path} (opset 18, resolution {target_h}x{target_w})...")
     torch.onnx.export(
         model,
         dummy_input,
@@ -53,8 +55,8 @@ def export_dmcount_qnrf():
         input_names=['input'],
         output_names=['output'],
         dynamic_axes={
-            'input': {0: 'batch_size', 2: 'height', 3: 'width'},
-            'output': {0: 'batch_size', 2: 'height', 3: 'width'}
+            'input': {0: 'batch_size'},
+            'output': {0: 'batch_size'}
         }
     )
     print(f"Exported {onnx_path} successfully.")

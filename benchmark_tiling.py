@@ -91,7 +91,7 @@ def benchmark_run(resolution, model_name, yolo_tiling, density_tiling, duration=
 
 if __name__ == "__main__":
     results = []
-    target_model = "yolo12s.engine" # Plus rapide pour bench
+    target_model = "yolo26s.engine" # Plus rapide pour bench
     
     # Init Models ONCE outside the loop to avoid resource exhaustion
     print("Initializing models...")

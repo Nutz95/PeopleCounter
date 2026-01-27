@@ -5,6 +5,7 @@ import time
 import csv
 import os
 import threading
+import psutil
 from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,9 +24,12 @@ class ModelThread(threading.Thread):
         self.args = args
         self.kwargs = kwargs
         self.result = None
+        self.duration = 0
     
     def run(self):
+        start = time.time()
         self.result = self.func(*self.args, **self.kwargs)
+        self.duration = time.time() - start
 
 # Période de moyennage en secondes
 AVERAGING_PERIOD_SECONDS = 2  # Réduit à 2s pour un graphe plus réactif
@@ -42,15 +46,22 @@ class CameraAppPipeline:
         broker_port = int(os.environ.get('MQTT_PORT', '1883'))
         mqtt_exposure = int(os.environ.get('MQTT_EXPOSURE', '500'))
         yolo_conf = float(os.environ.get('YOLO_CONF', '0.65'))
+        self.yolo_conf = yolo_conf
         self.density_threshold = int(os.environ.get('DENSITY_THRESHOLD', '15'))
         self.denoise_strength = int(os.environ.get('DENOISE_STRENGTH', '0'))
         
         # Nouvelles options de Tiling via variables d'environnement
         # YOLO_TILING=1 pour activer (Pyramide 3 niveaux), actif par défaut pour max précision
         self.yolo_tiling = os.environ.get('YOLO_TILING', '1') == '1'
-        self.yolo_seg = os.environ.get('YOLO_SEG', '0') == '1'
+        # On active la segmentation par défaut si le modèle contient "seg" ou si YOLO_SEG=1
+        yolo_model_env = os.environ.get('YOLO_MODEL', 'yolo26s-seg')
+        self.yolo_seg = (os.environ.get('YOLO_SEG', '0') == '1') or ("-seg" in yolo_model_env.lower())
         # DENSITY_TILING=1 pour activer (divise en 4 quadrants), actif par défaut
         self.density_tiling = os.environ.get('DENSITY_TILING', '1') == '1'
+        
+        # Flag de Debug pour visualiser le tiling
+        self.debug_tiling = (os.environ.get('DEBUG_TILING', '0') == '1')
+        self.extreme_debug = (os.environ.get('EXTREME_DEBUG', '0') == '1')
 
         if cmode.lower() == 'mqtt':
             # Use MQTT-based Maixcam capture
@@ -69,7 +80,8 @@ class CameraAppPipeline:
         lwcc_backend = os.environ.get('LWCC_BACKEND', 'torch').lower()
         openvino_device = os.environ.get('OPENVINO_DEVICE', 'GPU')
         yolo_backend = os.environ.get('YOLO_BACKEND', 'torch').lower()
-        yolo_model = os.environ.get('YOLO_MODEL', 'yolo11n')
+        # On passe yolo26s-seg par défaut comme demandé par l'utilisateur
+        yolo_model = os.environ.get('YOLO_MODEL', 'yolo26s-seg')
 
         if yolo_backend in ('openvino', 'openvino_native'):
             ov_dir = os.environ.get('YOLO_OPENVINO_DIR')
@@ -112,7 +124,7 @@ class CameraAppPipeline:
         if self.yolo_seg:
             self.yolo_counter = YoloSegPeopleCounter(
                 model_path=yolo_model,
-                confidence_threshold=yolo_conf,
+                confidence_threshold=self.yolo_conf,
                 backend=yolo_backend,
                 device=yolo_device
             )
@@ -120,7 +132,7 @@ class CameraAppPipeline:
             self.yolo_counter = YoloPeopleCounter(
                 model_name=yolo_model,
                 device=yolo_device,
-                confidence_threshold=yolo_conf, 
+                confidence_threshold=self.yolo_conf, 
                 backend=yolo_backend
             )
         screen = screeninfo.get_monitors()[0]
@@ -251,11 +263,13 @@ class CameraAppPipeline:
                         frame, 
                         tile_size=640, 
                         draw_boxes=True, 
-                        use_tiling=self.yolo_tiling
+                        use_tiling=self.yolo_tiling,
+                        draw_tiles=self.debug_tiling
                     )
 
                     # 2. DENSITY INFERENCE (Tiling 2x2 Batché)
                     t_loop_start = time.time()
+                    self.density_quads_coords = []
                     if self.density_tiling:
                         # On prépare les quadrants
                         h, w = frame.shape[:2]
@@ -266,131 +280,162 @@ class CameraAppPipeline:
                             frame[mid_h:h, 0:mid_w],
                             frame[mid_h:h, mid_w:w]
                         ]
+                        self.density_quads_coords = [
+                            (0, 0, mid_w, mid_h),
+                            (mid_w, 0, w, mid_h),
+                            (0, mid_h, mid_w, h),
+                            (mid_w, mid_h, w, h)
+                        ]
                         thr_density = ModelThread(self.processor.process_batch, quads)
                     else:
                         # Mode standard (Inférence globale redimensionnée)
                         thr_density = ModelThread(self.processor.process, frame)
                     
                     # On lance les deux threads
-                    t_yolo_start = time.time()
-                    t_density_start = time.time()
+                    t_cycle_start = time.time()
                     thr_yolo.start()
                     thr_density.start()
                     
                     # Attente YOLO
                     thr_yolo.join()
-                    yolo_time = time.time() - t_yolo_start
-                    yolo_count, frame_with_bbox = thr_yolo.result
+                    if thr_yolo.result is not None:
+                        yolo_count, frame_with_bbox = thr_yolo.result
+                    else:
+                        print("[ERROR] YOLO thread returned None.")
+                        yolo_count, frame_with_bbox = 0, frame.copy()
                     
                     # Attente Density
                     thr_density.join()
-                    density_time = time.time() - t_density_start
+
+                    # Debug Tiling Densité (Magenta)
+                    if self.debug_tiling and self.density_tiling and hasattr(self, 'density_quads_coords'):
+                        for x1, y1, x2, y2 in self.density_quads_coords:
+                            cv2.rectangle(frame_with_bbox, (x1, y1), (x2, y2), (255, 0, 255), 2)
                     
-                    import psutil
+                    # Récupération des temps d'exécution réels de chaque moteur via le Thread
+                    yolo_time = thr_yolo.duration
+                    density_time = thr_density.duration
+                    
+                    # Récupération des devices utilisés
+                    yolo_dev = getattr(self.yolo_counter, 'last_device', 'GPU')
+                    dens_dev = getattr(self.processor, 'last_device', 'NPU')
+                    
                     cpu_usage = psutil.cpu_percent()
                     
-                    if self.density_tiling:
+                    # --- OPTIMISATION RENDU : Travail en 1080p pour libérer le CPU ---
+                    # Faire du 4K bitwise/dilate/contours tue les perfs, on passe en 1080p pour l'affichage
+                    h_4k, w_4k = frame_with_bbox.shape[:2]
+                    render_h, render_w = 1080, 1920
+                    if h_4k < render_h: render_h, render_w = h_4k, w_4k
+                    
+                    frame_render = cv2.resize(frame_with_bbox, (render_w, render_h))
+                    density_raw_small = np.zeros((render_h, render_w, 3), dtype=np.uint8)
+                    density_mask_small = np.zeros((render_h, render_w), dtype=np.uint8)
+                    mid_h, mid_w = render_h // 2, render_w // 2
+
+                    if self.density_tiling and thr_density.result is not None:
                         _, quad_res_color, quad_res_counts, quad_res_masks = thr_density.result
-                        density_count = sum(quad_res_counts)
+                        # On utilise sum sur les flottants pour éviter la troncature
+                        density_count = sum(float(c) for c in quad_res_counts)
                         
-                        # Stitching 4K
-                        h_4k, w_4k = frame_with_bbox.shape[:2]
-                        mid_h, mid_w = h_4k // 2, w_4k // 2
+                        # Stitching direct en 1080p
+                        density_raw_small[0:mid_h, 0:mid_w] = cv2.resize(quad_res_color[0], (mid_w, mid_h))
+                        density_raw_small[0:mid_h, mid_w:render_w] = cv2.resize(quad_res_color[1], (render_w-mid_w, mid_h))
+                        density_raw_small[mid_h:render_h, 0:mid_w] = cv2.resize(quad_res_color[2], (mid_w, render_h-mid_h))
+                        density_raw_small[mid_h:render_h, mid_w:render_w] = cv2.resize(quad_res_color[3], (render_w-mid_w, render_h-mid_h))
                         
-                        density_raw = np.zeros((h_4k, w_4k, 3), dtype=np.uint8)
-                        density_mask = np.zeros((h_4k, w_4k), dtype=np.uint8)
-                        
-                        # Placement explicite pour éviter les erreurs de décalage
-                        density_raw[0:mid_h, 0:mid_w] = cv2.resize(quad_res_color[0], (mid_w, mid_h))
-                        density_raw[0:mid_h, mid_w:w_4k] = cv2.resize(quad_res_color[1], (w_4k-mid_w, mid_h))
-                        density_raw[mid_h:h_4k, 0:mid_w] = cv2.resize(quad_res_color[2], (mid_w, h_4k-mid_h))
-                        density_raw[mid_h:h_4k, mid_w:w_4k] = cv2.resize(quad_res_color[3], (w_4k-mid_w, h_4k-mid_h))
-                        
-                        density_mask[0:mid_h, 0:mid_w] = cv2.resize(quad_res_masks[0], (mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
-                        density_mask[0:mid_h, mid_w:w_4k] = cv2.resize(quad_res_masks[1], (w_4k-mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
-                        density_mask[mid_h:h_4k, 0:mid_w] = cv2.resize(quad_res_masks[2], (mid_w, h_4k-mid_h), interpolation=cv2.INTER_NEAREST)
-                        density_mask[mid_h:h_4k, mid_w:w_4k] = cv2.resize(quad_res_masks[3], (w_4k-mid_w, h_4k-mid_h), interpolation=cv2.INTER_NEAREST)
+                        density_mask_small[0:mid_h, 0:mid_w] = cv2.resize(quad_res_masks[0], (mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
+                        density_mask_small[0:mid_h, mid_w:render_w] = cv2.resize(quad_res_masks[1], (render_w-mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
+                        density_mask_small[mid_h:render_h, 0:mid_w] = cv2.resize(quad_res_masks[2], (mid_w, render_h-mid_h), interpolation=cv2.INTER_NEAREST)
+                        density_mask_small[mid_h:render_h, mid_w:render_w] = cv2.resize(quad_res_masks[3], (render_w-mid_w, render_h-mid_h), interpolation=cv2.INTER_NEAREST)
                     else:
-                        _, density_raw, density_count, density_mask = thr_density.result
-                        # Resize à la taille de la frame YOLO
-                        target_w, target_h = frame_with_bbox.shape[1], frame_with_bbox.shape[0]
-                        density_raw = cv2.resize(density_raw, (target_w, target_h))
-                        density_mask = cv2.resize(density_mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+                        res = thr_density.result
+                        if res is not None:
+                            _, dens_raw, density_count, dens_mask = res
+                            density_raw_small = cv2.resize(dens_raw, (render_w, render_h))
+                            density_mask_small = cv2.resize(dens_mask, (render_w, render_h), interpolation=cv2.INTER_NEAREST)
+                        else:
+                            density_count = 0
                     
-                    t_loop_end = time.time()
-                    total_process_time = t_loop_end - t_loop_start
+                    # Affichage des métriques d'instrumentation si extreme_debug est actif
+                    if self.extreme_debug:
+                        yp = getattr(self.yolo_counter.engine, 'last_perf', {}) if hasattr(self.yolo_counter, 'engine') else {}
+                        dp = getattr(self.processor, 'last_perf', {})
+                        capture_time = getattr(self.capture, 'last_capture_time', 0.0)
+                        
+                        print(f"[DEBUG] PERF BREAKDOWN (ms):")
+                        print(f"  Capture: {capture_time*1000:.1f}ms")
+                        print(f"  YOLO {self.yolo_counter.model_name}: Pre={yp.get('preprocess',0)*1000:.1f} | GPU={yp.get('infer',0)*1000:.1f} | Post={yp.get('postprocess',0)*1000:.1f}")
+                        print(f"  DENS {self.processor.model_name}: Pre={dp.get('preprocess',0)*1000:.1f} | GPU={dp.get('infer',0)*1000:.1f} | Post={dp.get('postprocess',0)*1000:.1f}")
+
+                    total_process_time = time.time() - t_loop_start
                     
-                    # Logique d'affichage console améliorée
-                    print(f"Metrics: YOLO={yolo_count} ({yolo_time:.3f}s) | Density={density_count:.1f} ({density_time:.3f}s) | CPU: {cpu_usage}% | Total: {total_process_time:.3f}s | FPS: {1.0/total_process_time:.2f}")
+                    # Superposition Heatmap optimisée (en 1080p)
+                    mask_3ch = cv2.cvtColor(density_mask_small, cv2.COLOR_GRAY2BGR)
+                    heatmap_on_black = cv2.bitwise_and(density_raw_small, mask_3ch)
+                    overlay2 = cv2.addWeighted(frame_render, 1.0, heatmap_on_black, 0.6, 0)
                     
-                    # Superpose la carte de densité sur l'image avec bbox
-                    # On utilise le masque pour n'ajouter de la couleur QUE sur les zones denses
-                    # Cela évite le fond bleu/voile sur toute l'image
-                    mask_3ch = cv2.cvtColor(density_mask, cv2.COLOR_GRAY2BGR)
-                    heatmap_on_black = cv2.bitwise_and(density_raw, mask_3ch)
-                    overlay2 = cv2.addWeighted(frame_with_bbox, 1.0, heatmap_on_black, 0.6, 0)
-                    
-                    # --- DESSIN DES CERCLES ROUGES OPAQUES ---
-                    # Dilater le masque pour regrouper les petits points de densité en blocs
-                    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))
-                    density_mask_dilated = cv2.dilate(density_mask, kernel_dilate, iterations=1)
+                    # --- RENDU DES "OREILLES ROUGES" (HOTSPOTS) ---
+                    # On détecte les pics de densité pour alerter l'utilisateur
+                    # Utilisation d'un noyau plus petit (5x5) pour être plus précis et moins "nonsense"
+                    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                    density_mask_dilated = cv2.dilate(density_mask_small, kernel_dilate, iterations=1)
                     
                     contours, _ = cv2.findContours(density_mask_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     for cnt in contours:
-                        if cv2.contourArea(cnt) > 200: 
+                        # Uniquement les hotspots significatifs
+                        if cv2.contourArea(cnt) > 30: 
                             (x, y), radius = cv2.minEnclosingCircle(cnt)
-                            cv2.circle(overlay2, (int(x), int(y)), int(radius) + 10, (0, 0, 255), 3)
+                            # Dessine des petits cercles rouges discrets
+                            cv2.circle(overlay2, (int(x), int(y)), int(radius) + 2, (0, 0, 255), 1)
 
-                    # Affiche les deux compteurs en haut
-                    cv2.putText(overlay2, f'Density Count: {density_count:.2f}', (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,0,255), 3)
+                    # Affiche les compteurs avec un style plus propre
+                    cv2.putText(overlay2, f'Density Count: {density_count:.1f}', (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0,0,255), 2)
                     yolo_label = self.yolo_counter.model_name
-                    cv2.putText(overlay2, f'{yolo_label} People: {yolo_count}', (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,0), 3)
-                    # Affiche la dernière valeur moyenne sous le compteur YOLO
+                    cv2.putText(overlay2, f'YOLO ({yolo_label}): {int(yolo_count)}', (20, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0,255,0), 2)
+                    
                     if log_data:
                         last_avg = log_data[-1][3]
-                        cv2.putText(overlay2, f'Average ({AVERAGING_PERIOD_SECONDS}s): {last_avg:.2f}', (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,255), 3)
+                        cv2.putText(overlay2, f'Avg ({AVERAGING_PERIOD_SECONDS}s): {last_avg:.1f}', (20, 145), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0,255,255), 2)
 
-                    # --- RÉCUPÉRATION DE LA TAILLE ACTUELLE DE LA FENÊTRE ---
-                    # Cela permet à l'image de s'adapter si l'utilisateur redimensionne ou maximise la fenêtre
+                    # --- GESTION DE LA FENÊTRE D'AFFICHAGE ---
                     try:
                         win_rect = cv2.getWindowImageRect("People Count")
-                        if win_rect:
-                            _, _, win_w, win_h = win_rect
-                        else:
-                            win_w, win_h = 1280, 720
-                        if win_w <= 0 or win_h <= 0:
-                            win_w, win_h = 1280, 720
+                        win_w, win_h = (win_rect[2], win_rect[3]) if win_rect and win_rect[2] > 0 else (1280, 720)
                     except Exception:
                         win_w, win_h = 1280, 720
 
-                    h_orig, w_orig = overlay2.shape[:2]
-                    # On calcule le ratio pour garder l'aspect
-                    scale_w = win_w / w_orig
-                    scale_h = win_h / h_orig
-                    scale = min(scale_w, scale_h)
+                    h_curr, w_curr = overlay2.shape[:2]
+                    scale = min(win_w / w_curr, win_h / h_curr)
+                    target_w, target_h = int(w_curr * scale), int(h_curr * scale)
                     
-                    target_w = int(w_orig * scale)
-                    target_h = int(h_orig * scale)
-                    
-                    # On crée un fond noir à la taille de la fenêtre pour éviter les traînées
                     preview_frame = np.zeros((win_h, win_w, 3), dtype=np.uint8)
-                    
-                    # On centre l'image redimensionnée dans la fenêtre
                     resized = cv2.resize(overlay2, (target_w, target_h))
-                    y_offset = (win_h - target_h) // 2
-                    x_offset = (win_w - target_w) // 2
-                    preview_frame[y_offset:y_offset+target_h, x_offset:x_offset+target_w] = resized
+                    y_off, x_off = (win_h - target_h) // 2, (win_w - target_w) // 2
+                    preview_frame[y_off:y_off+target_h, x_off:x_off+target_w] = resized
                     
-                    # On dessine le graphique sur l'image redimensionnée et centrée
                     self._draw_mini_graph(preview_frame)
                     
-                    # Affiche le FPS en haut à droite
                     total_time = time.time() - start_time
                     fps = 1.0 / total_time if total_time > 0 else 0
+                    
+                    # Console logs plus détaillés avec devices
+                    print(f"Metrics: YOLO={yolo_count} ({yolo_time:.3f}s on {yolo_dev}) | "
+                        f"Density={density_count:.1f} ({density_time:.3f}s on {dens_dev}) | "
+                        f"CPU: {cpu_usage}% | Total: {total_time:.3f}s | FPS: {fps:.2f}")
+
                     cv2.putText(preview_frame, f'FPS: {fps:.2f}', (win_w - 150, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                     
+                    # Petit texte en bas pour indiquer les devices
+                    cv2.putText(preview_frame, f'YOLO: {yolo_dev}', (20, win_h - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    cv2.putText(preview_frame, f'DENS: {dens_dev}', (20, win_h - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                    
                     cv2.imshow("People Count", preview_frame)
-                    print(f"Parallel Inference: YOLO={yolo_count}, Density={density_count:.2f} | Time: {total_process_time:.3f}s | FPS: {fps:.2f}")
+                    
+                    # Console logs propres
+                    capture_time = getattr(self.capture, 'last_capture_time', 0.0)
+                    print(f"Metrics: YOLO={yolo_count} ({yolo_time:.3f}s) | Density={density_count:.1f} ({density_time:.3f}s) | "
+                          f"Capture={capture_time:.3f}s | CPU: {cpu_usage}% | Total: {total_process_time:.3f}s | FPS: {fps:.2f}")
                     
                     # Update mini-graph history at every frame for live feedback (YOLO, Density, Average)
                     avg_instant = (yolo_count + density_count) / 2.0

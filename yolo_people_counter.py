@@ -2,9 +2,10 @@ from ultralytics import YOLO
 import numpy as np
 import cv2
 import os
+from tiling_manager import TilingManager
 
 class YoloPeopleCounter:
-    def __init__(self, model_name='yolov26n', device='cpu', confidence_threshold=0.3, backend='torch'):
+    def __init__(self, model_name='yolov26n', device='cpu', confidence_threshold=0.3, backend='torch', tile_size=640, overlap=0.15):
         """
         model_name: 'yolov8n', 'yolov8s', 'yolov8m', 'yolov8l', 'yolov8x', 'yolo11n', etc.
         device: 'cpu' or 'cuda'
@@ -14,6 +15,10 @@ class YoloPeopleCounter:
         self.device = device
         self.person_class_id = 0  # COCO: 0 = person
         self.confidence_threshold = confidence_threshold
+        self.tile_size = tile_size
+        self.overlap = overlap
+        self.tiler = TilingManager(tile_size=tile_size) # On ne passe plus overlap au constructeur si TilingManager calcule tout seul
+        
         self.model = None
         self.ov_compiled_model = None
         self.ov_input = None
@@ -152,12 +157,9 @@ class YoloPeopleCounter:
             if self.backend != 'openvino':
                 self.model.to(device)
 
-    def count_people(self, image, tile_size=640, draw_boxes=True, use_tiling=True):
+    def count_people(self, image, tile_size=640, draw_boxes=True, use_tiling=True, draw_tiles=False):
         """
-        Détection de personnes avec pipeline hiérarchique :
-        1. Passe Globale (image entière redimensionnée)
-        2. Passe Quadrants (si 4K)
-        3. Passe Tuiles (Sliding window 640x640)
+        Détection de personnes avec pipeline grille dense optimisée.
         """
         # Conversion RGB pour la cohérence des modèles YOLO
         image_rgb = image[..., ::-1].copy()
@@ -166,7 +168,7 @@ class YoloPeopleCounter:
             # Inference sur image entière redimensionnée (beaucoup plus rapide)
             if self.backend == 'openvino_native':
                 boxes, scores = self._ov_native_infer(image_rgb)
-                keep = self._nms(boxes, scores, iou_threshold=0.25, inclusion_threshold=0.45)
+                keep = self.tiler.fuse_results(boxes, scores, iou_threshold=0.25)
                 total_count = len(keep)
                 image_out = image.copy() if draw_boxes else None
                 if draw_boxes:
@@ -175,7 +177,7 @@ class YoloPeopleCounter:
                         cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
             elif self.backend == 'tensorrt_native':
                 boxes, scores = self._trt_native_infer(image_rgb)
-                keep = self._nms(boxes, scores, iou_threshold=0.25, inclusion_threshold=0.45)
+                keep = self.tiler.fuse_results(boxes, scores, iou_threshold=0.25)
                 total_count = len(keep)
                 image_out = image.copy() if draw_boxes else None
                 if draw_boxes:
@@ -200,43 +202,18 @@ class YoloPeopleCounter:
                 return int(total_count), image_out
             return int(total_count)
 
-        # Si use_tiling=True, on combine une pyramide de détection Hiérarchique
-        h, w = image_rgb.shape[:2]
+        # Utilisation du TilingManager pour une grille dense (ex: 7x4 pour 4K)
+        tiles_coords = self.tiler.get_tiles(image_rgb.shape)
+        
+        tiles_to_infer = []
+        tile_metadata = [] # (x, y, sw, sh)
+        for x1, y1, x2, y2 in tiles_coords:
+            tw, th = x2 - x1, y2 - y1
+            tiles_to_infer.append(image_rgb[y1:y2, x1:x2])
+            tile_metadata.append((x1, y1, tw/self.tile_size, th/self.tile_size))
+
         all_boxes_list = []
         all_scores_list = []
-
-        # --- ÉTAPE 1 : COLLECTE DE TOUTES LES TUILES ---
-        tiles_to_infer = []
-        tile_metadata = [] # (x0, y0, scale_w, scale_h)
-
-        # 1.1 Passe Globale
-        tiles_to_infer.append(image_rgb)
-        tile_metadata.append((0, 0, 1.0, 1.0))
-
-        # 1.2 Passe Quadrants
-        quad_h, quad_w = h // 2, w // 2
-        for i in range(2):
-            for j in range(2):
-                y0, x0 = i * quad_h, j * quad_w
-                quad = image_rgb[y0:y0+quad_h, x0:x0+quad_w]
-                tiles_to_infer.append(quad)
-                tile_metadata.append((x0, y0, quad_w/tile_size, quad_h/tile_size))
-
-        # 1.3 Passe Tuiles (Sliding Window)
-        overlap_ratio = 0.2
-        step = int(tile_size * (1 - overlap_ratio))
-        y_coords = list(range(0, max(1, h - tile_size + step), step))
-        if y_coords[-1] + tile_size < h: y_coords.append(h - tile_size)
-        x_coords = list(range(0, max(1, w - tile_size + step), step))
-        if x_coords[-1] + tile_size < w: x_coords.append(w - tile_size)
-
-        for y0 in y_coords:
-            for x0 in x_coords:
-                tile = image_rgb[y0:y0+tile_size, x0:x0+tile_size]
-                if tile.shape[0] < tile_size or tile.shape[1] < tile_size:
-                    tile = cv2.copyMakeBorder(tile, 0, tile_size-tile.shape[0], 0, tile_size-tile.shape[1], cv2.BORDER_CONSTANT, value=0)
-                tiles_to_infer.append(tile)
-                tile_metadata.append((x0, y0, 1.0, 1.0))
 
         # --- ÉTAPE 2 : INFÉRENCE BATCHÉE ---
         if self.backend == 'tensorrt_native':
@@ -244,29 +221,27 @@ class YoloPeopleCounter:
             for i, (boxes, scores) in enumerate(zip(batch_boxes, batch_scores)):
                 if boxes.size > 0:
                     x0, y0, sw, sh = tile_metadata[i]
-                    # On rescale les boxes si nécessaire (pour les quadrants)
                     if sw != 1.0 or sh != 1.0:
                         boxes[:, [0, 2]] *= sw
                         boxes[:, [1, 3]] *= sh
-                    # On ajoute l'offset
                     boxes[:, [0, 2]] += x0
                     boxes[:, [1, 3]] += y0
                     all_boxes_list.append(boxes)
                     all_scores_list.append(scores)
         else:
-            # Fallback séquentiel pour OpenVINO/Torch (non encore batché ici)
+            # OpenVINO / Torch
             for i, tile in enumerate(tiles_to_infer):
                 if self.backend == 'openvino_native':
                     boxes, scores = self._ov_native_infer(tile)
                 else:
-                    results = self.model.predict(tile, verbose=False, imgsz=tile_size)
+                    results = self.model.predict(tile, verbose=False, imgsz=self.tile_size)
                     mask = (results[0].boxes.cls.cpu().numpy() == self.person_class_id) & (results[0].boxes.conf.cpu().numpy() >= self.confidence_threshold)
                     boxes = results[0].boxes.xyxy[mask].cpu().numpy()
                     scores = results[0].boxes.conf[mask].cpu().numpy()
                 
                 if boxes.size > 0:
                     x0, y0, sw, sh = tile_metadata[i]
-                    if self.backend == 'openvino_native' and (sw != 1.0 or sh != 1.0):
+                    if sw != 1.0 or sh != 1.0:
                         boxes[:, [0, 2]] *= sw
                         boxes[:, [1, 3]] *= sh
                     boxes[:, [0, 2]] += x0
@@ -275,23 +250,29 @@ class YoloPeopleCounter:
                     all_scores_list.append(scores)
 
         if not all_boxes_list:
-            return (0, image.copy()) if draw_boxes else 0
+            final_img = image.copy()
+            if draw_tiles:
+                for t1, t1y, t2, t2y in tiles_coords:
+                    cv2.rectangle(final_img, (t1, t1y), (t2, t2y), (255, 0, 0), 2)
+            return (0, final_img) if draw_boxes else 0
 
-        # Concaténation et NMS Hiérarchique
+        # Concaténation et NMS via TilingManager
         all_boxes = np.concatenate(all_boxes_list, axis=0)
         all_scores = np.concatenate(all_scores_list, axis=0)
-        keep = self._nms(all_boxes, all_scores, iou_threshold=0.25, inclusion_threshold=0.45)
+        
+        keep = self.tiler.fuse_results(all_boxes, all_scores, iou_threshold=0.3)
         
         total_count = len(keep)
         image_out = image.copy() if draw_boxes else None
         if draw_boxes:
+            # Debug Tiling YOLO (Bleu)
+            if draw_tiles:
+                for x1, y1, x2, y2 in tiles_coords:
+                    cv2.rectangle(image_out, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
             for i in keep:
                 x1, y1, x2, y2 = all_boxes[i].astype(int)
                 cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        
-        if draw_boxes:
-            return int(total_count), image_out
-        return int(total_count)
         
         return (int(total_count), image_out) if draw_boxes else int(total_count)
 
@@ -469,55 +450,3 @@ class YoloPeopleCounter:
                         all_scores.append(np.array([]))
 
         return all_boxes, all_scores
-
-    @staticmethod
-    def _nms(boxes, scores, iou_threshold=0.3, inclusion_threshold=0.5):
-        """
-        NMS Hiérarchique optimisé pour le Multi-Scale.
-        Utilise une pondération par la surface pour privilégier les détections 
-        'globales' (le tout) sur les détections de 'tuiles' (les parties), 
-        tout en préservant les petits objets isolés (chevaliers au fond).
-        """
-        if boxes.size == 0:
-            return []
-            
-        x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-        areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-        
-        # HEURISTIQUE CLÉ : On trie par (Score * sqrt(Area))
-        # Cela permet à une détection globale du corps (grande surface) de 'gagner' 
-        # sur une détection locale d'une partie du corps (petite surface)
-        # même si le score local est légèrement meilleur.
-        importance = scores * np.sqrt(areas)
-        order = importance.argsort()[::-1]
-        
-        keep = []
-        
-        while order.size > 0:
-            i = order[0]
-            keep.append(i)
-            
-            xx1 = np.maximum(x1[i], x1[order[1:]])
-            yy1 = np.maximum(y1[i], y1[order[1:]])
-            xx2 = np.minimum(x2[i], x2[order[1:]])
-            yy2 = np.minimum(y2[i], y2[order[1:]])
-            
-            w = np.maximum(0.0, xx2 - xx1 + 1)
-            h = np.maximum(0.0, yy2 - yy1 + 1)
-            inter = w * h
-            
-            # IoU classique
-            union = areas[i] + areas[order[1:]] - inter
-            iou = inter / (union + 1e-6)
-            
-            # Ratio d'Inclusion (inter / min_area)
-            min_area = np.minimum(areas[i], areas[order[1:]])
-            io_min = inter / (min_area + 1e-6)
-            
-            # Suppression si l'un des deux critères est rempli
-            mask = (iou > iou_threshold) | (io_min > inclusion_threshold)
-            
-            inds = np.where(~mask)[0]
-            order = order[inds + 1]
-            
-        return keep

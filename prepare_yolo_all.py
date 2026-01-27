@@ -6,10 +6,9 @@ import shutil
 import subprocess
 
 def main():
-    # Gamme complète des modèles segmentations et détection
+    # Gamme complète des modèles segmentations et détection (YOLO11 et YOLO26)
     models = [
         "yolo11n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt", "yolo11l-seg.pt", "yolo11x-seg.pt",
-        "yolo12n.pt", "yolo12s.pt", "yolo12m.pt", "yolo12l.pt", "yolo12x.pt",
         "yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt", "yolo26x.pt",
         "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt", "yolo26l-seg.pt", "yolo26x-seg.pt"
     ]
@@ -48,28 +47,38 @@ def main():
         # Export ONNX (Idempotent)
         if not os.path.exists(onnx_path):
             print(f"Exporting {m_name} to ONNX (opset 18)...")
-            model.export(format="onnx", dynamic=True, opset=18, device='cpu')
+            model.export(format="onnx", dynamic=True, opset=18)
             
-            # Ultralytics exports to same folder as .pt (pt_dir) or current dir
-            src_onnx = pt_path.replace(".pt", ".onnx")
-            if os.path.exists(src_onnx):
-                shutil.move(src_onnx, onnx_path)
+            # Ultralytics exports to same folder as .pt or current dir
+            src_onnx_local = m_name.replace(".pt", ".onnx")
+            src_onnx_pt = pt_path.replace(".pt", ".onnx")
             
-            # Move .data file if it exists (for large models)
-            src_data = src_onnx + ".data"
-            if os.path.exists(src_data):
-                shutil.move(src_data, onnx_path + ".data")
+            if os.path.exists(src_onnx_local):
+                shutil.move(src_onnx_local, onnx_path)
+            elif os.path.exists(src_onnx_pt):
+                shutil.move(src_onnx_pt, onnx_path)
+            
+            # Move .data file if it exists
+            for src_onnx in [src_onnx_local, src_onnx_pt]:
+                src_data = src_onnx + ".data"
+                if os.path.exists(src_data):
+                    shutil.move(src_data, onnx_path + ".data")
         else:
             print(f"ONNX already exists: {onnx_path}")
 
         # Export OpenVINO (Idempotent)
         if not os.path.exists(ov_subdir_dst):
             print(f"Exporting {m_name} to OpenVINO...")
-            model.export(format="openvino", device='cpu')
+            model.export(format="openvino")
             
-            # It usually creates it in the same folder as the model (pt_dir)
-            ov_source = pt_path.replace(".pt", "_openvino_model")
-            if os.path.exists(ov_source):
+            ov_source_local = m_name.replace(".pt", "_openvino_model")
+            ov_source_pt = pt_path.replace(".pt", "_openvino_model")
+            
+            ov_source = None
+            if os.path.exists(ov_source_local): ov_source = ov_source_local
+            elif os.path.exists(ov_source_pt): ov_source = ov_source_pt
+
+            if ov_source:
                 if os.path.exists(ov_subdir_dst):
                     shutil.rmtree(ov_subdir_dst)
                 shutil.move(ov_source, ov_subdir_dst)

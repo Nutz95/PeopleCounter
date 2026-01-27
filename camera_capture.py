@@ -1,10 +1,12 @@
 import cv2
+import time
 
 class CameraCapture:
     def __init__(self, camera_index=0, width=3840, height=2160, auto_exposure=1, gain = 1, brightness = 1, zoom = 1, contrast = 100, saturation = 100):
         self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.last_capture_time = 0
 
         # Enable autofocus
         try:
@@ -38,7 +40,11 @@ class CameraCapture:
     def get_frame(self):
         if not self.is_opened:
             return None
+        
+        t_start = time.time()
         ret, frame = self.cap.read()
+        self.last_capture_time = time.time() - t_start
+        
         if not ret:
             return None
         return frame

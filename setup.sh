@@ -85,9 +85,9 @@ echo "Activating virtualenv and installing requirements..."
 echo "To save your environment packages run:"
 echo "  $PY -m pip freeze > requirements.txt"
 
-# 4) Download and prepare YOLO models (11, 12 and 11-seg)
-echo "Preparing YOLO segmentation models..."
-MODELS_DIR="$MODELS_DIR" PT_DIR="$PT_DIR" ONNX_DIR="$ONNX_DIR" TRT_DIR="$TRT_DIR" OV_DIR="$OV_DIR" "$PY" prepare_yolo11_seg.py
+# 4) Download and prepare YOLO models (11, 12, 26 and -seg variants)
+echo "Preparing YOLO models (Download + ONNX + OpenVINO + TensorRT)..."
+MODELS_DIR="$MODELS_DIR" PT_DIR="$PT_DIR" ONNX_DIR="$ONNX_DIR" TRT_DIR="$TRT_DIR" OV_DIR="$OV_DIR" "$PY" prepare_yolo_all.py
 
 # Download LWCC weights into ~/.lwcc/weights (used by export_density_to_onnx.py)
 echo "Downloading LWCC pretrained weights..."

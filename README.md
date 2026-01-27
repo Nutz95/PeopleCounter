@@ -78,6 +78,7 @@ Arguments:
 - `CONF`: seuil YOLO (ex: `0.50`)
 - `YOLO_TILING`: `1` active le tiling YOLO, `0` désactive
 - `DENSITY_TILING`: `1` active tiling density (2x2), `0` global
+- `DEBUG_TILING`: `1` affiche les rectangles de tiling (Bleu=YOLO, Magenta=Densité), `0` par défaut
 - `DENSITY_THRESHOLD`: seuil LWCC/density (ex: `15`, plus bas = plus sensible)
 - `DENOISE`: 0 = off, 1-3 = niveaux de denoise (Gaussian blur)
 - `YOLO_SEG`: `1` active le mode segmentation (requiert modèle `-seg`), `0` désactivé
@@ -87,19 +88,19 @@ Exemples (optimisés):
 ### Démo principale (segmentation + tiling)
 
 ```bash
-./run_people_counter_rtx.sh 4k yolo11s-seg.engine 0.5 1 0 50 1 1
+./run_people_counter_rtx.sh 4k yolo26s-seg.engine 0.5 1 0 50 1 1
 ```
 
-### Standard 4K avec détection (YOLOv12)
+### Standard 4K avec détection (YOLOv26)
 
 ```bash
-./run_people_counter_rtx.sh 4k yolo12s.engine
+./run_people_counter_rtx.sh 4k yolo26s.engine
 ```
 
 ### 4K avec réduction de bruit (niveau 1)
 
 ```bash
-./run_people_counter_rtx.sh 4k yolo12m.engine 0.70 1 1 15 1
+./run_people_counter_rtx.sh 4k yolo26m.engine 0.70 1 1 15 1
 ```
 
 Paramètres courts:
@@ -108,10 +109,41 @@ Paramètres courts:
 - Modèle: nom du fichier `.engine` / `.onnx` / `.pt`
 - `YOLO_SEG`: active la fusion par segmentation (nécessite un modèle `-seg`)
 
-## Notes
+## Menu de lancement (Interactif)
 
-- `setup.sh` installe les paquets depuis `requirements.txt`.
-- Si vous n'avez pas de GPU compatible TensorRT, utilisez la version PyTorch (`.pt`) ou OpenVINO.
+Pour faciliter le choix, utilisez le lanceur interactif :
+
+```bash
+./launcher.sh
+```
+
+Il propose des préréglages optimisés pour votre matériel (RTX 5060 Ti + Intel Core Ultra).
+
+Aperçu du menu :
+```text
+====================================================
+    PEOPLE COUNTER - LANCEUR MULTI-DEVICE
+====================================================
+Choisissez un profil d'exécution :
+1) [EXTREME] Full RTX (YOLO Seg: RTX (26x) | Densité: RTX)
+2) [HYBRID]  Zéro RTX (YOLO Seg: NPU (26s) | Densité: iGPU Arc)
+3) [TRIPLE]  Triple-Play (YOLO Seg: iGPU Arc (26m) | Densité: RTX)
+4) [CPU]     CPU Only (Tout sur le CPU)
+5) [EXIT]    Quitter
+----------------------------------------------------
+Votre choix [1-5]:
+```
+
+- **EXTREME** : Utilise la puissance brute de la RTX 5060 Ti avec YOLOv26x-seg et TensorRT. Idéal pour une précision maximale en 4K.
+- **HYBRID** : Libère totalement le GPU NVIDIA pour d'autres tâches (streaming/rendu) en utilisant le NPU Intel pour YOLO et l'iGPU pour la densité via OpenVINO.
+- **TRIPLE** : Répartition équilibrée utilisant les trois moteurs de calcul (RTX, iGPU, NPU) pour maximiser le débit d'images.
+
+## Optimisation de la Densité (Batching)
+
+Le processeur de densité (`PeopleCounterProcessor`) a été optimisé pour le tiling 4K :
+- **Batch Processing** : Les tuiles de l'image (tiling 2x2) sont envoyées en une seule passe au GPU via TensorRT ou OpenVINO.
+- **Adaptive Resolution** : Les modèles de densité fonctionnent désormais sur une matrice optimisée (ex: 540p), offrant un gain de performance de x4 sans perte significative de précision pour le comptage de foule.
+- **Multi-Streaming** : Utilisation de `ThreadPoolExecutor` pour le pré-processing parallèle des frames.
 
 ## Exemples multi-backend (env vars)
 
@@ -119,7 +151,7 @@ Paramètres courts:
 
 ```bash
 export YOLO_BACKEND=tensorrt_native
-export YOLO_MODEL=yolo11s-seg.engine
+export YOLO_MODEL=yolo26s-seg.engine
 ./run_people_counter_rtx.sh 4k $YOLO_MODEL 0.5 1 0 50 1 1
 ```
 
@@ -128,16 +160,16 @@ export YOLO_MODEL=yolo11s-seg.engine
 ```bash
 # Note: YOLO_MODEL doit correspondre au nom du dossier dans models/openvino/
 export YOLO_BACKEND=openvino_native
-export YOLO_OPENVINO_DIR=models/openvino/yolo12s_openvino_model
-./run_people_counter_rtx.sh 4k yolo12s 0.5 1 0 50 1 0
+export YOLO_OPENVINO_DIR=models/openvino/yolo26s_seg_openvino_model
+./run_people_counter_rtx.sh 4k yolo26s-seg 0.5 1 0 50 1 1
 ```
 
 **CPU (PyTorch / Ultralytics) :**
 
 ```bash
 export YOLO_BACKEND=torch
-export YOLO_MODEL=yolo11s.pt
-./run_people_counter_rtx.sh 4k yolo11s.pt 0.5 1 0 50 1 0
+export YOLO_MODEL=yolo26s-seg.pt
+./run_people_counter_rtx.sh 4k yolo26s-seg.pt 0.5 1 0 50 1 1
 ```
 
 ## Configuration Hétérogène (Multi-GPU/NPU)
@@ -158,25 +190,15 @@ L'application permet de répartir la charge de calcul sur les différentes puces
 **1. Mode Full RTX (NVIDIA uniquement) :**
 ```bash
 export YOLO_BACKEND=tensorrt_native && export LWCC_BACKEND=tensorrt
-./run_people_counter_rtx.sh 4k yolo12s.engine
+./run_people_counter_rtx.sh 4k yolo26s-seg.engine
 ```
 
 **2. Mode Hybrid Intel (Zéro charge RTX) :**
 ```bash
 export YOLO_BACKEND=openvino_native && export YOLO_DEVICE=NPU
 export LWCC_BACKEND=openvino && export OPENVINO_DEVICE=GPU
-./run_people_counter_rtx.sh 4k yolo12s
+./run_people_counter_rtx.sh 4k yolo26s-seg
 ```
-
-## Menu de lancement (Interactif)
-
-Pour faciliter le choix, utilisez le lanceur interactif :
-
-```bash
-./launcher.sh
-```
-
-Il propose des préréglages optimisés pour votre matériel (RTX 5060 + Intel Core Ultra).
 
 ## Support
 

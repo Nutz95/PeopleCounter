@@ -58,11 +58,11 @@ tensorrt==10.14.1.48.post1
 tensorrt_cu13==10.14.1.48.post1
 tensorrt_cu13_bindings==10.14.1.48.post1
 tensorrt_cu13_libs==10.14.1.48.post1
-torch==2.10.0+cpu
+torch==2.9.1
 torchaudio==2.10.0+cpu
-torchvision==0.25.0+cpu
+torchvision==0.24.1
 tqdm==4.67.1
 typing_extensions==4.15.0
-ultralytics==8.3.197
-ultralytics-thop==2.0.17
+ultralytics==8.4.7
+ultralytics-thop==2.0.18
 urllib3==2.5.0
