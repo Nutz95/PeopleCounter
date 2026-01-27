@@ -31,7 +31,7 @@ class TilingManager:
         
         ny = int(np.ceil(h / ts))
         if ny > 1:
-            if h == 2160: ny = 4
+            if h == 2160: ny = 5 # Augmenté de 4 à 5 pour garantir une couverture totale
             elif h == 1080: ny = 3
 
         tiles_coords = []

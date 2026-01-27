@@ -304,30 +304,28 @@ class PeopleCounterProcessor:
                 orig_frame = frames[idx]
                 
                 # --- FILTRAGE DU BRUIT ---
-                # On élimine le bruit de fond très faible qui pollue le comptage et la heatmap
                 density[density < 0.001] = 0
                 
-                # Normalisation intelligente : on utilise le max seulement s'il est significatif
                 d_max = density.max()
                 if d_max > 0.005:
-                    # On normalise par rapport au max pour avoir une belle heatmap, 
-                    # mais on plafonne pour ne pas saturer le bruit.
                     d_norm = np.clip((density / max(d_max, 0.05)) * 255, 0, 255).astype(np.uint8)
                 else:
                     d_norm = np.zeros(density.shape, dtype=np.uint8)
 
-                d_norm = cv2.resize(d_norm, (orig_frame.shape[1], orig_frame.shape[0]), interpolation=cv2.INTER_LINEAR)
-                d_color = cv2.applyColorMap(d_norm, cv2.COLORMAP_JET)
+                # --- OPTIMISATION : COLORMAP SUR PETITE ÉCHELLE ---
+                # On applique le colormap sur la petite image de densité d'abord
+                d_color_small = cv2.applyColorMap(d_norm, cv2.COLORMAP_JET)
+                _, mask_small = cv2.threshold(d_norm, self.density_threshold, 255, cv2.THRESH_BINARY)
                 
-                # Masque binaire pour isoler les pics de densité
-                _, mask = cv2.threshold(d_norm, self.density_threshold, 255, cv2.THRESH_BINARY)
+                # Masquage sur la petite version
+                mask_3ch_small = cv2.cvtColor(mask_small, cv2.COLOR_GRAY2BGR)
+                d_color_small = cv2.bitwise_and(d_color_small, mask_3ch_small)
+
+                # Resize final vers 4K (plus rapide sur l'image colorée qu'appliquer colormap sur 4K)
+                d_color = cv2.resize(d_color_small, (orig_frame.shape[1], orig_frame.shape[0]), interpolation=cv2.INTER_LINEAR)
+                mask = cv2.resize(mask_small, (orig_frame.shape[1], orig_frame.shape[0]), interpolation=cv2.INTER_NEAREST)
                 
-                # Appliquer le masque à d_color
-                mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-                d_color = cv2.bitwise_and(d_color, mask_3ch)
-                
-                c = float(np.sum(density)) # On re-calcule après filtrage
-                # Seuil de bruit : on ignore les résidus < 0.2
+                c = float(np.sum(density))
                 if c < 0.2: c = 0.0
                 
                 final_colors.append(d_color)

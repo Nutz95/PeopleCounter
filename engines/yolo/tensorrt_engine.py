@@ -4,8 +4,20 @@ import time
 import cv2
 from .base import YoloEngine
 
+# Optional GPU helpers
+try:
+    import cupy as cp
+except Exception:
+    cp = None
+
+try:
+    import torch
+    import torch.nn.functional as F
+except Exception:
+    torch = None
+
 class YoloTensorRTEngine(YoloEngine):
-    def __init__(self, model_path, confidence_threshold=0.25, device='cuda', pool=None):
+    def __init__(self, model_path, confidence_threshold=0.25, device='cuda', pool=None, use_gpu_preproc=False, use_gpu_post=False):
         from cuda.bindings import runtime as cudart
         self.cudart = cudart
         self.confidence_threshold = confidence_threshold
@@ -13,6 +25,8 @@ class YoloTensorRTEngine(YoloEngine):
         self.person_class_id = 0
         self.pool = pool
         self.last_perf = {'preprocess': 0, 'h2d': 0, 'infer': 0, 'd2h': 0, 'postprocess': 0}
+        self.use_gpu_preproc = use_gpu_preproc and (torch is not None or cp is not None)
+        self.use_gpu_post = use_gpu_post and (cp is not None or torch is not None)
 
         logger = trt.Logger(trt.Logger.WARNING)
         with open(model_path, 'rb') as f:
@@ -48,6 +62,9 @@ class YoloTensorRTEngine(YoloEngine):
                 if len(shape) == 3: self.outputs_ordered[0] = out_info
                 elif len(shape) == 4: self.outputs_ordered[1] = out_info
 
+            # Reusable host input buffer to avoid per-batch allocations
+            self._host_input = None
+
     def infer(self, tiles, metadata):
         batch_size = 32
         target_h, target_w = 640, 640
@@ -68,29 +85,68 @@ class YoloTensorRTEngine(YoloEngine):
         for i in range(0, len(tiles), batch_size):
             chunk = tiles[i:i+batch_size]
             actual_b = len(chunk)
-            
-            t_pre_0 = time.time()
-            # On mesure séparément le resize et le stack/transpose
-            if self.pool:
-                # 1. Resize & Norm (CPU intensive)
-                processed = list(self.pool.map(preprocess_parallel, chunk))
-                t_pre_1 = time.time()
-                # 2. Stack (Memory bandwidth intensive)
-                input_data = np.stack(processed)
-                t_pre_2 = time.time()
-            else:
-                input_data = np.stack([preprocess_parallel(t) for t in chunk])
-                t_pre_1 = t_pre_2 = time.time()
 
-            input_data = np.ascontiguousarray(input_data)
+            t_pre_0 = time.time()
+            # Prepare or resize reusable host buffer
+            input_cap = self.trt_inputs[0]['shape'][0] if self.trt_inputs and 'shape' in self.trt_inputs[0] else batch_size
+            if self._host_input is None or self._host_input.shape[0] < input_cap or self._host_input.shape[2] != target_h or self._host_input.shape[3] != target_w:
+                self._host_input = np.empty((input_cap, 3, target_h, target_w), dtype=np.float32)
+
+            input_data = self._host_input[:actual_b]
+
+            # GPU-preproc path (torch or cupy) - optional and experimental
+            if self.use_gpu_preproc and torch is not None and torch.cuda.is_available():
+                # Stack tiles into numpy (B,H,W,3)
+                np_stack = np.stack([t for t in chunk], axis=0)
+                # Convert to torch tensor on GPU and interpolate
+                t_tensor = torch.from_numpy(np_stack).permute(0,3,1,2).float().cuda(non_blocking=True) / 255.0
+                if t_tensor.shape[2] != target_h or t_tensor.shape[3] != target_w:
+                    t_tensor = F.interpolate(t_tensor, size=(target_h, target_w), mode='bilinear', align_corners=False)
+                # Now have (B,3,640,640) on GPU; copy directly device->device into TRT input device memory
+                # Fallback: copy to host if direct D2D not possible
+                try:
+                    for b in range(actual_b):
+                        src_ptr = t_tensor[b].contiguous().data_ptr()
+                        nbytes = t_tensor[b].numel() * t_tensor[b].element_size()
+                        # Copy device->device
+                        self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'] + b * nbytes, src_ptr, nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToDevice, self.trt_stream)
+                except Exception:
+                    # fallback to assemble on host
+                    t_host = t_tensor.cpu().numpy()
+                    input_data[:actual_b] = t_host
+            elif self.use_gpu_preproc and cp is not None:
+                # CuPy path: resize on GPU is less convenient; fallback to CPU resize then normalize in GPU
+                def _write_prep(idx, tile):
+                    if tile.shape[:2] != (target_h, target_w):
+                        tile = cv2.resize(tile, (target_w, target_h))
+                    a = tile.astype(np.float32) * (1.0/255.0)
+                    # move to cupy, transpose there
+                    g = cp.asarray(a)
+                    g = g.transpose(2,0,1)
+                    input_data[idx] = cp.asnumpy(g)
+
+                from concurrent.futures import ThreadPoolExecutor as _TPE
+                with _TPE(max_workers=min(8, actual_b)) as exe:
+                    futures = [exe.submit(_write_prep, j, chunk[j]) for j in range(actual_b)]
+                    for f in futures: f.result()
+            else:
+                # Fill input_data in parallel writing directly into preallocated buffer (CPU path)
+                def _write_prep(idx, tile):
+                    input_data[idx] = preprocess_parallel(tile)
+
+                from concurrent.futures import ThreadPoolExecutor as _TPE
+                with _TPE(max_workers=min(8, actual_b)) as exe:
+                    futures = [exe.submit(_write_prep, j, chunk[j]) for j in range(actual_b)]
+                    for f in futures:
+                        f.result()
+
             t_pre_3 = time.time()
-            
             self.last_perf['preprocess'] += t_pre_3 - t_pre_0
-            # On log une fois par frame les détails internes du Pre
             if i == 0:
-                 print(f"  [INTERNAL PRE] Resize={(t_pre_1-t_pre_0)*1000:.1f}ms | Stack={(t_pre_2-t_pre_1)*1000:.1f}ms | Contiguous={(t_pre_3-t_pre_2)*1000:.1f}ms (Batch={actual_b})")
+                print(f"  [INTERNAL PRE] Resize={(t_pre_3-t_pre_0)*1000:.1f}ms | Contiguous=0.0ms (Batch={actual_b})")
 
             t1 = time.time()
+            # Host buffer is C-contiguous by construction; reuse for H2D
             self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
             self.last_perf['h2d'] += time.time() - t1
             
@@ -167,18 +223,48 @@ class YoloTensorRTEngine(YoloEngine):
                         ph, pw = m_protos.shape[1], m_protos.shape[2]
                         
                         # Indices dans le prototype (0..160)
-                        mx1, my1 = int(ix1 * (pw/target_w)), int(iy1 * (ph/target_h))
-                        mx2, my2 = int(ix2 * (pw/target_w)), int(iy2 * (ph/target_h))
+                        mx1 = max(0, int(ix1 * (pw/target_w)))
+                        my1 = max(0, int(iy1 * (ph/target_h)))
+                        mx2 = min(pw, int(ix2 * (pw/target_w)))
+                        my2 = min(ph, int(iy2 * (ph/target_h)))
                         
-                        # Sigmoid sur la zone d'intérêt seulement (mask fragment)
-                        protos_crop = m_protos[:, my1:my2, mx1:mx2].reshape(num_mask_coeffs, -1)
-                        m_raw = 1 / (1 + np.exp(-(coeffs @ protos_crop)))
-                        mask_box = m_raw.reshape(my2-my1, mx2-mx1)
-                        
-                        all_boxes.append([gx1_f, gy1_f, gx2_f, gy2_f])
-                        all_scores.append(confidences[mask_idx[k]])
-                        all_masks.append(mask_box.copy())
-                        all_visible_boxes.append([gx1_v, gy1_v, gx2_v, gy2_v])
+                        if mx2 > mx1 and my2 > my1:
+                            # Sigmoid sur la zone d'intérêt seulement (mask fragment)
+                            protos_crop = m_protos[:, my1:my2, mx1:mx2].reshape(num_mask_coeffs, -1)
+                            # GPU post-processing path
+                            if self.use_gpu_post and cp is not None:
+                                try:
+                                    coeffs_gpu = cp.asarray(coeffs)
+                                    protos_gpu = cp.asarray(protos_crop)
+                                    m_raw_gpu = 1.0 / (1.0 + cp.exp(- (coeffs_gpu @ protos_gpu)))
+                                    mask_box = cp.asnumpy(m_raw_gpu).reshape(my2-my1, mx2-mx1)
+                                except Exception:
+                                    # fallback to numpy
+                                    m_raw = 1 / (1 + np.exp(-(coeffs @ protos_crop)))
+                                    mask_box = m_raw.reshape(my2-my1, mx2-mx1)
+                            elif self.use_gpu_post and torch is not None and torch.cuda.is_available():
+                                try:
+                                    t_coeff = torch.from_numpy(coeffs).cuda()
+                                    t_protos = torch.from_numpy(protos_crop).cuda()
+                                    t_res = torch.matmul(t_coeff, t_protos)
+                                    t_sig = torch.sigmoid(t_res)
+                                    mask_box = t_sig.cpu().numpy().reshape(my2-my1, mx2-mx1)
+                                except Exception:
+                                    m_raw = 1 / (1 + np.exp(-(coeffs @ protos_crop)))
+                                    mask_box = m_raw.reshape(my2-my1, mx2-mx1)
+                            else:
+                                m_raw = 1 / (1 + np.exp(-(coeffs @ protos_crop)))
+                                mask_box = m_raw.reshape(my2-my1, mx2-mx1)
+
+                            all_boxes.append([gx1_f, gy1_f, gx2_f, gy2_f])
+                            all_scores.append(confidences[mask_idx[k]])
+                            all_masks.append(mask_box.copy())
+                            all_visible_boxes.append([gx1_v, gy1_v, gx2_v, gy2_v])
+                        else:
+                            all_boxes.append([gx1_f, gy1_f, gx2_f, gy2_f])
+                            all_scores.append(confidences[mask_idx[k]])
+                            all_masks.append(None)
+                            all_visible_boxes.append([gx1_v, gy1_v, gx2_v, gy2_v])
                     else:
                         all_boxes.append([gx1_f, gy1_f, gx2_f, gy2_f])
                         all_scores.append(confidences[mask_idx[k]])
