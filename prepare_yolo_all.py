@@ -6,9 +6,8 @@ import shutil
 import subprocess
 
 def main():
-    # Gamme complète des modèles segmentations et détection (YOLO11 et YOLO26)
+    # Only YOLO v26 models (skip v11/v12 as requested)
     models = [
-        "yolo11n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt", "yolo11l-seg.pt", "yolo11x-seg.pt",
         "yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt", "yolo26x.pt",
         "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt", "yolo26l-seg.pt", "yolo26x-seg.pt"
     ]

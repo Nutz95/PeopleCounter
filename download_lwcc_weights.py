@@ -39,7 +39,26 @@ def main():
             out = weights_check(model, weights)
             print("->", out)
         except Exception as e:
-            print(f"Failed to download {model}_{weights}: {e}")
+            print(f"weights_check failed for {model}_{weights}: {e}")
+            # Fallback: download prebuilt weights from Nutz95 release v0.1 on GitHub
+            try:
+                filename = f"{model}_{weights}.pth"
+                url = f"https://github.com/Nutz95/lwcc_weights/releases/download/v0.1/{filename}"
+                dest = os.path.join(weights_dir, filename)
+                if os.path.exists(dest):
+                    print(f"Already present: {dest}")
+                else:
+                    print(f"Attempting fallback download from {url}")
+                    try:
+                        # Use urllib to avoid extra dependencies
+                        from urllib.request import urlopen
+                        with urlopen(url) as resp, open(dest, 'wb') as out_f:
+                            out_f.write(resp.read())
+                        print(f"Downloaded fallback weight to {dest}")
+                    except Exception as de:
+                        print(f"Fallback download failed for {filename}: {de}")
+            except Exception as fe:
+                print(f"Fallback handling failed for {model}_{weights}: {fe}")
 
 if __name__ == '__main__':
     main()

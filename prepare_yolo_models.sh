@@ -10,23 +10,18 @@ if [ ! -f "$PY" ]; then
   exit 1
 fi
 
-# List of models to ensure downloaded as .pt
+# List of YOLO v26 models to ensure downloaded as .pt
 models=(
-  "yolo11n.pt"
-  "yolo11s.pt"
-  "yolo11m.pt"
-  "yolo11l.pt"
-  "yolo11x.pt"
-  "yolo12n.pt"
-  "yolo12s.pt"
-  "yolo12m.pt"
-  "yolo12l.pt"
-  "yolo12x.pt"
-  "yolo11n-seg.pt"
-  "yolo11s-seg.pt"
-  "yolo11m-seg.pt"
-  "yolo11l-seg.pt"
-  "yolo11x-seg.pt"
+  "yolo26n.pt"
+  "yolo26s.pt"
+  "yolo26m.pt"
+  "yolo26l.pt"
+  "yolo26x.pt"
+  "yolo26n-seg.pt"
+  "yolo26s-seg.pt"
+  "yolo26m-seg.pt"
+  "yolo26l-seg.pt"
+  "yolo26x-seg.pt"
 )
 
 for m in "${models[@]}"; do
