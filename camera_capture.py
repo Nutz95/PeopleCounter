@@ -3,9 +3,16 @@ import time
 
 class CameraCapture:
     def __init__(self, camera_index=0, width=3840, height=2160, auto_exposure=1, gain = 1, brightness = 1, zoom = 1, contrast = 100, saturation = 100):
-        self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        # Convert to int if it's a number, else keep as string for URL
+        try:
+            source = int(camera_index)
+        except ValueError:
+            source = camera_index
+            
+        self.cap = cv2.VideoCapture(source)
+        if isinstance(source, int):
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.last_capture_time = 0
 
         # Enable autofocus

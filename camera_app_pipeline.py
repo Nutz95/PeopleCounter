@@ -35,9 +35,12 @@ class ModelThread(threading.Thread):
 AVERAGING_PERIOD_SECONDS = 2  # Réduit à 2s pour un graphe plus réactif
 
 class CameraAppPipeline:
-    def __init__(self, capture_mode=None):
+    def __init__(self, capture_mode=None, frame_callback=None):
         # capture_mode can be 'usb' (default), 'mqtt', or 'rtsp'
         cmode = capture_mode or os.environ.get('CAPTURE_MODE', 'usb')
+        self.frame_callback = frame_callback
+        self.use_gui = os.environ.get('USE_GUI', '0') == '1'
+        
         # Common configuration from environment (can be overridden)
         cam_index = int(os.environ.get('CAMERA_INDEX', '0'))
         cam_width = int(os.environ.get('CAMERA_WIDTH', '1920'))
@@ -135,17 +138,23 @@ class CameraAppPipeline:
                 confidence_threshold=self.yolo_conf, 
                 backend=yolo_backend
             )
-        screen = screeninfo.get_monitors()[0]
-        self.screen_width = screen.width
-        self.screen_height = screen.height
+        
+        # Tentative de récupération des dimensions de l'écran, sinon défaut 1080p
+        try:
+            screen = screeninfo.get_monitors()[0]
+            self.screen_width = screen.width
+            self.screen_height = screen.height
+        except Exception:
+            self.screen_width = 1920
+            self.screen_height = 1080
 
-        # Création de la fenêtre une seule fois avec support du redimensionnement
-        cv2.namedWindow("People Count", cv2.WINDOW_NORMAL)
-        # On définit une taille initiale raisonnable (ex: 75% de l'écran)
-        init_w = int(self.screen_width * 0.75)
-        init_h = int(self.screen_height * 0.75)
-        cv2.resizeWindow("People Count", init_w, init_h)
-        cv2.moveWindow("People Count", (self.screen_width - init_w) // 2, (self.screen_height - init_h) // 2)
+        # Création de la fenêtre uniquement si GUI activé
+        if self.use_gui:
+            cv2.namedWindow("People Count", cv2.WINDOW_NORMAL)
+            init_w = int(self.screen_width * 0.75)
+            init_h = int(self.screen_height * 0.75)
+            cv2.resizeWindow("People Count", init_w, init_h)
+            cv2.moveWindow("People Count", (self.screen_width - init_w) // 2, (self.screen_height - init_h) // 2)
 
         self.use_yolo = True  # Passe à True pour utiliser YOLO au lieu du modèle density
         self.yolo_tiling = os.environ.get('YOLO_TILING', '1') == '1' # Défaut à 1 (Tiling actif)
@@ -398,11 +407,14 @@ class CameraAppPipeline:
                         last_avg = log_data[-1][3]
                         cv2.putText(overlay2, f'Avg ({AVERAGING_PERIOD_SECONDS}s): {last_avg:.1f}', (20, 145), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0,255,255), 2)
 
-                    # --- GESTION DE LA FENÊTRE D'AFFICHAGE ---
-                    try:
-                        win_rect = cv2.getWindowImageRect("People Count")
-                        win_w, win_h = (win_rect[2], win_rect[3]) if win_rect and win_rect[2] > 0 else (1280, 720)
-                    except Exception:
+                    # --- GESTION DE LA FENÊTRE D'AFFICHAGE ET CALLBACK ---
+                    if self.use_gui:
+                        try:
+                            win_rect = cv2.getWindowImageRect("People Count")
+                            win_w, win_h = (win_rect[2], win_rect[3]) if win_rect and win_rect[2] > 0 else (1280, 720)
+                        except Exception:
+                            win_w, win_h = 1280, 720
+                    else:
                         win_w, win_h = 1280, 720
 
                     h_curr, w_curr = overlay2.shape[:2]
@@ -415,6 +427,10 @@ class CameraAppPipeline:
                     preview_frame[y_off:y_off+target_h, x_off:x_off+target_w] = resized
                     
                     self._draw_mini_graph(preview_frame)
+
+                    # Envoi au serveur Web si actif
+                    if self.frame_callback:
+                        self.frame_callback(preview_frame)
                     
                     total_time = time.time() - start_time
                     fps = 1.0 / total_time if total_time > 0 else 0
@@ -430,7 +446,8 @@ class CameraAppPipeline:
                     cv2.putText(preview_frame, f'YOLO: {yolo_dev}', (20, win_h - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                     cv2.putText(preview_frame, f'DENS: {dens_dev}', (20, win_h - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                     
-                    cv2.imshow("People Count", preview_frame)
+                    if self.use_gui:
+                        cv2.imshow("People Count", preview_frame)
                     
                     # Console logs propres
                     capture_time = getattr(self.capture, 'last_capture_time', 0.0)
@@ -464,12 +481,18 @@ class CameraAppPipeline:
                         counts_yolo = []
                         counts_density = []
                         last_period = now_sec
-                    key = cv2.waitKey(1)
-                    if key & 0xFF == ord('q') or cv2.getWindowProperty("People Count", cv2.WND_PROP_VISIBLE) < 1:
-                        break
+                    
+                    if self.use_gui:
+                        key = cv2.waitKey(1)
+                        if key & 0xFF == ord('q') or cv2.getWindowProperty("People Count", cv2.WND_PROP_VISIBLE) < 1:
+                            break
+                    else:
+                        # En mode headless, on ajoute un petit sleep pour ne pas saturer le CPU si FPS > 100
+                        time.sleep(0.01)
             finally:
                 self.capture.release()
-                cv2.destroyAllWindows()
+                if self.use_gui:
+                    cv2.destroyAllWindows()
                 print("Camera released and application closed.")
                 # Génère la courbe à partir du CSV
                 if log_data:

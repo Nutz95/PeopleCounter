@@ -4,49 +4,77 @@ Ce dépôt contient un `Dockerfile` multi-stage optimisé pour construire une im
 
 ## 🏗️ Procédure de Build
 
-Le build est divisé en 3 étapes (OpenCV -> Dépendances -> Runtime) pour minimiser la taille finale et utiliser le cache efficacement.
+Le build est optimisé via un système multi-stage (OpenCV -> Dépendances -> Runtime).
 
 ```bash
-# Lancer le build complet (prévoyez ~1h pour la première compilation OpenCV)
-docker build -t people-counter:gpu-final .
+# Lancer le build (inclut la gestion du cache et le backup automatique)
+./build_image.sh
 ```
 
 ### 🔍 Vérification du build
 Une fois l'image créée, vérifiez que le GPU est bien accessible :
 ```bash
-docker run --rm --gpus all people-counter:gpu-final python3 -c "import cv2; print('CUDA Devices:', cv2.cuda.getCudaEnabledDeviceCount())"
+docker run --rm --gpus all people-counter:gpu-final python3 -c "import cv2; import torch; print('OpenCV CUDA:', cv2.cuda.getCudaEnabledDeviceCount()); print('PyTorch CUDA:', torch.cuda.is_available())"
 ```
 
 ## 🚀 Exécution de l'application
 
-Comme l'image Docker ne possède pas d'interface graphique (GUI), l'application doit être lancée en mode "headless" avec un accès réseau pour le streaming (en cours de développement).
+Utilisez le script d'exécution qui gère automatiquement les accès GPU, caméras et ports réseaux.
 
 ```bash
-# Lancer l'application par défaut
-docker run --rm --gpus all people-counter:gpu-final python3 main.py
+# Lancer l'application (utilise /dev/video0 par défaut)
+./run_app.sh
+
+# Pour utiliser un autre périphérique caméra
+./run_app.sh /dev/video1
 ```
 
 ---
 
-## 📸 Partage de Caméra USB (Windows -> WSL -> Docker)
+## 📸 Caméra USB sur WSL2 (Windows)
 
-Pour utiliser votre caméra USB locale dans le conteneur Docker sous WSL2 :
+Puisque le noyau WSL2 par défaut ne supporte pas les caméras USB nativement (pas de `/dev/video*`), nous utilisons un **Bridge Vidéo** pour envoyer le flux de Windows vers Docker.
 
-### 1. Sous Windows (PowerShell Admin)
-Installez `usbipd` et attachez la caméra :
-```powershell
-usbipd list                          # Notez l'ID (ex: 6-2)
-usbipd bind --busid <ID> --force
-usbipd attach --wsl Ubuntu-24.04 --busid <ID> --auto-attach
-```
+### 1. Sur Windows (Préparation)
+Lancez le script de bridge sur votre machine hôte :
+1. Installez les requis : `pip install flask opencv-python`.
+2. Lancez le script : `python windows_camera_bridge.py`.
+   *Ce script crée un flux MJPEG sur le port 5001 de Windows.*
 
-### 2. Sous WSL (Linux)
-Vérifiez que la caméra est bien vue dans `/dev/video*` :
+### 2. Trouver votre IP Windows
+Dans un terminal Windows (PowerShell/CMD), tapez `ipconfig`. Cherchez l'IP de votre carte WiFi ou Ethernet (ex: `192.168.1.15`).
+
+### 3. Lancer l'application dans WSL
 ```bash
-ls /dev/video*
-# Puis lancez Docker avec l'option --device
-docker run --rm --gpus all --device /dev/video0:/dev/video0 people-counter:gpu-final python3 main.py
+# Remplacez <IP> par votre adresse IP Windows
+./run_app.sh http://<IP>:5001/video_feed
 ```
+
+Une fois lancé, ouvrez votre navigateur sur `http://localhost:5000` pour voir les résultats.
+
+---
+
+## 🛠️ Ancienne méthode (Native usbipd)
+*Uniquement si vous avez compilé votre propre noyau WSL avec support UVC.*
+"### 2. Sous WSL (Linux) - Résolution de problèmes"
+Si `ls /dev/video*` ne renvoie rien après l'attachement, c'est que votre noyau WSL (Kernel) manque de drivers UVC.
+
+**Solution 1 (Recommandée) :**
+Dans un PowerShell Windows (Admin) :
+```powershell
+wsl --update
+wsl --shutdown
+```
+Relancez ensuite WSL. Les noyaux récents (6.6+) supportent souvent les caméras par défaut.
+
+**Solution 2 (Secours) : Bridge Réseau**
+Si le driver bloque toujours, utilisez le script `windows_camera_bridge.py` fourni :
+1. Sur **Windows** : `pip install flask opencv-python`
+2. Sur **Windows** : `python windows_camera_bridge.py`
+3. Sur **WSL** : `./run_app.sh http://<IP_VOTRE_PC>:5001/video_feed`
+
+### 3. Lancer l'application
+Une fois la caméra détectée :
 
 ---
 
