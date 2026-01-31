@@ -86,6 +86,45 @@ class CameraAppPipeline:
         # On passe yolo26s-seg par défaut comme demandé par l'utilisateur
         yolo_model = os.environ.get('YOLO_MODEL', 'yolo26s-seg')
 
+        # --- AUTO-EXPORT TENSORRT ---
+        if yolo_backend == 'tensorrt_native':
+            # Si c'est un nom court comme 'yolo26s-seg', on cherche dans models/
+            base_model = yolo_model
+            if not base_model.endswith('.engine'):
+                engine_file = f"{base_model}.engine"
+                engine_path = os.path.join(os.getcwd(), 'models', engine_file)
+                
+                if not os.path.isfile(engine_path):
+                    print(f"⚠️ Engine TensorRT non trouvé : {engine_path}")
+                    # On cherche le .pt correspondant
+                    pt_model = f"{base_model}.pt"
+                    pt_path = os.path.join(os.getcwd(), 'models', pt_model)
+                    if os.path.isfile(pt_path):
+                        print(f"🚀 Exportation automatique de {pt_model} vers TensorRT...")
+                        # On utilise ultralytics pour l'export
+                        try:
+                            from ultralytics import YOLO
+                            model = YOLO(pt_path)
+                            # Export optimal pour le GPU actuel (RTX)
+                            model.export(format='engine', dynamic=False, simplify=True, half=True)
+                            # Ultralytics crée souvent le .engine à côté du .pt
+                            generated_engine = pt_path.replace('.pt', '.engine')
+                            if os.path.isfile(generated_engine):
+                                if not os.path.exists(os.path.dirname(engine_path)):
+                                    os.makedirs(os.path.dirname(engine_path))
+                                if os.path.abspath(generated_engine) != os.path.abspath(engine_path):
+                                    import shutil
+                                    shutil.move(generated_engine, engine_path)
+                                print(f"✅ Export réussi : {engine_path}")
+                                yolo_model = engine_path
+                        except Exception as e:
+                            print(f"❌ Échec de l'export : {e}")
+                    else:
+                        print(f"❌ Impossible d'exporter : {pt_path} introuvable.")
+                else:
+                    yolo_model = engine_path
+        # ----------------------------
+
         if yolo_backend in ('openvino', 'openvino_native'):
             ov_dir = os.environ.get('YOLO_OPENVINO_DIR')
             if ov_dir and os.path.isdir(ov_dir):
@@ -94,20 +133,7 @@ class CameraAppPipeline:
                 candidate_dir = f"{yolo_model}_openvino_model"
                 if os.path.isdir(candidate_dir):
                     yolo_model = candidate_dir
-        elif yolo_backend == 'tensorrt_native':
-            if not yolo_model.endswith('.engine'):
-                engine_file = f"{yolo_model}.engine"
-                # check models/ directory first
-                models_path = os.path.join(os.getcwd(), 'models', engine_file)
-                if os.path.isfile(models_path):
-                    yolo_model = models_path
-                elif os.path.isfile(engine_file):
-                    yolo_model = engine_file
-            else:
-                # if user passed bare engine name, look in models/
-                if not os.path.isabs(yolo_model) and os.path.isfile(os.path.join(os.getcwd(), 'models', yolo_model)):
-                    yolo_model = os.path.join(os.getcwd(), 'models', yolo_model)
-        
+
         yolo_device = os.environ.get('YOLO_DEVICE')
         if not yolo_device:
             if yolo_backend == 'openvino_native':

@@ -1,9 +1,49 @@
 import sys
 import os
+# Use local vendors folder for lwcc if present; do not hardcode Windows paths
 from pathlib import Path
-sys.path.append(r"E:\AI\lwcc")
-from lwcc import get_count_from_frame
-from lwcc.util.functions import preprocess_frame
+# Remove hardcoded Windows path and import lwcc robustly
+try:
+    # Normal import (preferred)
+    from lwcc import get_count_from_frame
+    LWCC_AVAILABLE = True
+except Exception:
+    # Fallbacks: try to import module and locate function in submodules
+    try:
+        import lwcc as _lwcc_mod
+        if hasattr(_lwcc_mod, 'get_count_from_frame'):
+            get_count_from_frame = _lwcc_mod.get_count_from_frame
+            LWCC_AVAILABLE = True
+        elif hasattr(_lwcc_mod, 'api') and hasattr(_lwcc_mod.api, 'get_count_from_frame'):
+            get_count_from_frame = _lwcc_mod.api.get_count_from_frame
+            LWCC_AVAILABLE = True
+        else:
+            LWCC_AVAILABLE = False
+            # last-resort stub that raises a clear error at call-time
+            def get_count_from_frame(*args, **kwargs):
+                raise ImportError('lwcc.get_count_from_frame not found in installed lwcc package')
+    except Exception:
+        LWCC_AVAILABLE = False
+        def get_count_from_frame(*args, **kwargs):
+            raise ImportError('lwcc package not available')
+
+try:
+    # preprocess_frame may live in different submodules
+    from lwcc.util.functions import preprocess_frame
+except Exception:
+    try:
+        if 'lwcc' in globals():
+            if hasattr(_lwcc_mod, 'util') and hasattr(_lwcc_mod.util, 'functions') and hasattr(_lwcc_mod.util.functions, 'preprocess_frame'):
+                preprocess_frame = _lwcc_mod.util.functions.preprocess_frame
+            else:
+                def preprocess_frame(x, *a, **k):
+                    return x
+        else:
+            def preprocess_frame(x, *a, **k):
+                return x
+    except Exception:
+        def preprocess_frame(x, *a, **k):
+            return x
 import cv2
 import numpy as np
 from PIL import Image
@@ -215,12 +255,18 @@ class PeopleCounterProcessor:
 
         else:
             # Fallback PyTorch / LWCC direct
-            # On utilise lwcc.get_count_from_frame si dispo
-            try:
-                # Force CPU pour éviter des conflits CUDA si on est en mode FALLBACK
-                count = get_count_from_frame(frame, model_name=self.model_name, model_weights=self.model_weights, return_density=False, use_gpu=False)
-            except Exception as e:
-                print(f"[ERROR] LWCC CPU Inference failed: {e}")
+            # On utilise lwcc.get_count_from_frame si dispo; sinon fallback à 0
+            global LWCC_AVAILABLE
+            if 'LWCC_AVAILABLE' in globals() and LWCC_AVAILABLE:
+                try:
+                    # Force CPU pour éviter des conflits CUDA si on est en mode FALLBACK
+                    count = get_count_from_frame(frame, model_name=self.model_name, model_weights=self.model_weights, return_density=False, use_gpu=False)
+                except Exception as e:
+                    print(f"[ERROR] LWCC CPU Inference failed: {e}")
+                    # disable further attempts to avoid log spam
+                    LWCC_AVAILABLE = False
+                    count = 0
+            else:
                 count = 0
             
             # Pour torch, on va juste retourner un masque vide ou simulé

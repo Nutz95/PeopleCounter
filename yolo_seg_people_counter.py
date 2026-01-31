@@ -144,8 +144,9 @@ class YoloSegPeopleCounter:
                 overlay_roi = img_roi.copy()
                 overlay_roi[mask_roi > 0] = (0, 255, 0)
                 blended_roi = cv2.addWeighted(overlay_roi, 0.4, img_roi, 0.6, 0)
-                mask_3 = mask_roi[:, :, None] > 0
-                img_roi[mask_3] = blended_roi[mask_3]
+                # mask_roi is 2D; use 2D boolean indexing to copy RGB pixels
+                mask_bool = mask_roi > 0
+                img_roi[mask_bool] = blended_roi[mask_bool]
                 contours, _ = cv2.findContours(mask_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 if contours:
                     # draw contours in-place on the ROI
