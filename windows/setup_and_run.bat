@@ -2,7 +2,7 @@
 SETLOCAL EnableDelayedExpansion
 
 echo ---------------------------------------------------------
-echo Initialisation de l'environnement Python pour le Bridge...
+echo Initialisation du Bridge Python
 echo ---------------------------------------------------------
 
 :: Vérifier si Python est installé
@@ -16,7 +16,7 @@ if %errorlevel% neq 0 (
 
 :: Création du venv s'il n'existe pas
 if not exist "venv_bridge" (
-    echo [+] Creation de l'environnement virtuel (venv_bridge)...
+    echo [+] Creation de l'environnement virtuel venv_bridge...
     python -m venv venv_bridge
 )
 
@@ -28,6 +28,6 @@ python -m pip install flask opencv-python
 
 echo.
 echo [+] Lancement du bridge...
-python camera_bridge.py
+venv_bridge\Scripts\python.exe camera_bridge.py
 
 pause
