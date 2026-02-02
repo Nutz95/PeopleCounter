@@ -1,6 +1,14 @@
 import sys
-sys.path.append(r"E:\AI\lwcc")
-import lwcc
+import os
+
+# Pour l'exécution en local ou Docker, l'import direct devrait fonctionner 
+# si le package est installé ou dans le PYTHONPATH
+try:
+    import lwcc
+except ImportError:
+    # Fallback pour le container s'il est dans vendors/lwcc
+    sys.path.append(os.path.join(os.getcwd(), "vendors", "lwcc"))
+    import lwcc
 
 class LWCCCounter:
     def __init__(self):

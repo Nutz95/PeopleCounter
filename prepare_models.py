@@ -70,7 +70,8 @@ models_dir = ROOT / 'models'
 models_dir.mkdir(exist_ok=True)
 
 # Optionally, user can list YOLO models to pre-download via YOLO_PREPARE env var (comma separated)
-yolo_list = os.environ.get('YOLO_PREPARE', '')
+# Defaults to yolo26 series if not specified
+yolo_list = os.environ.get('YOLO_PREPARE', 'yolo26n.pt,yolo26s.pt,yolo26m.pt,yolo26l.pt,yolo26x.pt,yolo26n-seg.pt,yolo26s-seg.pt,yolo26m-seg.pt,yolo26l-seg.pt,yolo26x-seg.pt')
 if yolo_list:
     try:
         from ultralytics import YOLO
@@ -121,6 +122,13 @@ try:
     run(f"python3 export_density_to_onnx.py")
 except Exception as e:
     print(f"[prepare_models] Warning: export_density_to_onnx.py failed: {e}")
+
+try:
+    # Export YOLO models to TRT
+    print("[prepare_models] Running export_yolos_to_trt.py")
+    run(f"python3 export_yolos_to_trt.py")
+except Exception as e:
+    print(f"[prepare_models] Warning: export_yolos_to_trt.py failed: {e}")
 
 # Convert any generated LWCC ONNX models to TensorRT if CUDA available
 try:

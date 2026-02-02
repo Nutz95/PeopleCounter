@@ -38,8 +38,8 @@ Puisque le noyau WSL2 par défaut ne supporte pas les caméras USB nativement (p
 ### 1. Sur Windows (Préparation)
 Lancez le script de bridge sur votre machine hôte :
 1. Installez les requis : `pip install flask opencv-python`.
-2. Lancez le script : `python windows_camera_bridge.py`.
-   *Ce script crée un flux MJPEG sur le port 5001 de Windows.*
+2. Lancez le script : `python windows/camera_bridge.py`.
+   *Ce script crée un flux MJPEG sur le port 5002 de Windows.*
 
 ### 2. Trouver votre IP Windows
 Dans un terminal Windows (PowerShell/CMD), tapez `ipconfig`. Cherchez l'IP de votre carte WiFi ou Ethernet (ex: `192.168.1.15`).
@@ -47,7 +47,7 @@ Dans un terminal Windows (PowerShell/CMD), tapez `ipconfig`. Cherchez l'IP de vo
 ### 3. Lancer l'application dans WSL
 ```bash
 # Remplacez <IP> par votre adresse IP Windows
-./run_app.sh http://<IP>:5001/video_feed
+./run_app.sh http://<IP>:5002/video_feed
 ```
 
 Une fois lancé, ouvrez votre navigateur sur `http://localhost:5000` pour voir les résultats.
@@ -71,7 +71,7 @@ Relancez ensuite WSL. Les noyaux récents (6.6+) supportent souvent les caméras
 Si le driver bloque toujours, utilisez le script `windows_camera_bridge.py` fourni :
 1. Sur **Windows** : `pip install flask opencv-python`
 2. Sur **Windows** : `python windows_camera_bridge.py`
-3. Sur **WSL** : `./run_app.sh http://<IP_VOTRE_PC>:5001/video_feed`
+3. Sur **WSL** : `./run_app.sh http://<IP_VOTRE_PC>:5002/video_feed`
 
 ### 3. Lancer l'application
 Une fois la caméra détectée :

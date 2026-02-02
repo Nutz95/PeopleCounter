@@ -7,15 +7,16 @@ import sys
 
 # Add lwcc to path
 root = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.join(root, "external", "lwcc"))
+# Check various common locations for lwcc
+for p in [os.path.join(root, "vendors", "lwcc"), os.path.join(root, "external", "lwcc"), root]:
+    if p not in sys.path:
+        sys.path.append(p)
 
 try:
     from lwcc.util.functions import weights_check
 except Exception as e:
     print(f"Failed to import lwcc. Error: {e}")
-    # Try another common location just in case
-    sys.path.append(os.path.join(root, "lwcc"))
-    from lwcc.util.functions import weights_check
+    sys.exit(1)
 
 PAIRS = [
     ("CSRNet", "SHA"),
