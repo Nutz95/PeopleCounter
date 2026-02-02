@@ -124,19 +124,22 @@ class PeopleCounterProcessor:
                                 print(f"[DEBUG] Density: Resolved shape for {name} from profile: {shape}")
                             except Exception as e:
                                 print(f"[WARN] Profile shape lookup failed for {name}: {e}")
-                                # Fallback structurel pour DM-Count/CSRNet (Batch accru et résolution optimisée)
+                                # Fallback structurel (Batch 8 par défaut)
                                 b_max = 8
                                 if "input" in name.lower():
+                                    # Calibré sur 544p (multiple de 16) pour le tiling 1080p natif
                                     shape = [b_max, 3, 544, 960] if is_density else [b_max, 3, 640, 640]
                                 else:
-                                    # Pour DM-Count, la sortie est divisée par 8
                                     shape = [b_max, 1, 544 // 8, 960 // 8] if is_density else [b_max, 1, 640, 640]
                                 print(f"[DEBUG] Density: Using fallback shape for {name}: {shape}")
                         
-                        # Si c'est un modèle de densité, on garde la résolution d'origine (1080p recommandé pour précision)
-                        # La réduction à 544p entraînait des sur-comptages sur les gros plans
-                        if is_density and "input" in name.lower() and shape[2] == 1080:
-                            print(f"[INFO] Performance: Using native resolution for density model {name} (1080p).")
+                        # Si c'est un modèle de densité, on respecte la calibration 544p demandée pour le tiling
+                        if is_density and "input" in name.lower() and (shape[2] == 1080 or shape[2] == 544):
+                            print(f"[INFO] Performance: Using calibrated 544p resolution for density model (Tiling Optimization).")
+                            shape[2] = 544
+                            shape[3] = 960
+                        elif is_density and "input" in name.lower() and shape[2] > 1080:
+                            # Sécurité 4K
                             shape[2] = 1080
                             shape[3] = 1920
 

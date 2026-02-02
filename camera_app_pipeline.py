@@ -85,44 +85,47 @@ class CameraAppPipeline:
         yolo_backend = os.environ.get('YOLO_BACKEND', 'torch').lower()
         # On passe yolo26s-seg par défaut comme demandé par l'utilisateur
         yolo_model = os.environ.get('YOLO_MODEL', 'yolo26s-seg')
+        models_root = os.path.join(os.getcwd(), 'models')
+        pt_dir = os.path.join(models_root, 'pt')
+        tensorrt_dir = os.path.join(models_root, 'tensorrt')
 
         # --- AUTO-EXPORT TENSORRT ---
         if yolo_backend == 'tensorrt_native':
             # Si c'est un nom court comme 'yolo26s-seg', on cherche dans models/
             base_model = yolo_model
-            if not base_model.endswith('.engine'):
-                engine_file = f"{base_model}.engine"
-                engine_path = os.path.join(os.getcwd(), 'models', engine_file)
+            if not os.path.isabs(base_model):
+                if not base_model.endswith('.engine'):
+                    base_model = f"{base_model}.engine"
+                yolo_model_candidate = os.path.join(tensorrt_dir, base_model)
+            else:
+                yolo_model_candidate = base_model
+            engine_path = yolo_model_candidate
                 
-                if not os.path.isfile(engine_path):
-                    print(f"⚠️ Engine TensorRT non trouvé : {engine_path}")
-                    # On cherche le .pt correspondant
-                    pt_model = f"{base_model}.pt"
-                    pt_path = os.path.join(os.getcwd(), 'models', pt_model)
-                    if os.path.isfile(pt_path):
-                        print(f"🚀 Exportation automatique de {pt_model} vers TensorRT...")
-                        # On utilise ultralytics pour l'export
-                        try:
-                            from ultralytics import YOLO
-                            model = YOLO(pt_path)
-                            # Export optimal pour le GPU actuel (RTX)
-                            model.export(format='engine', dynamic=False, simplify=True, half=True)
-                            # Ultralytics crée souvent le .engine à côté du .pt
-                            generated_engine = pt_path.replace('.pt', '.engine')
-                            if os.path.isfile(generated_engine):
-                                if not os.path.exists(os.path.dirname(engine_path)):
-                                    os.makedirs(os.path.dirname(engine_path))
-                                if os.path.abspath(generated_engine) != os.path.abspath(engine_path):
-                                    import shutil
-                                    shutil.move(generated_engine, engine_path)
-                                print(f"✅ Export réussi : {engine_path}")
-                                yolo_model = engine_path
-                        except Exception as e:
-                            print(f"❌ Échec de l'export : {e}")
-                    else:
-                        print(f"❌ Impossible d'exporter : {pt_path} introuvable.")
+            if not os.path.isfile(engine_path):
+                print(f"⚠️ Engine TensorRT non trouvé : {engine_path}")
+                # On cherche le .pt correspondant
+                pt_model_name = os.path.basename(base_model).replace('.engine', '.pt')
+                pt_path = os.path.join(pt_dir, pt_model_name)
+                if os.path.isfile(pt_path):
+                    print(f"🚀 Exportation automatique de {pt_model_name} vers TensorRT...")
+                    try:
+                        from ultralytics import YOLO
+                        model = YOLO(pt_path)
+                        model.export(format='engine', dynamic=False, simplify=True, half=True)
+                        generated_engine = pt_path.replace('.pt', '.engine')
+                        if os.path.isfile(generated_engine):
+                            os.makedirs(os.path.dirname(engine_path), exist_ok=True)
+                            if os.path.abspath(generated_engine) != os.path.abspath(engine_path):
+                                import shutil
+                                shutil.move(generated_engine, engine_path)
+                            print(f"✅ Export réussi : {engine_path}")
+                            yolo_model = engine_path
+                    except Exception as e:
+                        print(f"❌ Échec de l'export : {e}")
                 else:
-                    yolo_model = engine_path
+                    print(f"❌ Impossible d'exporter : {pt_path} introuvable.")
+            else:
+                yolo_model = engine_path
         # ----------------------------
 
         if yolo_backend in ('openvino', 'openvino_native'):
@@ -142,6 +145,12 @@ class CameraAppPipeline:
                 yolo_device = 'cuda'
             else:
                 yolo_device = 'cpu'
+
+        # For non-absolute model identifiers, resolve them inside models/pt
+        if not os.path.isabs(yolo_model):
+            candidate = os.path.join(pt_dir, yolo_model if yolo_model.endswith('.pt') else f"{yolo_model}.pt")
+            if os.path.exists(candidate):
+                yolo_model = candidate
 
         self.processor = PeopleCounterProcessor(
             model_name="DM-Count",
@@ -353,7 +362,7 @@ class CameraAppPipeline:
                     
                     # Récupération des devices utilisés
                     yolo_dev = getattr(self.yolo_counter, 'last_device', 'GPU')
-                    dens_dev = getattr(self.processor, 'last_device', 'NPU')
+                    dens_dev = getattr(self.processor, 'last_device', 'GPU')
                     
                     cpu_usage = psutil.cpu_percent()
                     

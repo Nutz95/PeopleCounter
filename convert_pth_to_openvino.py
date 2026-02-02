@@ -95,7 +95,7 @@ def convert_onnx_to_openvino(onnx_path, output_dir):
 
 def main():
     repo_root = os.path.dirname(os.path.abspath(__file__))
-    weights_dir = os.path.join(str(Path.home()), ".lwcc", "weights")
+    weights_dir = os.environ.get('LWCC_WEIGHTS_PATH', os.path.join(str(Path.home()), ".lwcc", "weights"))
     onnx_dir = os.path.join(repo_root, "models", "onnx")
     ov_dir = os.path.join(repo_root, "models", "openvino")
     os.makedirs(onnx_dir, exist_ok=True)

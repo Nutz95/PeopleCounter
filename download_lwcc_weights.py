@@ -31,14 +31,36 @@ PAIRS = [
 ]
 
 def main():
-    home = str(Path.home())
-    weights_dir = os.path.join(home, ".lwcc", "weights")
+    # Priority order for weights directory
+    weights_dir = os.environ.get('LWCC_WEIGHTS_PATH')
+    if not weights_dir:
+        # Check if local folder exists
+        root = os.path.dirname(os.path.abspath(__file__))
+        local_models_dir = os.path.join(root, "models", "lwcc_weights")
+        if os.path.exists(local_models_dir):
+            weights_dir = local_models_dir
+        else:
+            home = str(Path.home())
+            weights_dir = os.path.join(home, ".lwcc", "weights")
+        
     os.makedirs(weights_dir, exist_ok=True)
+    print(f"LWCC Weights storage: {weights_dir}")
+    
     for model, weights in PAIRS:
         try:
+            # Check if file already exists to skip download and log spam
+            filename = f"{model}_{weights}.pth"
+            target = os.path.join(weights_dir, filename)
+            if os.path.exists(target):
+                print(f"[{model}_{weights}] Already exists in {weights_dir}")
+                continue
+
             print(f"Ensuring LWCC weight: {model}_{weights}")
+            # Patch LWCC's weights_check to use our directory if needed
+            # (Note: we use the env var LWCC_WEIGHTS_PATH which lwcc should respect)
             out = weights_check(model, weights)
             print("->", out)
+
         except Exception as e:
             print(f"weights_check failed for {model}_{weights}: {e}")
             # Fallback: download prebuilt weights from Nutz95 release v0.1 on GitHub

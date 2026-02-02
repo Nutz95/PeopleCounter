@@ -18,15 +18,13 @@ except Exception:
 
 class YoloTensorRTEngine(YoloEngine):
     def __init__(self, model_path, confidence_threshold=0.25, device='cuda', pool=None, use_gpu_preproc=False, use_gpu_post=False):
-        from cuda.bindings import runtime as cudart
-        self.cudart = cudart
         self.confidence_threshold = confidence_threshold
         self.device = device
         self.person_class_id = 0
         self.pool = pool
         self.last_perf = {'preprocess': 0, 'h2d': 0, 'infer': 0, 'd2h': 0, 'postprocess': 0}
-        self.use_gpu_preproc = use_gpu_preproc and (torch is not None or cp is not None)
-        self.use_gpu_post = use_gpu_post and (cp is not None or torch is not None)
+        self.use_gpu_preproc = use_gpu_preproc and (torch is not None)
+        self.use_gpu_post = use_gpu_post and (torch is not None)
 
         logger = trt.Logger(trt.Logger.WARNING)
         with open(model_path, 'rb') as f:
@@ -34,9 +32,15 @@ class YoloTensorRTEngine(YoloEngine):
             self.trt_engine = runtime.deserialize_cuda_engine(f.read())
             self.trt_context = self.trt_engine.create_execution_context()
 
-        err, self.trt_stream = cudart.cudaStreamCreate()
+        # Stream and memory management via Torch (highly stable)
+        if torch is not None and torch.cuda.is_available():
+            self.trt_stream = torch.cuda.current_stream().cuda_stream
+        else:
+            self.trt_stream = 0
+
         self.trt_inputs = []
         self.trt_outputs = []
+        self._torch_tensors = {} # Keep references to prevent GC
         self.outputs_ordered = [None, None]
 
         for i in range(self.trt_engine.num_io_tensors):
@@ -45,25 +49,38 @@ class YoloTensorRTEngine(YoloEngine):
             dtype = trt.nptype(self.trt_engine.get_tensor_dtype(name))
             shape = list(self.trt_engine.get_tensor_shape(name))
             
-            if is_input:
-                if shape[0] < 0: shape[0] = 32
-                vol = np.prod(shape)
-                nbytes = int(vol * np.dtype(dtype).itemsize)
-                err, device_mem = cudart.cudaMalloc(nbytes)
-                self.trt_inputs.append({'name': name, 'device': device_mem, 'dtype': dtype, 'shape': shape, 'nbytes': nbytes})
-            else:
-                if shape[0] < 0: shape[0] = 32
-                vol = np.prod(shape)
-                nbytes = int(vol * np.dtype(dtype).itemsize)
-                host_mem = np.empty(shape, dtype=dtype)
-                err, device_mem = cudart.cudaMalloc(nbytes)
-                out_info = {'name': name, 'host': host_mem, 'device': device_mem, 'dtype': dtype, 'nbytes': nbytes, 'shape': shape}
-                self.trt_outputs.append(out_info)
-                if len(shape) == 3: self.outputs_ordered[0] = out_info
-                elif len(shape) == 4: self.outputs_ordered[1] = out_info
+            # Fix dynamic batch
+            if shape[0] < 0: shape[0] = 32 # Default max batch
+            
+            # Map numpy dtype to torch dtype
+            t_dtype = torch.from_numpy(np.zeros(1, dtype=dtype)).dtype
+            t_tensor = torch.empty(tuple(shape), dtype=t_dtype, device='cuda')
+            self._torch_tensors[name] = t_tensor
 
-            # Reusable host input buffer to avoid per-batch allocations
-            self._host_input = None
+            if is_input:
+                self.trt_inputs.append({'name': name, 'device': t_tensor.data_ptr(), 'dtype': dtype, 'shape': shape})
+            else:
+                host_mem = np.empty(shape, dtype=dtype)
+                out_info = {'name': name, 'host': host_mem, 'device': t_tensor.data_ptr(), 'dtype': dtype, 'shape': shape}
+                self.trt_outputs.append(out_info)
+                
+                # Robustly identify Box vs Proto outputs
+                # Box output is usually 3D (B, 4+C+K, 8400) or similar
+                # Proto output for Segmentation is 4D (B, 32, 160, 160)
+                if len(shape) == 3:
+                     self.outputs_ordered[0] = out_info
+                elif len(shape) == 4:
+                     self.outputs_ordered[1] = out_info
+                else:
+                     # Default fallback if only one output and it's not 3D/4D (rare)
+                     if self.outputs_ordered[0] is None:
+                         self.outputs_ordered[0] = out_info
+
+        # Safety: if only one output, ensure it's at index 0
+        if self.outputs_ordered[0] is None and len(self.trt_outputs) > 0:
+            self.outputs_ordered[0] = self.trt_outputs[0]
+
+        self._host_input = None
 
     def infer(self, tiles, metadata):
         batch_size = 32
@@ -71,15 +88,9 @@ class YoloTensorRTEngine(YoloEngine):
         all_boxes, all_scores, all_masks, all_visible_boxes = [], [], [], []
         self.last_perf = {k: 0 for k in self.last_perf}
 
-        def preprocess_local(tile):
+        def preprocess_parallel(tile):
             if tile.shape[:2] != (target_h, target_w):
                 tile = cv2.resize(tile, (target_w, target_h))
-            return np.transpose(tile.astype(np.float32) / 255.0, (2, 0, 1))
-
-        def preprocess_parallel(tile):
-            # Version parallélisée plus rapide que blobFromImages sur CPU multi-coeurs
-            if tile.shape[:2] != (640, 640):
-                tile = cv2.resize(tile, (640, 640))
             return np.transpose(tile.astype(np.float32) * (1.0/255.0), (2, 0, 1))
 
         for i in range(0, len(tiles), batch_size):
@@ -87,82 +98,36 @@ class YoloTensorRTEngine(YoloEngine):
             actual_b = len(chunk)
 
             t_pre_0 = time.time()
-            # Prepare or resize reusable host buffer
-            input_cap = self.trt_inputs[0]['shape'][0] if self.trt_inputs and 'shape' in self.trt_inputs[0] else batch_size
-            if self._host_input is None or self._host_input.shape[0] < input_cap or self._host_input.shape[2] != target_h or self._host_input.shape[3] != target_w:
-                self._host_input = np.empty((input_cap, 3, target_h, target_w), dtype=np.float32)
-
+            if self._host_input is None or self._host_input.shape[0] < actual_b:
+                self._host_input = np.empty((32, 3, target_h, target_w), dtype=np.float32)
             input_data = self._host_input[:actual_b]
 
-            # GPU-preproc path (torch or cupy) - optional and experimental
-            if self.use_gpu_preproc and torch is not None and torch.cuda.is_available():
-                # Stack tiles into numpy (B,H,W,3)
-                np_stack = np.stack([t for t in chunk], axis=0)
-                # Convert to torch tensor on GPU and interpolate
-                t_tensor = torch.from_numpy(np_stack).permute(0,3,1,2).float().cuda(non_blocking=True) / 255.0
-                if t_tensor.shape[2] != target_h or t_tensor.shape[3] != target_w:
-                    t_tensor = F.interpolate(t_tensor, size=(target_h, target_w), mode='bilinear', align_corners=False)
-                # Now have (B,3,640,640) on GPU; copy directly device->device into TRT input device memory
-                # Fallback: copy to host if direct D2D not possible
-                try:
-                    for b in range(actual_b):
-                        src_ptr = t_tensor[b].contiguous().data_ptr()
-                        nbytes = t_tensor[b].numel() * t_tensor[b].element_size()
-                        # Copy device->device
-                        self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'] + b * nbytes, src_ptr, nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToDevice, self.trt_stream)
-                except Exception:
-                    # fallback to assemble on host
-                    t_host = t_tensor.cpu().numpy()
-                    input_data[:actual_b] = t_host
-            elif self.use_gpu_preproc and cp is not None:
-                # CuPy path: resize on GPU is less convenient; fallback to CPU resize then normalize in GPU
-                def _write_prep(idx, tile):
-                    if tile.shape[:2] != (target_h, target_w):
-                        tile = cv2.resize(tile, (target_w, target_h))
-                    a = tile.astype(np.float32) * (1.0/255.0)
-                    # move to cupy, transpose there
-                    g = cp.asarray(a)
-                    g = g.transpose(2,0,1)
-                    input_data[idx] = cp.asnumpy(g)
-
-                from concurrent.futures import ThreadPoolExecutor as _TPE
-                with _TPE(max_workers=min(8, actual_b)) as exe:
-                    futures = [exe.submit(_write_prep, j, chunk[j]) for j in range(actual_b)]
-                    for f in futures: f.result()
-            else:
-                # Fill input_data in parallel writing directly into preallocated buffer (CPU path)
-                def _write_prep(idx, tile):
-                    input_data[idx] = preprocess_parallel(tile)
-
-                from concurrent.futures import ThreadPoolExecutor as _TPE
-                with _TPE(max_workers=min(8, actual_b)) as exe:
-                    futures = [exe.submit(_write_prep, j, chunk[j]) for j in range(actual_b)]
-                    for f in futures:
-                        f.result()
-
-            t_pre_3 = time.time()
-            self.last_perf['preprocess'] += t_pre_3 - t_pre_0
-            if i == 0:
-                print(f"  [INTERNAL PRE] Resize={(t_pre_3-t_pre_0)*1000:.1f}ms | Contiguous=0.0ms (Batch={actual_b})")
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            with _TPE(max_workers=min(8, actual_b)) as exe:
+                futures = [exe.submit(lambda j, t: input_data.__setitem__(j, preprocess_parallel(t)), j, chunk[j]) for j in range(actual_b)]
+                for f in futures: f.result()
+            self.last_perf['preprocess'] += time.time() - t_pre_0
 
             t1 = time.time()
-            # Host buffer is C-contiguous by construction; reuse for H2D
-            self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
+            # H2D via Torch
+            input_name = self.trt_inputs[0]['name']
+            self._torch_tensors[input_name][:actual_b].copy_(torch.from_numpy(input_data))
             self.last_perf['h2d'] += time.time() - t1
             
-            self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
-            for inp in self.trt_inputs: self.trt_context.set_tensor_address(inp['name'], inp['device'])
-            for out in self.trt_outputs: self.trt_context.set_tensor_address(out['name'], out['device'])
+            # Execution
+            self.trt_context.set_input_shape(input_name, (actual_b, 3, target_h, target_w))
+            for name, tensor in self._torch_tensors.items():
+                self.trt_context.set_tensor_address(name, tensor.data_ptr())
 
             t2 = time.time()
             self.trt_context.execute_async_v3(self.trt_stream)
-            self.cudart.cudaStreamSynchronize(self.trt_stream)
+            torch.cuda.synchronize()
             self.last_perf['infer'] += time.time() - t2
 
             t3 = time.time()
+            # D2H via Torch
             for out in self.trt_outputs:
-                self.cudart.cudaMemcpyAsync(out['host'].ctypes.data, out['device'], out['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
-            self.cudart.cudaStreamSynchronize(self.trt_stream)
+                out['host'][:actual_b] = self._torch_tensors[out['name']][:actual_b].cpu().numpy()
             self.last_perf['d2h'] += time.time() - t3
 
             # Post-process (YOLOv12/v26 structure)

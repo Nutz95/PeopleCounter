@@ -26,6 +26,13 @@ else
     DOCKER_ARGS+=("--device" "$SOURCE:$SOURCE" "-e" "CAPTURE_MODE=usb" "-e" "CAMERA_INDEX=$SOURCE")
 fi
 
+# --- CONFIGURATION GPU PAR DÉFAUT ---
+DOCKER_ARGS+=("-e" "YOLO_BACKEND=tensorrt_native")
+DOCKER_ARGS+=("-e" "LWCC_BACKEND=tensorrt")
+DOCKER_ARGS+=("-e" "YOLO_MODEL=yolo26s-seg")
+DOCKER_ARGS+=("-e" "YOLO_TILING=1")
+DOCKER_ARGS+=("-e" "DENSITY_TILING=1")
+
 echo "[DEBUG] Installation/Verif des dependances rapides..."
 # Run prepare_models.py inside the container to clone/install local lwcc if LWCC_GIT_URL is set
 # and pre-download optional YOLO models (controlled by YOLO_PREPARE env var).
@@ -33,5 +40,10 @@ echo "[DEBUG] Installation/Verif des dependances rapides..."
 docker run --rm -it \
     "${DOCKER_ARGS[@]}" \
     "$IMAGE_NAME" bash -c "set -e; apt-get update -qq && apt-get install -y git unzip || true; python3 prepare_models.py || true; pip install --no-cache-dir flask screeninfo psutil matplotlib; python3 main.py"
+
+# --- FIX PERMISSIONS ---
+# Comme le conteneur tourne en root, on rend la main à l'utilisateur sur les fichiers créés (engines, models)
+echo "🔧 Synchronisation des permissions..."
+sudo chown -R $(id -u):$(id -g) models/ vendors/ 2>/unknown || true
 
 echo "⏹️ Container stopped."

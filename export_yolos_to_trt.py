@@ -1,13 +1,14 @@
-import os
 import glob
+import os
+import shutil
 import subprocess
 import sys
 
 def export_yolos(models_dir="models"):
-    # Find all .pt files under models_dir
+    # Find all .pt files under models_dir and subfolders
     os.makedirs(models_dir, exist_ok=True)
-    pt_files = glob.glob(os.path.join(models_dir, "*.pt"))
-    print(f"Found YOLO models in {models_dir}: {pt_files}")
+    pt_files = glob.glob(os.path.join(models_dir, "*.pt")) + glob.glob(os.path.join(models_dir, "**", "*.pt"))
+    print(f"Found YOLO models: {pt_files}")
     
     python_path = sys.executable
 
@@ -15,20 +16,38 @@ def export_yolos(models_dir="models"):
         pt = os.path.basename(pt_path)
         print(f"\n--- Exporting {pt} to ONNX (CPU) ---")
         try:
-            onnx_path = os.path.join(models_dir, pt.replace(".pt", ".onnx"))
-            engine_path = os.path.join(models_dir, pt.replace(".pt", ".engine"))
+            # Place outputs in the correct structured folders
+            onnx_dir = os.path.join(models_dir, "onnx")
+            engine_dir = os.path.join(models_dir, "tensorrt")
+            os.makedirs(onnx_dir, exist_ok=True)
+            os.makedirs(engine_dir, exist_ok=True)
+            
+            onnx_path = os.path.join(onnx_dir, pt.replace(".pt", ".onnx"))
+            engine_path = os.path.join(engine_dir, pt.replace(".pt", ".engine"))
+
+            generated_onnx = os.path.join(models_dir, pt.replace(".pt", ".onnx"))
+
+            if os.path.exists(engine_path):
+                print(f"{engine_path} already exists, skipping export/conversion")
+                continue
 
             # Export ONNX via a separate process to keep CUDA state clean
             export_cmd = [
                 python_path, "-c",
                 (
                     "from ultralytics import YOLO; "
-                    f"model = YOLO('{pt}'); model.export(format='onnx', dynamic=True, opset=12, device='cpu'); "
+                    f"model = YOLO('{pt_path}'); model.export(format='onnx', dynamic=True, opset=12, device='cpu'); "
                     f"print('exported {pt} to onnx')"
                 )
             ]
             # Run export with working directory = models_dir so outputs land there
-            subprocess.run(export_cmd, cwd=models_dir)
+            need_export = not os.path.exists(onnx_path)
+            if need_export:
+                subprocess.run(export_cmd, cwd=models_dir)
+                if os.path.exists(generated_onnx):
+                    shutil.move(generated_onnx, onnx_path)
+            else:
+                print(f"{onnx_path} already exists, skipping export step")
             
             # Now convert ONNX to TRT using the custom script
             print(f"Converting {onnx_path} to {engine_path} (Batch=32)...")

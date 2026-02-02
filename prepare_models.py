@@ -61,13 +61,29 @@ if LWCC_GIT_URL and not LWCC_DIR.exists():
 # If vendors/lwcc exists, install editable local package
 if LWCC_DIR.exists():
     print(f"[prepare_models] Installing local lwcc (editable)")
+    # Add to sys.path so we can import it immediately in this process
+    sys.path.append(str(LWCC_DIR))
+    # Still install it for other processes
     run(f"pip install --no-deps -e {LWCC_DIR}")
-else:
-    print("[prepare_models] vendors/lwcc not present; skipping local install. Set LWCC_GIT_URL to auto-clone.")
 
 # Ensure models directory exists
 models_dir = ROOT / 'models'
 models_dir.mkdir(exist_ok=True)
+
+# Point LWCC to use a persistent weights directory inside the workspace
+# This prevents re-downloading inside the container
+LWCC_WEIGHTS_DIR = models_dir / 'lwcc_weights'
+LWCC_WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+os.environ['LWCC_WEIGHTS_PATH'] = str(LWCC_WEIGHTS_DIR)
+
+# Also try to set for Python's current process
+try:
+    import lwcc.util.functions as lwcc_funcs
+    # some versions of lwcc might use a global or need a patch
+    lwcc_funcs.PAIRS = lwcc_funcs.PAIRS # just ensuring it's imported
+except Exception as e:
+    print(f"[prepare_models] Optional LWCC setup skipped or failed: {e}")
+    pass
 
 # Optionally, user can list YOLO models to pre-download via YOLO_PREPARE env var (comma separated)
 # Defaults to yolo26 series if not specified
@@ -76,11 +92,26 @@ if yolo_list:
     try:
         from ultralytics import YOLO
         for name in [x.strip() for x in yolo_list.split(',') if x.strip()]:
-            print(f"[prepare_models] Ensuring YOLO model available: {name}")
-            # This will download model weights if needed
+            # Always look in models/pt OR models/
+            target_pt = models_dir / name
+            alt_pt = models_dir / "pt" / name
+            
+            if target_pt.exists() or alt_pt.exists():
+                print(f"[prepare_models] YOLO {name} already exists.")
+                continue
+
+            print(f"[prepare_models] Downloading YOLO model: {name}")
             try:
+                # Force download to ROOT then move
                 model = YOLO(name)
-                print(f"[prepare_models] YOLO {name} ready")
+                # Ultralytics often leaves it in current dir
+                if os.path.exists(name):
+                    import shutil
+                    # Prefer models/pt/
+                    pt_dir = models_dir / "pt"
+                    pt_dir.mkdir(exist_ok=True)
+                    shutil.move(name, str(pt_dir / name))
+                print(f"[prepare_models] YOLO {name} ready in {models_dir}")
             except Exception as e:
                 print(f"[prepare_models] Warning: failed to prepare {name}: {e}")
     except Exception as e:
@@ -96,23 +127,18 @@ try:
 except Exception as e:
     print(f"[prepare_models] Warning: download_lwcc_weights.py failed: {e}")
     
-# Ensure weights are in /root/.lwcc/weights as some scripts expect that path
+# Ensure weights are in models/lwcc_weights for persistence
 try:
     import shutil
-    src = Path('/') / '.lwcc' / 'weights'
-    dst = Path('/root') / '.lwcc' / 'weights'
-    if src.exists() and not dst.exists():
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        print(f"[prepare_models] Moving weights from {src} to {dst}")
-        shutil.move(str(src), str(dst))
-    elif src.exists() and dst.exists():
-        # Move individual files
-        for f in src.glob('*'):
-            shutil.move(str(f), str(dst))
-        try:
-            src.rmdir()
-        except Exception:
-            pass
+    srcs = [Path('/') / '.lwcc' / 'weights', Path('/root') / '.lwcc' / 'weights']
+    dst = ROOT / 'models' / 'lwcc_weights'
+    dst.mkdir(parents=True, exist_ok=True)
+    
+    for src in srcs:
+        if src.exists() and src.resolve() != dst.resolve():
+            print(f"[prepare_models] Moving weights from {src} to {dst}")
+            for f in src.glob('*.pth'):
+                shutil.move(str(f), str(dst / f.name))
 except Exception as e:
     print(f"[prepare_models] Warning: failed to relocate weights: {e}")
 
@@ -136,28 +162,20 @@ try:
     trt_dir = ROOT / 'models' / 'tensorrt'
     onnx_dir.mkdir(parents=True, exist_ok=True)
     trt_dir.mkdir(parents=True, exist_ok=True)
-    has_cuda = False
-    try:
-        import shutil, subprocess
-        if shutil.which('nvidia-smi'):
-            res = subprocess.run(['nvidia-smi','-L'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            has_cuda = (res.returncode == 0)
-    except Exception:
-        has_cuda = False
 
-    if has_cuda:
-        for onnx in onnx_dir.glob('*.onnx'):
-            engine = trt_dir / (onnx.stem + '.engine')
-            if not engine.exists():
-                print(f"[prepare_models] Converting {onnx} -> {engine}")
-                try:
-                    run(f"python3 convert_onnx_to_trt.py {onnx} {engine} 32")
-                except Exception as ce:
-                    print(f"[prepare_models] Warning: convert_onnx_to_trt failed for {onnx}: {ce}")
-    else:
-        print("[prepare_models] CUDA not available in container; skipping ONNX->TensorRT conversion.")
+    for onnx in onnx_dir.glob('*.onnx'):
+        if "yolo" in onnx.name.lower():
+            continue
+        engine = trt_dir / (onnx.stem + '.engine')
+        if not engine.exists():
+            print(f"[prepare_models] Converting {onnx.name} -> {engine.name} (Batch 8)")
+            try:
+                # Use batch 8 (Original app setting) for density to match 2x2 tiling or multi-camera
+                run(f"python3 convert_onnx_to_trt.py {onnx} {engine} 8")
+            except Exception as ce:
+                print(f"[prepare_models] Warning: convert_onnx_to_trt failed for {onnx}: {ce}")
 except Exception as e:
-    print(f"[prepare_models] Warning: ONNX->TensorRT conversion step failed: {e}")
+    print(f"[prepare_models] Warning: LWCC ONNX->TRT conversion failed: {e}")
 
 try:
     # Convert PTH to OpenVINO IR

@@ -10,7 +10,8 @@ from lwcc.models.DMCount import make_model as make_dmcount
 def export_dmcount_qnrf():
     model_name = "DM-Count"
     model_weights = "QNRF"
-    weights_path = os.path.join(str(Path.home()), ".lwcc", "weights", f"{model_name}_{model_weights}.pth")
+    lwcc_weights_dir = os.environ.get('LWCC_WEIGHTS_PATH', os.path.join(root, "models", "lwcc_weights"))
+    weights_path = os.path.join(lwcc_weights_dir, f"{model_name}_{model_weights}.pth")
     
     onnx_dir = os.path.join(root, "models", "onnx")
     os.makedirs(onnx_dir, exist_ok=True)

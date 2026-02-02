@@ -43,27 +43,34 @@ def build_engine(onnx_path, engine_path, max_batch_size=1):
         input_shape = network.get_input(0).shape
         
         # On s'assure que les dimensions dynamiques (-1) sont remplacées par des valeurs fixes dans le profil
-        # On part sur du 1080p par défaut si c'est dynamique
-        def fix_dims(dims, b, model_name):
+        # On définit les dimensions optimales : 1080p pour densité si dynamique
+        def fix_dims(dims, b, model_name, target_res="opt"):
             new_dims = list(dims)
             new_dims[0] = b # Always set batch
-            is_density = "dm_count" in model_name.lower() or "csrnet" in model_name.lower() or "sfanet" in model_name.lower() or "bay" in model_name.lower()
+            is_density = any(word in model_name.lower() for word in ["dm_count", "csrnet", "sfanet", "bay", "density"])
             
             for i in range(1, len(new_dims)):
                 if new_dims[i] <= 0: # If dynamic, provide a default
                     if i == 1: new_dims[i] = 3
                     elif i == 2: 
-                        new_dims[i] = 544 if is_density else 640
+                        # Pour la densité, on force la calibration 544p demandée pour le tiling
+                        if is_density:
+                            new_dims[i] = 544
+                        else:
+                            new_dims[i] = 640
                     elif i == 3: 
-                        new_dims[i] = 960 if is_density else 640
+                        if is_density:
+                            new_dims[i] = 960
+                        else:
+                            new_dims[i] = 640
                     else: 
                         new_dims[i] = 640
             return new_dims
 
         model_filename = os.path.basename(onnx_path)
-        min_shape = fix_dims(input_shape, 1, model_filename)
-        opt_shape = fix_dims(input_shape, max_batch_size, model_filename)
-        max_shape = fix_dims(input_shape, max_batch_size, model_filename)
+        min_shape = fix_dims(input_shape, 1, model_filename, "min")
+        opt_shape = fix_dims(input_shape, max_batch_size, model_filename, "opt")
+        max_shape = fix_dims(input_shape, max_batch_size, model_filename, "opt")
         
         profile.set_shape(input_name, min_shape, opt_shape, max_shape)
         config.add_optimization_profile(profile)
