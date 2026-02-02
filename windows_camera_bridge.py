@@ -4,7 +4,7 @@ import time
 
 # --- CONFIGURATION ---
 CAMERA_INDEX = 0  # 0 pour la caméra par défaut
-PORT = 5001       # Port 5001 pour ne pas entrer en conflit avec le Docker (5000)
+PORT = 5002       # Port 5002 pour ne pas entrer en conflit avec le Docker (5000)
 # ---------------------
 
 app = Flask(__name__)

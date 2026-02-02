@@ -4,7 +4,7 @@ import socket
 import logging
 
 # Configuration
-PORT = 5001
+PORT = 5002
 CAMERA_INDEX = 0
 
 # Désactiver les logs Flask pour plus de clarté
