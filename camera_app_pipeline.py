@@ -35,7 +35,7 @@ class ModelThread(threading.Thread):
 AVERAGING_PERIOD_SECONDS = 2  # Réduit à 2s pour un graphe plus réactif
 
 class CameraAppPipeline:
-    def __init__(self, capture_mode=None, frame_callback=None):
+    def __init__(self, capture_mode=None, frame_callback=None, metrics_callback=None):
         # capture_mode can be 'usb' (default), 'mqtt', or 'rtsp'
         cmode = capture_mode or os.environ.get('CAPTURE_MODE', 'usb')
         self.frame_callback = frame_callback
@@ -195,6 +195,10 @@ class CameraAppPipeline:
         self.yolo_tiling = os.environ.get('YOLO_TILING', '1') == '1' # Défaut à 1 (Tiling actif)
         self.history_len = 600  # Raw frames history (~3-5 mins at 2-3 FPS)
         self.history_data = [] # List of (yolo, density, total)
+        self.metrics_callback = metrics_callback
+        self.profile_active = False
+        self.profile_log = []
+        self.latest_metrics = {}
 
     def _draw_mini_graph(self, img):
         # Draw a small semi-transparent graph in the bottom left
@@ -258,6 +262,21 @@ class CameraAppPipeline:
         cv2.putText(img, "YOLO", (x0 + 10, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
         cv2.putText(img, "LWCC (Density)", (x0 + 60, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
         cv2.putText(img, "AVERAGE", (x0 + 170, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+
+    def attach_metrics_callback(self, callback):
+        self.metrics_callback = callback
+
+    def set_debug_mode(self, enabled):
+        self.extreme_debug = bool(enabled)
+
+    def set_profile_logging(self, active):
+        self.profile_active = bool(active)
+
+    def clear_profile_log(self):
+        self.profile_log.clear()
+
+    def get_profile_log(self, limit=40):
+        return list(self.profile_log[-limit:])
 
     def run(self):
         # Prépare le fichier CSV avec date et heure
@@ -469,6 +488,37 @@ class CameraAppPipeline:
                     
                     total_time = time.time() - start_time
                     fps = 1.0 / total_time if total_time > 0 else 0
+                    avg_instant = (yolo_count + density_count) / 2.0
+                    history_snapshot = [
+                        {"yolo": float(y), "density": float(d), "average": float(a)}
+                        for y, d, a in self.history_data[-32:]
+                    ]
+                    metrics = {
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "yolo_count": int(yolo_count),
+                        "density_count": float(density_count),
+                        "average": float(avg_instant),
+                        "fps": float(fps),
+                        "cpu_usage": float(cpu_usage),
+                        "total_time": float(total_process_time),
+                        "yolo_time": float(yolo_time),
+                        "density_time": float(density_time),
+                        "yolo_device": yolo_dev,
+                        "density_device": dens_dev,
+                        "debug_mode": bool(self.extreme_debug),
+                        "profile_active": bool(self.profile_active),
+                        "history": history_snapshot
+                    }
+                    self.latest_metrics = metrics
+                    if self.profile_active:
+                        self.profile_log.append(metrics.copy())
+                        if len(self.profile_log) > 300:
+                            self.profile_log.pop(0)
+                    if self.metrics_callback:
+                        try:
+                            self.metrics_callback(metrics)
+                        except Exception as exc:
+                            print(f"[WARN] Metrics callback failed: {exc}")
                     
                     # Console logs plus détaillés avec devices
                     print(f"Metrics: YOLO={yolo_count} ({yolo_time:.3f}s on {yolo_dev}) | "
@@ -490,7 +540,6 @@ class CameraAppPipeline:
                           f"Capture={capture_time:.3f}s | CPU: {cpu_usage}% | Total: {total_process_time:.3f}s | FPS: {fps:.2f}")
                     
                     # Update mini-graph history at every frame for live feedback (YOLO, Density, Average)
-                    avg_instant = (yolo_count + density_count) / 2.0
                     self.history_data.append((yolo_count, density_count, avg_instant))
                     if len(self.history_data) > self.history_len:
                         self.history_data.pop(0)
