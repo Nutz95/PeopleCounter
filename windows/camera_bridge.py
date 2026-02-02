@@ -106,8 +106,7 @@ def index():
 if __name__ == "__main__":
     ip = get_ip()
     
-    # Initialisation de la caméra globale
-    global camera
+    # Initialisation de la caméra
     camera = select_resolution()
     if camera is None:
         exit(1)
