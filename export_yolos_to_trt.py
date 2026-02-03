@@ -4,9 +4,21 @@ import shutil
 import subprocess
 import sys
 
+def _ensure_dir(path, mode=0o775):
+    os.makedirs(path, exist_ok=True)
+    try:
+        os.chmod(path, mode)
+    except PermissionError:
+        pass
+    return path
+
+
 def export_yolos(models_dir="models"):
-    # Find all .pt files under models_dir and subfolders
-    os.makedirs(models_dir, exist_ok=True)
+    script_dir = os.path.abspath(os.path.dirname(__file__))
+    if not os.path.isabs(models_dir):
+        models_dir = os.path.join(script_dir, models_dir)
+    models_dir = os.path.abspath(models_dir)
+    _ensure_dir(models_dir)
     pt_files = glob.glob(os.path.join(models_dir, "*.pt")) + glob.glob(os.path.join(models_dir, "**", "*.pt"))
     print(f"Found YOLO models: {pt_files}")
     
@@ -19,13 +31,11 @@ def export_yolos(models_dir="models"):
             # Place outputs in the correct structured folders
             onnx_dir = os.path.join(models_dir, "onnx")
             engine_dir = os.path.join(models_dir, "tensorrt")
-            os.makedirs(onnx_dir, exist_ok=True)
-            os.makedirs(engine_dir, exist_ok=True)
+            _ensure_dir(onnx_dir)
+            _ensure_dir(engine_dir)
             
             onnx_path = os.path.join(onnx_dir, pt.replace(".pt", ".onnx"))
             engine_path = os.path.join(engine_dir, pt.replace(".pt", ".engine"))
-
-            generated_onnx = os.path.join(models_dir, pt.replace(".pt", ".onnx"))
 
             if os.path.exists(engine_path):
                 print(f"{engine_path} already exists, skipping export/conversion")
@@ -40,12 +50,14 @@ def export_yolos(models_dir="models"):
                     f"print('exported {pt} to onnx')"
                 )
             ]
-            # Run export with working directory = models_dir so outputs land there
+            # Run export from repo root to avoid Ultralytics creating nested models/
             need_export = not os.path.exists(onnx_path)
             if need_export:
-                subprocess.run(export_cmd, cwd=models_dir)
-                if os.path.exists(generated_onnx):
-                    shutil.move(generated_onnx, onnx_path)
+                subprocess.run(export_cmd, cwd=script_dir)
+                generated = _locate_generated_onnx(models_dir, pt)
+                if generated:
+                    os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
+                    shutil.move(generated, onnx_path)
             else:
                 print(f"{onnx_path} already exists, skipping export step")
             
@@ -56,6 +68,30 @@ def export_yolos(models_dir="models"):
             print(f"Process for {pt} COMPLETED.")
         except Exception as e:
             print(f"FAILED to process {pt}: {e}")
+
+    _clean_redundant_dir(models_dir)
+
+def _locate_generated_onnx(models_dir, pt_filename):
+    name = pt_filename.replace(".pt", ".onnx")
+    candidates = [
+        os.path.join(models_dir, "models", "pt", name),
+        os.path.join(models_dir, "models", name),
+        os.path.join(models_dir, "pt", name),
+        os.path.join(models_dir, name),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+def _clean_redundant_dir(models_dir):
+    redundant_models_dir = os.path.join(models_dir, "models")
+    if os.path.isdir(redundant_models_dir):
+        try:
+            shutil.rmtree(redundant_models_dir)
+            print(f"Removed redundant directory {redundant_models_dir}")
+        except Exception as cleanup_exc:
+            print(f"Warning: unable to remove {redundant_models_dir}: {cleanup_exc}")
 
 if __name__ == "__main__":
     export_yolos(models_dir=os.environ.get('MODELS_DIR', 'models'))

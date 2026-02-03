@@ -91,4 +91,17 @@ Les fichiers suivants sont des reliquats d'anciennes versions et ne sont plus n�
 - **NON** : Le dossier `wheelhouse/` (trop lourd, contient des binaires `.whl` qui sont téléchargés dynamiquement durant le build Docker via le cache).
 - **NON** : Les dossiers `models/` (doivent être gérés via un script de téléchargement ou stockés séparément).
 
+### Structure des modèles
+Le dossier `models/` est monté depuis l’hôte et doit conserver cette arborescence claire :
+
+| Sous-répertoire | Contenu attendu |
+|-----------------|-----------------|
+| `models/pt/` | Poids YOLO originaux en `.pt` téléchargés via `prepare_models.py` ou `YOLO_PREPARE`, utilisés par `export_yolos_to_trt.py`. |
+| `models/onnx/` | Faisceaux `.onnx` générés pour tous les modèles (YOLO et densité). Les scripts déplacent les exports Achim du cache Ultralytics vers ce dossier. |
+| `models/tensorrt/` | Moteurs TensorRT `.engine` compilés pour YOLO (batch 32) et LWCC (batch 8). Conversion pilotée par `convert_onnx_to_trt.py`. |
+| `models/openvino/` | IR OpenVINO (`.xml` + `.bin`) produits par `convert_pth_to_openvino.py`. |
+| `models/lwcc_weights/` | Pths LWCC persistants. `LWCC_WEIGHTS_PATH` pointe vers ce dossier, donc les téléchargements n’atterrissent plus dans `/.lwcc/weights`. |
+
+Les scripts `prepare_models.py`, `download_lwcc_weights.py` et `export_yolos_to_trt.py` font maintenant en sorte de créer ces dossiers avec des permissions 775, d’exécuter les conversions à partir de la racine du dépôt, puis de nettoyer les sous-arborescences temporaires (`models/models/`). Il suffit de relancer `./run_app.sh` (ou `python3 prepare_models.py`) après toute mise à jour pour regénérer les poids aux bons emplacements.
+
 ```

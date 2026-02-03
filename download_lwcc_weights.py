@@ -44,6 +44,10 @@ def main():
             weights_dir = os.path.join(home, ".lwcc", "weights")
         
     os.makedirs(weights_dir, exist_ok=True)
+    try:
+        os.chmod(weights_dir, 0o775)
+    except PermissionError:
+        pass
     print(f"LWCC Weights storage: {weights_dir}")
     
     for model, weights in PAIRS:

@@ -40,6 +40,13 @@ IMAGE_NAME="people-counter:gpu-final"
 echo "🚀 Launching PeopleCounter Container..."
 echo "📸 Source: $SOURCE"
 
+if command -v nvidia-smi >/dev/null 2>&1; then
+    echo "🖥️ GPU status (hôte) :"
+    nvidia-smi
+else
+    echo "⚠️ nvidia-smi introuvable sur l’hôte"
+fi
+
 # Detection of source type
 DOCKER_ARGS=("--gpus" "all" "-p" "5000:5000" "-e" "DISPLAY=$DISPLAY")
 
@@ -63,7 +70,7 @@ DOCKER_ARGS+=("-e" "YOLO_MODEL=yolo26s-seg")
 DOCKER_ARGS+=("-e" "YOLO_TILING=1")
 DOCKER_ARGS+=("-e" "DENSITY_TILING=1")
 
-PROFILE_NAME="${PROFILE_NAME:-balanced_tri_chip}"
+PROFILE_NAME="${PROFILE_NAME:-rtx_extreme}"
 CONFIG_FILE="$BASE_DIR/scripts/configs/${PROFILE_NAME}.env"
 CLEANUP_ENV=""
 cleanup_profile_env() {
@@ -92,6 +99,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
 else
     echo "⚠️ Profile '$PROFILE_NAME' not found (looking for $CONFIG_FILE); proceeding with defaults."
 fi
+DOCKER_ARGS+=("-e" "ACTIVE_PROFILE=$PROFILE_NAME")
 
 echo "🌐 Web UI at http://localhost:5000 exposes profile controls, FPS, and the debug toggle."
 
@@ -101,7 +109,7 @@ echo "[DEBUG] Installation/Verif des dependances rapides..."
 # We avoid installing 'lwcc' from PyPI here to prevent overriding local editable installs.
 docker run --rm -it \
     "${DOCKER_ARGS[@]}" \
-    "$IMAGE_NAME" bash -c "set -e; apt-get update -qq && apt-get install -y git unzip || true; python3 prepare_models.py || true; pip install --no-cache-dir flask screeninfo psutil matplotlib; python3 main.py"
+    "$IMAGE_NAME" bash -c "set -e; if command -v nvidia-smi >/dev/null 2>&1; then echo '[containérisé] nvidia-smi'; nvidia-smi || true; else echo '[containérisé] nvidia-smi absent'; fi; if command -v nvcc >/dev/null 2>&1; then echo '[containérisé] nvcc --version'; nvcc --version || true; else echo '[containérisé] nvcc absent'; fi; apt-get update -qq && apt-get install -y git unzip || true; python3 prepare_models.py || true; pip install --no-cache-dir flask screeninfo psutil matplotlib; python3 main.py"
 
 echo "🌐 Visit http://localhost:5000 in your browser; pick a profile, start profiling, and watch the FPS overlay plus debug metrics without tailing logs."
 

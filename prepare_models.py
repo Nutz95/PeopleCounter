@@ -14,8 +14,17 @@ def run(cmd, **kwargs):
     print(f"[prepare_models] $ {cmd}")
     subprocess.check_call(cmd, shell=True, **kwargs)
 
-if not VENDORS.exists():
-    VENDORS.mkdir(parents=True, exist_ok=True)
+
+def _ensure_directory(path, mode=0o775):
+    resolved = Path(path)
+    resolved.mkdir(parents=True, exist_ok=True)
+    try:
+        resolved.chmod(mode)
+    except PermissionError:
+        pass
+    return resolved
+
+_ensure_directory(VENDORS)
 
 if LWCC_GIT_URL and not LWCC_DIR.exists():
     print(f"[prepare_models] Cloning lwcc from {LWCC_GIT_URL} into {LWCC_DIR}")
@@ -68,12 +77,12 @@ if LWCC_DIR.exists():
 
 # Ensure models directory exists
 models_dir = ROOT / 'models'
-models_dir.mkdir(exist_ok=True)
+_ensure_directory(models_dir)
 
 # Point LWCC to use a persistent weights directory inside the workspace
 # This prevents re-downloading inside the container
 LWCC_WEIGHTS_DIR = models_dir / 'lwcc_weights'
-LWCC_WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+_ensure_directory(LWCC_WEIGHTS_DIR)
 os.environ['LWCC_WEIGHTS_PATH'] = str(LWCC_WEIGHTS_DIR)
 
 # Also try to set for Python's current process

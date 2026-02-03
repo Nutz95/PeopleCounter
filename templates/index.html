@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PeopleCounter GPU Monitor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">PeopleCounter GPU Stream</p>
+      <h1>Live Metrics & Controls</h1>
+      <p style="color: var(--muted); margin: 0;">Toggle profiles, debug logs, and fullscreen while seeing FPS, CPU, and density without the terminal.</p>
+    </div>
+    <div class="hero-note">
+      <span>Port {{ port }}</span>
+      <span>MJPEG stream</span>
+    </div>
+  </header>
+  <main class="page-column">
+    <section class="video-shell">
+      <div class="video-wrapper" id="videoWrapper">
+        <img id="videoStream" src="/video_feed" alt="PeopleCounter stream">
+        <div class="fps-chip" id="fpsBadge">FPS —</div>
+        <div class="fps-status" id="fpsStatus">Awaiting metrics...</div>
+        <div class="video-actions">
+          <button id="fullscreenBtn" type="button">Fullscreen</button>
+          <button id="fitBtn" type="button">Fit View</button>
+        </div>
+        <button id="overlayToggle" class="overlay-button" type="button" data-state="on">Hide overlay graph</button>
+      </div>
+      <p class="video-hint">Connect from any browser at http://localhost:{{ port }} to mirror the feed from this device.</p>
+      <div class="video-history">
+        <div class="video-history-header">
+          <span>Stream overview</span>
+          <span id="overlayStatus">Overlay: on</span>
+        </div>
+        <div class="video-history-list" id="videoHistoryList">
+          <p class="history-empty">Waiting for data...</p>
+        </div>
+      </div>
+    </section>
+    <section class="metrics-shell">
+      <div class="metrics-grid">
+        <article class="metric-card">
+          <div class="metric-title">YOLO detections</div>
+          <div class="metric-value" id="yoloCountValue">—</div>
+          <div class="metric-footnote" id="yoloDeviceLabel">Device: —</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-title">Density estimate</div>
+          <div class="metric-value" id="densityCountValue">—</div>
+          <div class="metric-footnote" id="densityDeviceLabel">Device: —</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-title">Average people</div>
+          <div class="metric-value" id="avgValue">—</div>
+          <div class="metric-footnote">Last FPS: <span id="fpsValue">—</span></div>
+        </article>
+        <article class="metric-card wide">
+          <div class="metric-title">Latency (ms)</div>
+          <div class="metric-value"><span id="yoloTimeValue">—</span> / <span id="densityTimeValue">—</span></div>
+          <div class="metric-footnote">Total: <span id="totalTimeValue">—</span></div>
+        </article>
+        <article class="metric-card wide">
+          <div class="metric-title">CPU usage</div>
+          <div class="metric-value" id="cpuValue">—%</div>
+          <div class="metric-footnote" id="profileState">Idle</div>
+        </article>
+        <article class="metric-card wide">
+          <div class="metric-title">Perf breakdown (ms)</div>
+          <div class="metric-value" id="perfSummary">YOLO — | DENS —</div>
+          <div class="metric-footnote" id="captureTimeLabel">Capture: —ms</div>
+        </article>
+      </div>
+      <div class="control-group">
+        <label class="toggle">
+          <input type="checkbox" id="debugToggle">
+          <span>Enable verbose debug logs</span>
+        </label>
+        <div class="profile-controls">
+          <select id="profileViewSelect">
+            <option value="Live Metrics" {% if active_profile == 'Live Metrics' %}selected{% endif %}>Live Metrics</option>
+            {% for profile in profiles %}
+              <option value="{{ profile }}" {% if profile == active_profile %}selected{% endif %}>{{ profile.replace('_', ' ') }}</option>
+            {% endfor %}
+          </select>
+          <button id="profileStart" type="button">Start Profiling</button>
+          <button id="profileStop" type="button" disabled>Stop</button>
+          <button id="profileClear" type="button">Clear Logs</button>
+        </div>
+        <div class="profile-badge">
+          Active profile: <span id="profileViewBadge">{{ active_profile }}</span>
+        </div>
+      </div>
+      <div class="profile-log" id="profileLog">
+        <p class="log-empty">Profiles will appear here when profiling is active.</p>
+      </div>
+      <div class="instruction-card">
+        <p>Use this web UI to monitor FPS, alerts, and device status while the camera feeds the backend in the same terminal.</p>
+        <p>The profile selector mirrors what the launch script can configure via <code>scripts/configs</code> when you need a different backend.</p>
+      </div>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
+</body>
+</html>
