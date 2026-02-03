@@ -77,11 +77,15 @@ def export_yolos(models_dir="models"):
 
 def _locate_generated_asset(models_dir, pt_filename, suffix):
     name = pt_filename.replace(".pt", suffix)
-    target_dir = os.path.abspath(os.path.join(models_dir, suffix.lstrip(".")))
     pattern = os.path.join(models_dir, "**", name)
+    subdir_map = {
+        '.onnx': 'onnx',
+        '.engine': 'tensorrt',
+    }
+    target_subdir = os.path.join(models_dir, subdir_map.get(suffix, '')) if suffix in subdir_map else None
     for candidate in sorted(glob.glob(pattern, recursive=True)):
         candidate_abs = os.path.abspath(candidate)
-        if candidate_abs.startswith(target_dir):
+        if target_subdir and candidate_abs.startswith(os.path.abspath(target_subdir)):
             continue
         if os.path.isdir(candidate_abs):
             continue

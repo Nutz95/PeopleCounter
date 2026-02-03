@@ -327,22 +327,22 @@ class YoloPeopleCounter:
                 img = resized.astype(np.float32) / 255.0
                 img = np.transpose(img, (2, 0, 1))[None, ...]
 
-        # Copy input to device
+        # Copy input to device using asynchronous stream and queue output copy after inference
         input_data = np.ascontiguousarray(img)
-        # Use the actual size of input_data instead of self.trt_inputs[0]['nbytes'] (which might be max batch)
-        self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
+        cuda_input = self.trt_inputs[0]
+        self.cudart.cudaMemcpyAsync(cuda_input['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
 
-        # IMPORTANT: Set input shape for dynamic engines
-        self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
+        # IMPORTANT: Set input shape for dynamic engines before execution
+        self.trt_context.set_input_shape(cuda_input['name'], input_data.shape)
 
-        # Execute
+        # Execute inference (async)
         self.trt_context.execute_async_v3(self.trt_stream)
-        self.cudart.cudaStreamSynchronize(self.trt_stream)
 
-        # Copy output back
+        # Queue output copy back to host without an intermediate synchronize to overlap with kernel execution
         for output in self.trt_outputs:
             self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
-        
+
+        # Synchronize once after all copies are queued
         self.cudart.cudaStreamSynchronize(self.trt_stream)
 
         # Process output (assuming YOLO structure: [1, 84, 8400])
