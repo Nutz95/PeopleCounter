@@ -187,20 +187,25 @@ class YoloPeopleCounter:
             else:
                 results = self.model.predict(image_rgb, verbose=False, imgsz=tile_size)
                 r = results[0]
-                total_count = 0
                 image_out = image.copy() if draw_boxes else None
+                clusters = []
+                boxes = np.zeros((0, 4), dtype=np.float32)
                 if hasattr(r, 'boxes'):
                     person_mask = (r.boxes.cls.cpu().numpy() == self.person_class_id) & (r.boxes.conf.cpu().numpy() >= self.confidence_threshold)
-                    total_count = np.sum(person_mask)
-                    if draw_boxes:
-                        for i, is_person in enumerate(person_mask):
-                            if is_person:
-                                box = r.boxes.xyxy[i].cpu().numpy().astype(int)
-                                cv2.rectangle(image_out, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
-            
-            if draw_boxes:
-                return int(total_count), image_out
-            return int(total_count)
+                    selected = np.where(person_mask)[0]
+                    if selected.size:
+                        boxes = r.boxes.xyxy[selected].cpu().numpy()
+                        scores = r.boxes.conf[selected].cpu().numpy()
+                        clusters = self.tiler.fuse_results(boxes, scores, iou_threshold=0.25)
+                total_count = len(clusters)
+                if draw_boxes and image_out is not None:
+                    for cluster in clusters:
+                        idx = cluster[0] if isinstance(cluster, (list, tuple, np.ndarray)) else cluster
+                        x1, y1, x2, y2 = boxes[idx].astype(int)
+                        cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                if draw_boxes:
+                    return int(total_count), image_out
+                return int(total_count)
 
         # Utilisation du TilingManager pour une grille dense (ex: 7x4 pour 4K)
         tiles_coords = self.tiler.get_tiles(image_rgb.shape)
@@ -260,9 +265,9 @@ class YoloPeopleCounter:
         all_boxes = np.concatenate(all_boxes_list, axis=0)
         all_scores = np.concatenate(all_scores_list, axis=0)
         
-        keep = self.tiler.fuse_results(all_boxes, all_scores, iou_threshold=0.3)
-        
-        total_count = len(keep)
+        clusters = self.tiler.fuse_results(all_boxes, all_scores, iou_threshold=0.3)
+
+        total_count = len(clusters)
         image_out = image.copy() if draw_boxes else None
         if draw_boxes:
             # Debug Tiling YOLO (Bleu)
@@ -270,8 +275,9 @@ class YoloPeopleCounter:
                 for x1, y1, x2, y2 in tiles_coords:
                     cv2.rectangle(image_out, (x1, y1), (x2, y2), (255, 0, 0), 2)
 
-            for i in keep:
-                x1, y1, x2, y2 = all_boxes[i].astype(int)
+            for cluster in clusters:
+                idx = cluster[0] if isinstance(cluster, (list, tuple, np.ndarray)) else cluster
+                x1, y1, x2, y2 = all_boxes[int(idx)].astype(int)
                 cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
         return (int(total_count), image_out) if draw_boxes else int(total_count)

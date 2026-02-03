@@ -21,7 +21,7 @@ def export_yolos(models_dir="models"):
     _ensure_dir(models_dir)
     pt_files = glob.glob(os.path.join(models_dir, "*.pt")) + glob.glob(os.path.join(models_dir, "**", "*.pt"))
     print(f"Found YOLO models: {pt_files}")
-    
+
     python_path = sys.executable
 
     for pt_path in pt_files:
@@ -54,16 +54,20 @@ def export_yolos(models_dir="models"):
             need_export = not os.path.exists(onnx_path)
             if need_export:
                 subprocess.run(export_cmd, cwd=script_dir)
-                generated = _locate_generated_onnx(models_dir, pt)
-                if generated:
+                generated_onnx = _locate_generated_asset(models_dir, pt, ".onnx")
+                if generated_onnx:
                     os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
-                    shutil.move(generated, onnx_path)
+                    shutil.move(generated_onnx, onnx_path)
             else:
                 print(f"{onnx_path} already exists, skipping export step")
             
             # Now convert ONNX to TRT using the custom script
             print(f"Converting {onnx_path} to {engine_path} (Batch=32)...")
             subprocess.run([python_path, os.path.join(sys.path[0], "convert_onnx_to_trt.py"), onnx_path, engine_path, "32"])
+            generated_engine = _locate_generated_asset(models_dir, pt, ".engine")
+            if generated_engine:
+                os.makedirs(os.path.dirname(engine_path), exist_ok=True)
+                shutil.move(generated_engine, engine_path)
             
             print(f"Process for {pt} COMPLETED.")
         except Exception as e:
@@ -71,17 +75,17 @@ def export_yolos(models_dir="models"):
 
     _clean_redundant_dir(models_dir)
 
-def _locate_generated_onnx(models_dir, pt_filename):
-    name = pt_filename.replace(".pt", ".onnx")
-    candidates = [
-        os.path.join(models_dir, "models", "pt", name),
-        os.path.join(models_dir, "models", name),
-        os.path.join(models_dir, "pt", name),
-        os.path.join(models_dir, name),
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            return path
+def _locate_generated_asset(models_dir, pt_filename, suffix):
+    name = pt_filename.replace(".pt", suffix)
+    target_dir = os.path.abspath(os.path.join(models_dir, suffix.lstrip(".")))
+    pattern = os.path.join(models_dir, "**", name)
+    for candidate in sorted(glob.glob(pattern, recursive=True)):
+        candidate_abs = os.path.abspath(candidate)
+        if candidate_abs.startswith(target_dir):
+            continue
+        if os.path.isdir(candidate_abs):
+            continue
+        return candidate_abs
     return None
 
 def _clean_redundant_dir(models_dir):
@@ -92,6 +96,15 @@ def _clean_redundant_dir(models_dir):
             print(f"Removed redundant directory {redundant_models_dir}")
         except Exception as cleanup_exc:
             print(f"Warning: unable to remove {redundant_models_dir}: {cleanup_exc}")
+
+    for sub in ("onnx", "tensorrt"):
+        nested = os.path.join(models_dir, sub, "models")
+        if os.path.isdir(nested):
+            try:
+                shutil.rmtree(nested)
+                print(f"Removed nested directory {nested}")
+            except Exception as cleanup_exc:
+                print(f"Warning: unable to remove {nested}: {cleanup_exc}")
 
 if __name__ == "__main__":
     export_yolos(models_dir=os.environ.get('MODELS_DIR', 'models'))

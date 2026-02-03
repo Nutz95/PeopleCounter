@@ -2,6 +2,8 @@ import glob
 import os
 import platform
 import shutil
+import subprocess
+import sys
 import time
 from typing import Dict, Optional, Tuple
 
@@ -144,26 +146,35 @@ class ModelLoader:
         models_root = os.path.join(os.getcwd(), 'models')
         tensorrt_dir = os.path.join(models_root, 'tensorrt')
         base_model = model_name
-        if not os.path.isabs(base_model) and not base_model.endswith('.engine'):
+        if not base_model.endswith('.engine'):
             base_model = f"{base_model}.engine"
-        engine_path = os.path.join(tensorrt_dir, base_model) if not os.path.isabs(base_model) else base_model
+        if os.path.isabs(base_model):
+            engine_path = base_model
+        else:
+            normalized = os.path.normpath(base_model)
+            candidate = os.path.abspath(os.path.join(os.getcwd(), normalized))
+            if candidate.startswith(os.path.abspath(models_root)):
+                engine_path = candidate
+            else:
+                engine_path = os.path.join(tensorrt_dir, normalized)
         if not os.path.isfile(engine_path):
-            pt_model_name = os.path.basename(base_model).replace('.engine', '.pt')
-            pt_path = os.path.join(models_root, 'pt', pt_model_name)
-            if os.path.isfile(pt_path):
+            base_name = os.path.basename(base_model).replace('.engine', '')
+            onnx_candidate = os.path.join(models_root, 'onnx', f"{base_name}.onnx")
+            if os.path.isfile(onnx_candidate):
+                print(f"🔁 Converting ONNX -> TensorRT using convert_onnx_to_trt.py: {onnx_candidate}")
                 try:
-                    from ultralytics import YOLO
-                    model = YOLO(pt_path)
-                    model.export(format='engine', dynamic=False, simplify=True, half=True)
-                    generated = pt_path.replace('.pt', '.engine')
-                    if os.path.isfile(generated):
-                        os.makedirs(os.path.dirname(engine_path), exist_ok=True)
-                        if os.path.abspath(generated) != os.path.abspath(engine_path):
-                            shutil.move(generated, engine_path)
-                        print(f"✅ Export réussi : {engine_path}")
-                        return backend, engine_path
-                except Exception as exc:
-                    print(f"❌ Échec de l'export : {exc}")
+                    script_dir = os.path.abspath(os.path.dirname(__file__))
+                    converter = os.path.join(script_dir, 'convert_onnx_to_trt.py')
+                    os.makedirs(os.path.dirname(engine_path), exist_ok=True)
+                    subprocess.run(
+                        [sys.executable, converter, onnx_candidate, engine_path, '32'],
+                        check=True,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    print(f"❌ Conversion ONNX -> TensorRT failed: {exc}")
+            if os.path.isfile(engine_path):
+                print(f"✅ Engine ready at {engine_path}")
+                return backend, engine_path
             print(f"⚠️ Engine TensorRT not found at {engine_path}, using fallback weights.")
             return 'torch', model_name
         return backend, engine_path

@@ -10,11 +10,9 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 from camera_capture import CameraCapture
-from people_counter_processor import PeopleCounterProcessor
-from yolo_people_counter import YoloPeopleCounter
-from yolo_seg_people_counter import YoloSegPeopleCounter
 from rtsp_capture import RTSPCapture
 from mqtt_capture import MqttCapture
+from pipeline_components import MetricsCollector, ModelLoader, ProfileManager
 
 # --- Task for threading models ---
 class ModelThread(threading.Thread):
@@ -36,145 +34,60 @@ AVERAGING_PERIOD_SECONDS = 2  # Réduit à 2s pour un graphe plus réactif
 
 class CameraAppPipeline:
     def __init__(self, capture_mode=None, frame_callback=None, metrics_callback=None):
-        # capture_mode can be 'usb' (default), 'mqtt', or 'rtsp'
-        cmode = capture_mode or os.environ.get('CAPTURE_MODE', 'usb')
+        cmode = (capture_mode or os.environ.get('CAPTURE_MODE', 'usb')).lower()
+        self.capture_mode = cmode
         self.frame_callback = frame_callback
+        self.metrics_callback = metrics_callback
         self.use_gui = os.environ.get('USE_GUI', '0') == '1'
-        
-        # Common configuration from environment (can be overridden)
+        self.graph_overlay_enabled = os.environ.get('GRAPH_OVERLAY', '1') == '1'
+
         cam_index = int(os.environ.get('CAMERA_INDEX', '0'))
         cam_width = int(os.environ.get('CAMERA_WIDTH', '1920'))
         cam_height = int(os.environ.get('CAMERA_HEIGHT', '1080'))
         broker_addr = os.environ.get('MQTT_BROKER', '127.0.0.1')
         broker_port = int(os.environ.get('MQTT_PORT', '1883'))
         mqtt_exposure = int(os.environ.get('MQTT_EXPOSURE', '500'))
-        yolo_conf = float(os.environ.get('YOLO_CONF', '0.65'))
-        self.yolo_conf = yolo_conf
+        self.yolo_conf = float(os.environ.get('YOLO_CONF', '0.65'))
         self.density_threshold = int(os.environ.get('DENSITY_THRESHOLD', '15'))
         self.denoise_strength = int(os.environ.get('DENOISE_STRENGTH', '0'))
-        
-        # Nouvelles options de Tiling via variables d'environnement
-        # YOLO_TILING=1 pour activer (Pyramide 3 niveaux), actif par défaut pour max précision
         self.yolo_tiling = os.environ.get('YOLO_TILING', '1') == '1'
-        # On active la segmentation par défaut si le modèle contient "seg" ou si YOLO_SEG=1
-        yolo_model_env = os.environ.get('YOLO_MODEL', 'yolo26s-seg')
-        self.yolo_seg = (os.environ.get('YOLO_SEG', '0') == '1') or ("-seg" in yolo_model_env.lower())
-        # DENSITY_TILING=1 pour activer (divise en 4 quadrants), actif par défaut
         self.density_tiling = os.environ.get('DENSITY_TILING', '1') == '1'
-        
-        # Flag de Debug pour visualiser le tiling
-        self.debug_tiling = (os.environ.get('DEBUG_TILING', '0') == '1')
-        self.extreme_debug = (os.environ.get('EXTREME_DEBUG', '0') == '1')
+        self.debug_tiling = os.environ.get('DEBUG_TILING', '0') == '1'
+        self.extreme_debug = os.environ.get('EXTREME_DEBUG', '0') == '1'
 
-        if cmode.lower() == 'mqtt':
-            # Use MQTT-based Maixcam capture
+        if cmode == 'mqtt':
             print("Using MqttCapture (Maixcam/MQTT)")
             self.capture = MqttCapture(broker_address=broker_addr, broker_port=broker_port, exposure=mqtt_exposure, width=cam_width, height=cam_height)
-        elif cmode.lower() == 'rtsp':
-            # Example: set RTSP_URL env var
+        elif cmode == 'rtsp':
             rtsp_url = os.environ.get('RTSP_URL', 'rtsp://192.168.1.95:8554/live')
             print(f"Using RTSPCapture ({rtsp_url})")
             self.capture = RTSPCapture(rtsp_url, width=cam_width, height=cam_height)
         else:
-            # Default: USB camera via OpenCV
             print(f"Using CameraCapture (index={cam_index}, {cam_width}x{cam_height})")
             self.capture = CameraCapture(camera_index=cam_index, width=cam_width, height=cam_height, auto_exposure=1)
 
-        lwcc_backend = os.environ.get('LWCC_BACKEND', 'torch').lower()
-        openvino_device = os.environ.get('OPENVINO_DEVICE', 'GPU')
-        yolo_backend = os.environ.get('YOLO_BACKEND', 'torch').lower()
-        # On passe yolo26s-seg par défaut comme demandé par l'utilisateur
-        yolo_model = os.environ.get('YOLO_MODEL', 'yolo26s-seg')
-        models_root = os.path.join(os.getcwd(), 'models')
-        pt_dir = os.path.join(models_root, 'pt')
-        tensorrt_dir = os.path.join(models_root, 'tensorrt')
+        self.profile_manager = ProfileManager()
+        self.profile_manager.ensure_loaded()
+        self.active_profile_name = self.profile_manager.active_profile_name or ''
+        self.available_profiles = list(self.profile_manager.available_profiles)
+        self.model_loader = ModelLoader(yolo_conf=self.yolo_conf, density_threshold=self.density_threshold)
+        self.metrics_collector = MetricsCollector(history_len=600)
+        self.profile_active = False
+        self.profile_log = []
+        self.latest_metrics = {}
+        self.history_data = []
+        self.history_len = 600
+        self.density_quads_coords = []
+        self.yolo_device = 'cpu'
+        self.density_device = 'GPU'
+        self.processor = None
+        self.yolo_counter = None
 
-        # --- AUTO-EXPORT TENSORRT ---
-        if yolo_backend == 'tensorrt_native':
-            # Si c'est un nom court comme 'yolo26s-seg', on cherche dans models/
-            base_model = yolo_model
-            if not os.path.isabs(base_model):
-                if not base_model.endswith('.engine'):
-                    base_model = f"{base_model}.engine"
-                yolo_model_candidate = os.path.join(tensorrt_dir, base_model)
-            else:
-                yolo_model_candidate = base_model
-            engine_path = yolo_model_candidate
-                
-            if not os.path.isfile(engine_path):
-                print(f"⚠️ Engine TensorRT non trouvé : {engine_path}")
-                # On cherche le .pt correspondant
-                pt_model_name = os.path.basename(base_model).replace('.engine', '.pt')
-                pt_path = os.path.join(pt_dir, pt_model_name)
-                if os.path.isfile(pt_path):
-                    print(f"🚀 Exportation automatique de {pt_model_name} vers TensorRT...")
-                    try:
-                        from ultralytics import YOLO
-                        model = YOLO(pt_path)
-                        model.export(format='engine', dynamic=False, simplify=True, half=True)
-                        generated_engine = pt_path.replace('.pt', '.engine')
-                        if os.path.isfile(generated_engine):
-                            os.makedirs(os.path.dirname(engine_path), exist_ok=True)
-                            if os.path.abspath(generated_engine) != os.path.abspath(engine_path):
-                                import shutil
-                                shutil.move(generated_engine, engine_path)
-                            print(f"✅ Export réussi : {engine_path}")
-                            yolo_model = engine_path
-                    except Exception as e:
-                        print(f"❌ Échec de l'export : {e}")
-                else:
-                    print(f"❌ Impossible d'exporter : {pt_path} introuvable.")
-            else:
-                yolo_model = engine_path
-        # ----------------------------
+        self._apply_profile_settings(self.profile_manager.profile_settings)
+        if not self._refresh_models(force=True):
+            raise RuntimeError(f"[FATAL] Impossible d'initialiser les moteurs pour "
+                               f"le profil '{self.active_profile_name or 'Live Metrics'}'.")
 
-        if yolo_backend in ('openvino', 'openvino_native'):
-            ov_dir = os.environ.get('YOLO_OPENVINO_DIR')
-            if ov_dir and os.path.isdir(ov_dir):
-                yolo_model = ov_dir
-            else:
-                candidate_dir = f"{yolo_model}_openvino_model"
-                if os.path.isdir(candidate_dir):
-                    yolo_model = candidate_dir
-
-        yolo_device = os.environ.get('YOLO_DEVICE')
-        if not yolo_device:
-            if yolo_backend == 'openvino_native':
-                yolo_device = 'GPU'
-            elif yolo_backend == 'tensorrt_native':
-                yolo_device = 'cuda'
-            else:
-                yolo_device = 'cpu'
-
-        # For non-absolute model identifiers, resolve them inside models/pt
-        if not os.path.isabs(yolo_model):
-            candidate = os.path.join(pt_dir, yolo_model if yolo_model.endswith('.pt') else f"{yolo_model}.pt")
-            if os.path.exists(candidate):
-                yolo_model = candidate
-
-        self.processor = PeopleCounterProcessor(
-            model_name="DM-Count",
-            model_weights="QNRF",
-            backend=lwcc_backend,
-            openvino_device=openvino_device,
-            density_threshold=self.density_threshold
-        )
-        if self.yolo_seg:
-            self.yolo_counter = YoloSegPeopleCounter(
-                model_path=yolo_model,
-                confidence_threshold=self.yolo_conf,
-                backend=yolo_backend,
-                device=yolo_device
-            )
-        else:
-            self.yolo_counter = YoloPeopleCounter(
-                model_name=yolo_model,
-                device=yolo_device,
-                confidence_threshold=self.yolo_conf, 
-                backend=yolo_backend
-            )
-        
-        # Tentative de récupération des dimensions de l'écran, sinon défaut 1080p
         try:
             screen = screeninfo.get_monitors()[0]
             self.screen_width = screen.width
@@ -183,7 +96,6 @@ class CameraAppPipeline:
             self.screen_width = 1920
             self.screen_height = 1080
 
-        # Création de la fenêtre uniquement si GUI activé
         if self.use_gui:
             cv2.namedWindow("People Count", cv2.WINDOW_NORMAL)
             init_w = int(self.screen_width * 0.75)
@@ -191,14 +103,7 @@ class CameraAppPipeline:
             cv2.resizeWindow("People Count", init_w, init_h)
             cv2.moveWindow("People Count", (self.screen_width - init_w) // 2, (self.screen_height - init_h) // 2)
 
-        self.use_yolo = True  # Passe à True pour utiliser YOLO au lieu du modèle density
-        self.yolo_tiling = os.environ.get('YOLO_TILING', '1') == '1' # Défaut à 1 (Tiling actif)
-        self.history_len = 600  # Raw frames history (~3-5 mins at 2-3 FPS)
-        self.history_data = [] # List of (yolo, density, total)
-        self.metrics_callback = metrics_callback
-        self.profile_active = False
-        self.profile_log = []
-        self.latest_metrics = {}
+        self.use_yolo = True
 
     def _draw_mini_graph(self, img):
         # Draw a small semi-transparent graph in the bottom left
@@ -263,6 +168,45 @@ class CameraAppPipeline:
         cv2.putText(img, "LWCC (Density)", (x0 + 60, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
         cv2.putText(img, "AVERAGE", (x0 + 170, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
 
+    def _apply_profile_settings(self, settings):
+        self.yolo_tiling = settings.get('YOLO_TILING', '1') == '1'
+        self.density_tiling = settings.get('DENSITY_TILING', '1') == '1'
+        self.debug_tiling = settings.get('DEBUG_TILING', '0') == '1'
+        self.extreme_debug = settings.get('EXTREME_DEBUG', '0') == '1'
+        self.yolo_conf = float(settings.get('YOLO_CONF', self.yolo_conf))
+        self.density_threshold = int(settings.get('DENSITY_THRESHOLD', self.density_threshold))
+        self.denoise_strength = int(settings.get('DENOISE_STRENGTH', self.denoise_strength))
+        self.model_loader.yolo_conf = self.yolo_conf
+        self.model_loader.density_threshold = self.density_threshold
+
+    def _refresh_models(self, force=False):
+        if not force and getattr(self, '_models_loaded', False):
+            return False
+        settings = self.profile_manager.profile_settings
+        try:
+            yolo_counter, processor, metadata = self.model_loader.load(settings)
+        except Exception as exc:
+            print(f"[WARN] Failed to reload models: {exc}")
+            return False
+        if yolo_counter is None or processor is None:
+            print("[WARN] Model loader returned empty handles, keeping previous engines.")
+            return False
+        self.yolo_counter = yolo_counter
+        self.processor = processor
+        self.yolo_device = metadata.get('device', getattr(self.yolo_counter, 'last_device', 'cpu'))
+        self.density_device = metadata.get('processor_device', getattr(self.processor, 'last_device', 'GPU'))
+        self.model_metadata = metadata
+        self._models_loaded = True
+        return True
+
+    def apply_profile(self, profile_name):
+        applied = self.profile_manager.apply_profile(profile_name)
+        self.active_profile_name = self.profile_manager.pending_profile_name or ''
+        return applied
+
+    def set_graph_overlay(self, enabled):
+        self.graph_overlay_enabled = bool(enabled)
+
     def attach_metrics_callback(self, callback):
         self.metrics_callback = callback
 
@@ -309,6 +253,14 @@ class CameraAppPipeline:
                         print(f"Camera opened: {self.capture.is_opened}")
                         break
                     # print(f"Frame shape: {frame.shape}")
+                    if self.profile_manager.pending_profile_reload:
+                        forced = self.profile_manager.ensure_loaded()
+                        if forced:
+                            self._apply_profile_settings(self.profile_manager.profile_settings)
+                            if not self._refresh_models(force=True):
+                                print("[ERROR] Impossible de recharger les modèles YOLO/Density, arrêt.")
+                                break
+                    self.active_profile_name = self.profile_manager.active_profile_name or 'Live Metrics'
                     
                     # --- FILTRAGE DU BRUIT (Optionnel) ---
                     if self.denoise_strength > 0:
@@ -319,6 +271,13 @@ class CameraAppPipeline:
                     
                     # Parallelizing YOLO and Density models
                     t_loop_start = time.time()
+
+                    if not self.yolo_counter:
+                        print("[ERROR] Le compteur YOLO n'est pas initialisé, arrêt du pipeline.")
+                        break
+                    if not self.processor:
+                        print("[ERROR] Le processeur density n'est pas initialisé, arrêt du pipeline.")
+                        break
                     
                     # 1. YOLO INFERENCE (Tiling optionale)
                     thr_yolo = ModelThread(
@@ -382,6 +341,8 @@ class CameraAppPipeline:
                     # Récupération des devices utilisés
                     yolo_dev = getattr(self.yolo_counter, 'last_device', 'GPU')
                     dens_dev = getattr(self.processor, 'last_device', 'GPU')
+                    yp = getattr(self.yolo_counter, 'last_perf', {}) if self.yolo_counter else {}
+                    dp = getattr(self.processor, 'last_perf', {}) if self.processor else {}
                     
                     cpu_usage = psutil.cpu_percent()
                     
@@ -420,16 +381,17 @@ class CameraAppPipeline:
                         else:
                             density_count = 0
                     
+                    capture_time = getattr(self.capture, 'last_capture_time', 0.0)
                     # Affichage des métriques d'instrumentation si extreme_debug est actif
                     if self.extreme_debug:
-                        yp = getattr(self.yolo_counter.engine, 'last_perf', {}) if hasattr(self.yolo_counter, 'engine') else {}
-                        dp = getattr(self.processor, 'last_perf', {})
-                        capture_time = getattr(self.capture, 'last_capture_time', 0.0)
+                        yp_engine = getattr(self.yolo_counter, 'engine', None)
+                        yp_debug = getattr(yp_engine, 'last_perf', {}) if yp_engine else yp
+                        dp_debug = getattr(self.processor, 'last_perf', {})
                         
                         print(f"[DEBUG] PERF BREAKDOWN (ms):")
                         print(f"  Capture: {capture_time*1000:.1f}ms")
-                        print(f"  YOLO {self.yolo_counter.model_name}: Pre={yp.get('preprocess',0)*1000:.1f} | GPU={yp.get('infer',0)*1000:.1f} | Post={yp.get('postprocess',0)*1000:.1f}")
-                        print(f"  DENS {self.processor.model_name}: Pre={dp.get('preprocess',0)*1000:.1f} | GPU={dp.get('infer',0)*1000:.1f} | Post={dp.get('postprocess',0)*1000:.1f}")
+                        print(f"  YOLO {self.yolo_counter.model_name}: Pre={yp_debug.get('preprocess',0)*1000:.1f} | GPU={yp_debug.get('infer',0)*1000:.1f} | Post={yp_debug.get('postprocess',0)*1000:.1f}")
+                        print(f"  DENS {self.processor.model_name}: Pre={dp_debug.get('preprocess',0)*1000:.1f} | GPU={dp_debug.get('infer',0)*1000:.1f} | Post={dp_debug.get('postprocess',0)*1000:.1f}")
 
                     total_process_time = time.time() - t_loop_start
                     
@@ -480,7 +442,8 @@ class CameraAppPipeline:
                     y_off, x_off = (win_h - target_h) // 2, (win_w - target_w) // 2
                     preview_frame[y_off:y_off+target_h, x_off:x_off+target_w] = resized
                     
-                    self._draw_mini_graph(preview_frame)
+                    if self.graph_overlay_enabled:
+                        self._draw_mini_graph(preview_frame)
 
                     # Envoi au serveur Web si actif
                     if self.frame_callback:
@@ -489,10 +452,8 @@ class CameraAppPipeline:
                     total_time = time.time() - start_time
                     fps = 1.0 / total_time if total_time > 0 else 0
                     avg_instant = (yolo_count + density_count) / 2.0
-                    history_snapshot = [
-                        {"yolo": float(y), "density": float(d), "average": float(a)}
-                        for y, d, a in self.history_data[-32:]
-                    ]
+                    self.metrics_collector.append(yolo_count, density_count, avg_instant)
+                    history_snapshot = self.metrics_collector.snapshot()
                     metrics = {
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                         "yolo_count": int(yolo_count),
@@ -503,10 +464,19 @@ class CameraAppPipeline:
                         "total_time": float(total_process_time),
                         "yolo_time": float(yolo_time),
                         "density_time": float(density_time),
-                        "yolo_device": yolo_dev,
-                        "density_device": dens_dev,
+                        "yolo_device": self.yolo_device,
+                        "density_device": self.density_device,
                         "debug_mode": bool(self.extreme_debug),
                         "profile_active": bool(self.profile_active),
+                        "profile_name": self.active_profile_name or 'Live Metrics',
+                        "graph_overlay": bool(self.graph_overlay_enabled),
+                        "capture_ms": float(capture_time * 1000),
+                        "yolo_pre_ms": float(yp.get('preprocess', 0) * 1000),
+                        "yolo_gpu_ms": float(yp.get('infer', 0) * 1000),
+                        "yolo_post_ms": float(yp.get('postprocess', 0) * 1000),
+                        "density_pre_ms": float(dp.get('preprocess', 0) * 1000),
+                        "density_gpu_ms": float(dp.get('infer', 0) * 1000),
+                        "density_post_ms": float(dp.get('postprocess', 0) * 1000),
                         "history": history_snapshot
                     }
                     self.latest_metrics = metrics

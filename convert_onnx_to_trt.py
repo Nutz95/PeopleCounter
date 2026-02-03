@@ -81,7 +81,7 @@ def build_engine(onnx_path, engine_path, max_batch_size=1):
     if serialized_engine is None:
         print("ERROR: Failed to build engine.")
         return False
-        
+    os.makedirs(os.path.dirname(engine_path), exist_ok=True)
     with open(engine_path, 'wb') as f:
         f.write(serialized_engine)
     print(f"Engine saved to {engine_path}")
