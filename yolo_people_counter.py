@@ -2,6 +2,7 @@ from ultralytics import YOLO
 import numpy as np
 import cv2
 import os
+import time
 from tiling_manager import TilingManager
 
 class YoloPeopleCounter:
@@ -315,10 +316,9 @@ class YoloPeopleCounter:
         import numpy as np
         h_orig, w_orig = tile_rgb.shape[:2]
 
+        pre_start = time.monotonic()
         img = tile_rgb.astype(np.float32) / 255.0
         img = np.transpose(img, (2, 0, 1))[None, ...]
-        
-        # Check input shape
         target_w, target_h = w_orig, h_orig
         if self.trt_input_shape and len(self.trt_input_shape) == 4:
             _, _, target_h, target_w = self.trt_input_shape
@@ -327,40 +327,36 @@ class YoloPeopleCounter:
                 img = resized.astype(np.float32) / 255.0
                 img = np.transpose(img, (2, 0, 1))[None, ...]
 
-        # Copy input to device using asynchronous stream and queue output copy after inference
         input_data = np.ascontiguousarray(img)
+        pre_end = time.monotonic()
+        self.last_perf['preprocess'] = pre_end - pre_start
+
+        infer_start = time.monotonic()
         cuda_input = self.trt_inputs[0]
         self.cudart.cudaMemcpyAsync(cuda_input['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
-
-        # IMPORTANT: Set input shape for dynamic engines before execution
         self.trt_context.set_input_shape(cuda_input['name'], input_data.shape)
-
-        # Execute inference (async)
         self.trt_context.execute_async_v3(self.trt_stream)
-
-        # Queue output copy back to host without an intermediate synchronize to overlap with kernel execution
         for output in self.trt_outputs:
             self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
-
-        # Synchronize once after all copies are queued
         self.cudart.cudaStreamSynchronize(self.trt_stream)
+        infer_end = time.monotonic()
+        self.last_perf['infer'] = infer_end - infer_start
 
-        # Process output (assuming YOLO structure: [1, 84, 8400])
+        post_start = time.monotonic()
         result = self.trt_outputs[0]['host']
         pred = result[0].T
         boxes = pred[:, :4]
         scores = pred[:, 4 + self.person_class_id]
-        
         mask = scores >= self.confidence_threshold
         boxes = boxes[mask]
         scores = scores[mask]
         if boxes.size == 0:
+            post_end = time.monotonic()
+            self.last_perf['postprocess'] = post_end - post_start
             return boxes, scores
 
-        # Scale back to original tile size
         sw = w_orig / target_w
         sh = h_orig / target_h
-            
         x = boxes[:, 0] * sw
         y = boxes[:, 1] * sh
         w = boxes[:, 2] * sw
@@ -370,6 +366,8 @@ class YoloPeopleCounter:
         x2 = x + w / 2
         y2 = y + h / 2
         boxes = np.stack([x1, y1, x2, y2], axis=1)
+        post_end = time.monotonic()
+        self.last_perf['postprocess'] = post_end - post_start
         return boxes, scores
 
     def _trt_native_infer_batch(self, batch_imgs):
@@ -378,18 +376,17 @@ class YoloPeopleCounter:
         batch_imgs: Liste d'images (tiles)
         """
         num_imgs = len(batch_imgs)
-        if num_imgs == 0: return [], []
-        
-        # On suppose que toutes les images du batch font la même taille (imgsz de YOLO)
+        if num_imgs == 0:
+            return [], []
+
         target_h, target_w = self.trt_input_shape[2], self.trt_input_shape[3]
         max_batch = self.trt_input_shape[0] if self.trt_input_shape[0] > 0 else num_imgs
-        
+
         all_boxes, all_scores = [], []
-        
-        # On traite par morceaux de taille supportée par l'engine
+        perf_pre, perf_infer, perf_post = 0.0, 0.0, 0.0
+
         from concurrent.futures import ThreadPoolExecutor
-        
-        # On définit une fonction pour le pré-processing d'une tuile
+
         def process_tile(tile, target_h, target_w):
             if tile.shape[0] != target_h or tile.shape[1] != target_w:
                 tile = cv2.resize(tile, (target_w, target_h))
@@ -400,18 +397,19 @@ class YoloPeopleCounter:
         for i in range(0, num_imgs, max_batch):
             chunk = batch_imgs[i:i+max_batch]
             actual_b = len(chunk)
-            
-            # Preprocess Batch (optimisé en parallèle pour le CPU)
+
+            pre_start = time.monotonic()
             processed = np.zeros((actual_b, 3, target_h, target_w), dtype=np.float32)
-            
+
             with ThreadPoolExecutor(max_workers=min(8, actual_b)) as executor:
                 futures = [executor.submit(process_tile, chunk[j], target_h, target_w) for j in range(actual_b)]
                 for j, future in enumerate(futures):
                     processed[j] = future.result()
-            
+
             input_data = np.ascontiguousarray(processed)
-            
-            # On vérifie si on peut vraiment envoyer le batch
+            pre_end = time.monotonic()
+            perf_pre += pre_end - pre_start
+
             if self.trt_input_shape[0] > 0 and actual_b > self.trt_input_shape[0]:
                 print(f"[WARN] Batch size {actual_b} exceeds engine max {self.trt_input_shape[0]}. Falling back to sequential.")
                 for j in range(actual_b):
@@ -419,10 +417,8 @@ class YoloPeopleCounter:
                     all_boxes.append(single_boxes)
                     all_scores.append(single_scores)
             else:
-                # Real batch inference
-                # print(f"[DEBUG] YOLO: Executing batch of size {actual_b}")
+                infer_start = time.monotonic()
                 self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
-                # Définir explicitement la forme du batch actuel
                 self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
                 self.trt_context.execute_async_v3(self.trt_stream)
                 self.cudart.cudaStreamSynchronize(self.trt_stream)
@@ -430,20 +426,22 @@ class YoloPeopleCounter:
                 for output in self.trt_outputs:
                     self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
                 self.cudart.cudaStreamSynchronize(self.trt_stream)
+                infer_end = time.monotonic()
+                perf_infer += infer_end - infer_start
 
-                # Process Output
-                result = self.trt_outputs[0]['host'] # [Batch, 84, 8400]
+                post_start = time.monotonic()
+                result = self.trt_outputs[0]['host']
                 for j in range(actual_b):
                     pred = result[j].T
                     boxes = pred[:, :4]
                     scores = pred[:, 4 + self.person_class_id]
                     mask = scores >= self.confidence_threshold
                     boxes, scores = boxes[mask], scores[mask]
-                    
+
                     if boxes.size > 0:
                         h_orig, w_orig = chunk[j].shape[:2]
                         sw, sh = w_orig / target_w, h_orig / target_h
-                        
+
                         x1 = (boxes[:, 0] - boxes[:, 2] / 2) * sw
                         y1 = (boxes[:, 1] - boxes[:, 3] / 2) * sh
                         x2 = (boxes[:, 0] + boxes[:, 2] / 2) * sw
@@ -454,5 +452,10 @@ class YoloPeopleCounter:
                     else:
                         all_boxes.append(np.array([]))
                         all_scores.append(np.array([]))
+                post_end = time.monotonic()
+                perf_post += post_end - post_start
 
+        self.last_perf['preprocess'] = perf_pre
+        self.last_perf['infer'] = perf_infer
+        self.last_perf['postprocess'] = perf_post
         return all_boxes, all_scores

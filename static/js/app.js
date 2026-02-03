@@ -16,6 +16,10 @@ const captureTimeLabel = document.getElementById('captureTimeLabel');
 const overlayToggle = document.getElementById('overlayToggle');
 const overlayStatus = document.getElementById('overlayStatus');
 const videoHistoryList = document.getElementById('videoHistoryList');
+const historyChartShell = document.getElementById('historyChartShell');
+const historyChart = document.getElementById('historyChart');
+const historyCtx = historyChart ? historyChart.getContext('2d') : null;
+const graphEmpty = document.getElementById('graphEmpty');
 const metricsInterval = 1100;
 const MAX_LOGS = 6;
 
@@ -41,10 +45,13 @@ function formatStage(prefix, value) {
 }
 
 function updateOverlayButton(enabled) {
-  const label = enabled ? 'Hide overlay graph' : 'Show overlay graph';
+  const label = enabled ? 'Hide metric chart' : 'Show metric chart';
   overlayToggle.textContent = label;
   overlayToggle.dataset.state = enabled ? 'on' : 'off';
   overlayStatus.textContent = `Overlay: ${enabled ? 'on' : 'off'}`;
+  if (historyChartShell) {
+    historyChartShell.style.display = enabled ? '' : 'none';
+  }
 }
 
 function updateVideoHistory(records = []) {
@@ -67,6 +74,70 @@ function updateVideoHistory(records = []) {
     entry.append(description, timestamp);
     videoHistoryList.appendChild(entry);
   });
+}
+
+function drawHistoryChart(records = []) {
+  if (!historyChart || !historyCtx) {
+    return;
+  }
+  const bounds = historyChartShell.getBoundingClientRect();
+  const width = bounds.width;
+  const height = bounds.height;
+  const dpr = window.devicePixelRatio || 1;
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+  historyChart.width = width * dpr;
+  historyChart.height = height * dpr;
+  historyCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  historyCtx.clearRect(0, 0, width, height);
+  if (!records.length) {
+    if (graphEmpty) {
+      graphEmpty.style.display = 'block';
+    }
+    historyCtx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+    historyCtx.fillRect(0, 0, width, height);
+    return;
+  }
+  if (graphEmpty) {
+    graphEmpty.style.display = 'none';
+  }
+  const flattened = records.flatMap((row) => [Number(row.yolo_count || 0), Number(row.density_count || 0), Number(row.average || 0)]);
+  const maxVal = Math.max(5, ...flattened);
+  const maxPoints = Math.max(records.length - 1, 1);
+  const stepX = width / maxPoints;
+  const clampY = (value) => height - ((value / maxVal) * (height - 24)) - 12;
+  const drawLine = (values, color, thickness) => {
+    historyCtx.beginPath();
+    historyCtx.lineWidth = thickness;
+    historyCtx.strokeStyle = color;
+    values.forEach((val, idx) => {
+      const x = idx * stepX;
+      const y = clampY(val);
+      if (idx === 0) {
+        historyCtx.moveTo(x, y);
+      } else {
+        historyCtx.lineTo(x, y);
+      }
+    });
+    historyCtx.stroke();
+  };
+  const yoloValues = records.map((entry) => Number(entry.yolo_count || 0));
+  const densityValues = records.map((entry) => Number(entry.density_count || 0));
+  const avgValues = records.map((entry) => Number(entry.average || 0));
+  // Draw light grid
+  historyCtx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+  historyCtx.lineWidth = 1;
+  for (let i = 1; i < 4; i += 1) {
+    const y = (height / 4) * i;
+    historyCtx.beginPath();
+    historyCtx.moveTo(0, y);
+    historyCtx.lineTo(width, y);
+    historyCtx.stroke();
+  }
+  drawLine(avgValues, 'rgba(255, 255, 0, 0.95)', 2.4);
+  drawLine(densityValues, 'rgba(0, 0, 255, 0.8)', 1.5);
+  drawLine(yoloValues, 'rgba(0, 255, 0, 0.8)', 1.5);
 }
 
 debugToggle.addEventListener('change', () => sendControl({debug: debugToggle.checked}));
@@ -114,6 +185,7 @@ async function refreshMetrics() {
     setProfileButtons(Boolean(data.profile_active));
     updateOverlayButton(Boolean(data.graph_overlay));
     updateVideoHistory(data.history || []);
+    drawHistoryChart(data.history || []);
     const activeProfileName = data.profile_name || data.active_profile_view;
     if (activeProfileName) {
       profileViewBadge.textContent = activeProfileName.replace('_', ' ');
@@ -134,7 +206,14 @@ async function refreshMetrics() {
       formatStage('gpu', data.density_gpu_ms),
       formatStage('post', data.density_post_ms)
     ].filter(Boolean).join(' · ');
-    perfSummary.textContent = `YOLO ${yoloStages || '—'} · DENS ${densityStages || '—'}`;
+    const pipelinePre = formatStage('Pipeline pre', data.pipeline_pre_ms);
+    const pipelinePost = formatStage('Pipeline post', data.pipeline_post_ms);
+    const pipelineLine = [pipelinePre, pipelinePost].filter(Boolean).join(' · ');
+    perfSummary.innerHTML = `
+      <div class="perf-line">${pipelineLine || 'Pipeline —'}</div>
+      <div class="perf-line">YOLO ${yoloStages || '—'}</div>
+      <div class="perf-line">DENS ${densityStages || '—'}</div>
+    `;
     updateProfileLog(data.profile_log || []);
   } catch (error) {
     fpsStatus.textContent = 'Waiting for metrics...';

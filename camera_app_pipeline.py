@@ -105,69 +105,6 @@ class CameraAppPipeline:
 
         self.use_yolo = True
 
-    def _draw_mini_graph(self, img):
-        # Draw a small semi-transparent graph in the bottom left
-        h, w = img.shape[:2]
-        gw, gh = 450, 180
-        margin_x = 20
-        margin_y = 80 # Remonte le graphique pour éviter d'être coupé par la fenêtre
-        x0, y0 = margin_x, h - margin_y - gh
-        
-        # Background box
-        sub_img = img[y0:y0+gh, x0:x0+gw]
-        rect = np.zeros_like(sub_img)
-        cv2.rectangle(rect, (0, 0), (gw, gh), (30, 30, 30), -1)
-        img[y0:y0+gh, x0:x0+gw] = cv2.addWeighted(sub_img, 0.4, rect, 0.6, 0)
-        
-        if len(self.history_data) < 2:
-            cv2.putText(img, "Warming up graph...", (x0 + 10, y0 + gh//2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-            return
-            
-        # Scaling
-        # points are (yolo, density, total)
-        all_vals = []
-        for d in self.history_data:
-            all_vals.extend([d[0], d[1], d[2]])
-            
-        max_val = max(all_vals) if all_vals else 1
-        curr_max = max_val
-        if max_val < 5: max_val = 5 
-        max_val *= 1.1 # Headroom
-        
-        num_points = len(self.history_data)
-        # Use a fixed width distribution or scrolling? 
-        # For a "live" feel, we spread samples across the 450px.
-        dx = gw / (num_points - 1) if num_points > 1 else gw
-        
-        def to_py(val):
-            return int(y0 + gh - (val / max_val * (gh - 40)) - 10)
-
-        points_yolo = []
-        points_density = []
-        points_average = []
-        
-        for i, (y_val, d_val, a_val) in enumerate(self.history_data):
-            px = int(x0 + i * dx)
-            # Ajout d'offsets pour voir les 3 courbes si elles sont identiques
-            points_yolo.append((px, to_py(y_val)))
-            points_density.append((px, to_py(d_val) + 2))
-            points_average.append((px, to_py(a_val) - 2))
-            
-        # Draw lines with distinct styles
-        for i in range(len(points_yolo) - 1):
-            # 1. Average (Cyan - Thickest)
-            cv2.line(img, points_average[i], points_average[i+1], (255, 255, 0), 2)
-            # 2. LWCC / Density (Red)
-            cv2.line(img, points_density[i], points_density[i+1], (0, 0, 255), 1)
-            # 3. YOLO (Green)
-            cv2.line(img, points_yolo[i], points_yolo[i+1], (0, 255, 0), 1)
-        
-        # Legend and info
-        cv2.putText(img, f"Live Activity (Max Sample: {int(curr_max)})", (x0 + 10, y0 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(img, "YOLO", (x0 + 10, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-        cv2.putText(img, "LWCC (Density)", (x0 + 60, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-        cv2.putText(img, "AVERAGE", (x0 + 170, y0 + gh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
-
     def _apply_profile_settings(self, settings):
         self.yolo_tiling = settings.get('YOLO_TILING', '1') == '1'
         self.density_tiling = settings.get('DENSITY_TILING', '1') == '1'
@@ -261,6 +198,8 @@ class CameraAppPipeline:
                                 print("[ERROR] Impossible de recharger les modèles YOLO/Density, arrêt.")
                                 break
                     self.active_profile_name = self.profile_manager.active_profile_name or 'Live Metrics'
+                    preprocess_duration = 0.0
+                    postprocess_duration = 0.0
                     
                     # --- FILTRAGE DU BRUIT (Optionnel) ---
                     if self.denoise_strength > 0:
@@ -280,6 +219,7 @@ class CameraAppPipeline:
                         break
                     
                     # 1. YOLO INFERENCE (Tiling optionale)
+                    preprocess_start = time.monotonic()
                     thr_yolo = ModelThread(
                         self.yolo_counter.count_people, 
                         frame, 
@@ -288,6 +228,8 @@ class CameraAppPipeline:
                         use_tiling=self.yolo_tiling,
                         draw_tiles=self.debug_tiling
                     )
+
+                    yolo_label = getattr(self.yolo_counter, 'model_name', 'YOLO')
 
                     # 2. DENSITY INFERENCE (Tiling 2x2 Batché)
                     t_loop_start = time.time()
@@ -312,7 +254,8 @@ class CameraAppPipeline:
                     else:
                         # Mode standard (Inférence globale redimensionnée)
                         thr_density = ModelThread(self.processor.process, frame)
-                    
+
+                    preprocess_duration = time.monotonic() - preprocess_start
                     # On lance les deux threads
                     t_cycle_start = time.time()
                     thr_yolo.start()
@@ -328,6 +271,8 @@ class CameraAppPipeline:
                     
                     # Attente Density
                     thr_density.join()
+
+                    postprocess_start = time.monotonic()
 
                     # Debug Tiling Densité (Magenta)
                     if self.debug_tiling and self.density_tiling and hasattr(self, 'density_quads_coords'):
@@ -414,15 +359,6 @@ class CameraAppPipeline:
                             # Dessine des petits cercles rouges discrets
                             cv2.circle(overlay2, (int(x), int(y)), int(radius) + 2, (0, 0, 255), 1)
 
-                    # Affiche les compteurs avec un style plus propre
-                    cv2.putText(overlay2, f'Density Count: {density_count:.1f}', (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0,0,255), 2)
-                    yolo_label = self.yolo_counter.model_name
-                    cv2.putText(overlay2, f'YOLO ({yolo_label}): {int(yolo_count)}', (20, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0,255,0), 2)
-                    
-                    if log_data:
-                        last_avg = log_data[-1][3]
-                        cv2.putText(overlay2, f'Avg ({AVERAGING_PERIOD_SECONDS}s): {last_avg:.1f}', (20, 145), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0,255,255), 2)
-
                     # --- GESTION DE LA FENÊTRE D'AFFICHAGE ET CALLBACK ---
                     if self.use_gui:
                         try:
@@ -442,9 +378,6 @@ class CameraAppPipeline:
                     y_off, x_off = (win_h - target_h) // 2, (win_w - target_w) // 2
                     preview_frame[y_off:y_off+target_h, x_off:x_off+target_w] = resized
                     
-                    if self.graph_overlay_enabled:
-                        self._draw_mini_graph(preview_frame)
-
                     # Envoi au serveur Web si actif
                     if self.frame_callback:
                         self.frame_callback(preview_frame)
@@ -453,7 +386,7 @@ class CameraAppPipeline:
                     fps = 1.0 / total_time if total_time > 0 else 0
                     avg_instant = (yolo_count + density_count) / 2.0
                     self.metrics_collector.append(yolo_count, density_count, avg_instant)
-                    history_snapshot = self.metrics_collector.snapshot()
+                    history_snapshot = self.metrics_collector.snapshot() if self.graph_overlay_enabled else []
                     metrics = {
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                         "yolo_count": int(yolo_count),
@@ -471,6 +404,8 @@ class CameraAppPipeline:
                         "profile_name": self.active_profile_name or 'Live Metrics',
                         "graph_overlay": bool(self.graph_overlay_enabled),
                         "capture_ms": float(capture_time * 1000),
+                        "pipeline_pre_ms": float(preprocess_duration * 1000),
+                        "pipeline_post_ms": float(postprocess_duration * 1000),
                         "yolo_pre_ms": float(yp.get('preprocess', 0) * 1000),
                         "yolo_gpu_ms": float(yp.get('infer', 0) * 1000),
                         "yolo_post_ms": float(yp.get('postprocess', 0) * 1000),
@@ -495,14 +430,11 @@ class CameraAppPipeline:
                         f"Density={density_count:.1f} ({density_time:.3f}s on {dens_dev}) | "
                         f"CPU: {cpu_usage}% | Total: {total_time:.3f}s | FPS: {fps:.2f}")
 
-                    cv2.putText(preview_frame, f'FPS: {fps:.2f}', (win_w - 150, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                    
-                    # Petit texte en bas pour indiquer les devices
-                    cv2.putText(preview_frame, f'YOLO: {yolo_dev}', (20, win_h - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                    cv2.putText(preview_frame, f'DENS: {dens_dev}', (20, win_h - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                     
                     if self.use_gui:
                         cv2.imshow("People Count", preview_frame)
+
+                    postprocess_duration = time.monotonic() - postprocess_start
                     
                     # Console logs propres
                     capture_time = getattr(self.capture, 'last_capture_time', 0.0)

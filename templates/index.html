@@ -28,7 +28,7 @@
           <button id="fullscreenBtn" type="button">Fullscreen</button>
           <button id="fitBtn" type="button">Fit View</button>
         </div>
-        <button id="overlayToggle" class="overlay-button" type="button" data-state="on">Hide overlay graph</button>
+          <button id="overlayToggle" class="overlay-button" type="button" data-state="on">Hide metric chart</button>
       </div>
       <p class="video-hint">Connect from any browser at http://localhost:{{ port }} to mirror the feed from this device.</p>
       <div class="video-history">
@@ -36,8 +36,14 @@
           <span>Stream overview</span>
           <span id="overlayStatus">Overlay: on</span>
         </div>
-        <div class="video-history-list" id="videoHistoryList">
-          <p class="history-empty">Waiting for data...</p>
+        <div class="video-history-content">
+          <div class="video-history-list" id="videoHistoryList">
+            <p class="history-empty">Waiting for data...</p>
+          </div>
+          <div class="video-graph" id="historyChartShell">
+            <canvas id="historyChart" width="450" height="180"></canvas>
+            <p class="graph-empty" id="graphEmpty">Enable the graph to see YOLO + density trends.</p>
+          </div>
         </div>
       </div>
     </section>
