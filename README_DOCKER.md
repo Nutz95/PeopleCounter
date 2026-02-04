@@ -91,6 +91,21 @@ flowchart TB
 
 Le point d'optimisation principal est donc de réduire le temps passé sur le CPU : activer `YOLO_USE_GPU_PREPROC=1` et/ou `YOLO_USE_GPU_POST=1` permet de déporter la resize/crop et la fusion vers des kernels CUDA (en conjonction avec la version TensorRT native). D'autres pistes : groupement plus agressif des tiles dans des batches TensorRT plus larges, mise en pré-charge des copies via des streams CUDA dédiés, ou bien délégation de la fusion des masques à un fragment shader (OpenGL/CUDA) pour éviter les copies sur l'image finale.
 
+## 🧰 Profils et fichiers `.env`
+
+`run_app.sh` charge `scripts/configs/<profil>.env` pour injecter des `export KEY=VALUE` dans l'environnement Docker. Chaque fichier de profil définit notamment `YOLO_BACKEND`, `YOLO_MODEL`, `YOLO_DEVICE`, `DEBUG_TILING` et, depuis peu, les variables `YOLO_USE_GPU_PREPROC` / `YOLO_USE_GPU_POST` qui déclenchent les pipelines GPU. Pour les profils basés sur RTX (ex. `rtx_extreme.env`), ajoutez simplement :
+
+```
+export YOLO_USE_GPU_PREPROC=1
+export YOLO_USE_GPU_POST=1
+export YOLO_BACKEND=tensorrt_native
+export YOLO_DEVICE=cuda
+```
+
+Le script supprime les commentaires, source le fichier, puis lance `docker run` avec les variables exportées ; il n’est donc pas nécessaire de déclarer ces exports ailleurs. Après modification, relancez `./run_app.sh --profile rtx_extreme` pour voir les changements. Vous pouvez vérifier les paramètres appliqués en démarrant un shell dans le conteneur (`./run_app.sh --profile rtx_extreme bash`) et en tapant `printenv | grep YOLO`.
+
+Les variables `YOLO_USE_GPU_PREPROC` et `YOLO_USE_GPU_POST` respectent la même logique que les autres : toute valeur non vide active la version CUDA, et elles sont héritées par `camera_app_pipeline.py` à travers les modules `yolo_seg_people_counter.py` / `yolo_people_counter.py`. La carte « YOLO internal (ms) » dans l’interface Web affichera alors les temps d’inférence réels, y compris les gains éventuels si les kernels CUDA sont chargés.
+
 ## 🚀 Exécution de l'application
 
 Utilisez le script d'exécution qui gère automatiquement les accès GPU, caméras et ports réseaux.
