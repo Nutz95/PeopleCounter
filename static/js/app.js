@@ -19,6 +19,8 @@ const videoHistoryList = document.getElementById('videoHistoryList');
 const historyChartShell = document.getElementById('historyChartShell');
 const historyChart = document.getElementById('historyChart');
 const historyCtx = historyChart ? historyChart.getContext('2d') : null;
+const yoloInternalValue = document.getElementById('yoloInternalValue');
+const yoloInternalTotalValue = document.getElementById('yoloInternalTotalValue');
 const graphEmpty = document.getElementById('graphEmpty');
 const metricsInterval = 1100;
 const MAX_LOGS = 6;
@@ -26,7 +28,7 @@ const MAX_LOGS = 6;
 function sendControl(payload) {
   fetch(baseUrl + '/api/control', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   }).catch(console.error);
 }
@@ -42,6 +44,10 @@ function formatStage(prefix, value) {
     return `${prefix} ${value.toFixed(1)}ms`;
   }
   return null;
+}
+
+function formatMsValue(value) {
+  return (typeof value === 'number' && Number.isFinite(value)) ? `${value.toFixed(1)}ms` : '—';
 }
 
 function updateOverlayButton(enabled) {
@@ -140,31 +146,31 @@ function drawHistoryChart(records = []) {
   drawLine(yoloValues, 'rgba(0, 255, 0, 0.8)', 1.5);
 }
 
-debugToggle.addEventListener('change', () => sendControl({debug: debugToggle.checked}));
+debugToggle.addEventListener('change', () => sendControl({ debug: debugToggle.checked }));
 profileStart.addEventListener('click', () => {
-  sendControl({profile_action: 'start'});
+  sendControl({ profile_action: 'start' });
   setProfileButtons(true);
 });
 profileStop.addEventListener('click', () => {
-  sendControl({profile_action: 'stop'});
+  sendControl({ profile_action: 'stop' });
   setProfileButtons(false);
 });
-profileClear.addEventListener('click', () => sendControl({profile_action: 'clear'}));
+profileClear.addEventListener('click', () => sendControl({ profile_action: 'clear' }));
 profileViewSelect.addEventListener('change', (event) => {
   const value = event.target.value;
   profileViewBadge.textContent = value.replace('_', ' ');
-  sendControl({profile_name: value});
+  sendControl({ profile_name: value });
 });
 overlayToggle.addEventListener('click', () => {
   const nextState = overlayToggle.dataset.state !== 'on';
   updateOverlayButton(nextState);
-  sendControl({overlay: nextState});
+  sendControl({ overlay: nextState });
 });
 updateOverlayButton(overlayToggle.dataset.state === 'on');
 
 async function refreshMetrics() {
   try {
-    const response = await fetch(baseUrl + '/api/metrics', {cache: 'no-store'});
+    const response = await fetch(baseUrl + '/api/metrics', { cache: 'no-store' });
     if (!response.ok) {
       throw new Error('Unable to reach metrics');
     }
@@ -214,6 +220,14 @@ async function refreshMetrics() {
       <div class="perf-line">YOLO ${yoloStages || '—'}</div>
       <div class="perf-line">DENS ${densityStages || '—'}</div>
     `;
+    if (yoloInternalValue) {
+      const infLabel = formatMsValue(data.yolo_internal_inf_ms);
+      const drawLabel = formatMsValue(data.yolo_internal_draw_ms);
+      yoloInternalValue.textContent = `Inf: ${infLabel} · Draw: ${drawLabel}`;
+    }
+    if (yoloInternalTotalValue) {
+      yoloInternalTotalValue.textContent = formatMsValue(data.yolo_internal_total_ms);
+    }
     updateProfileLog(data.profile_log || []);
   } catch (error) {
     fpsStatus.textContent = 'Waiting for metrics...';
@@ -250,16 +264,16 @@ function updateProfileLog(entries) {
 
 function toggleFullscreen() {
   if (!document.fullscreenElement) {
-    videoWrapper.requestFullscreen().catch(() => {});
+    videoWrapper.requestFullscreen().catch(() => { });
   } else {
-    document.exitFullscreen().catch(() => {});
+    document.exitFullscreen().catch(() => { });
   }
 }
 
 document.getElementById('fullscreenBtn').addEventListener('click', toggleFullscreen);
 document.getElementById('fitBtn').addEventListener('click', () => {
-  document.exitFullscreen().catch(() => {});
-  videoWrapper.scrollIntoView({behavior: 'smooth'});
+  document.exitFullscreen().catch(() => { });
+  videoWrapper.scrollIntoView({ behavior: 'smooth' });
 });
 window.addEventListener('keydown', (event) => {
   if (event.code === 'KeyF') {

@@ -1,17 +1,20 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <title>PeopleCounter GPU Monitor</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 </head>
+
 <body>
   <header class="hero">
     <div>
       <p class="eyebrow">PeopleCounter GPU Stream</p>
       <h1>Live Metrics & Controls</h1>
-      <p style="color: var(--muted); margin: 0;">Toggle profiles, debug logs, and fullscreen while seeing FPS, CPU, and density without the terminal.</p>
+      <p style="color: var(--muted); margin: 0;">Toggle profiles, debug logs, and fullscreen while seeing FPS, CPU, and
+        density without the terminal.</p>
     </div>
     <div class="hero-note">
       <span>Port {{ port }}</span>
@@ -28,9 +31,10 @@
           <button id="fullscreenBtn" type="button">Fullscreen</button>
           <button id="fitBtn" type="button">Fit View</button>
         </div>
-          <button id="overlayToggle" class="overlay-button" type="button" data-state="on">Hide metric chart</button>
+        <button id="overlayToggle" class="overlay-button" type="button" data-state="on">Hide metric chart</button>
       </div>
-      <p class="video-hint">Connect from any browser at http://localhost:{{ port }} to mirror the feed from this device.</p>
+      <p class="video-hint">Connect from any browser at http://localhost:{{ port }} to mirror the feed from this device.
+      </p>
       <div class="video-history">
         <div class="video-history-header">
           <span>Stream overview</span>
@@ -79,6 +83,11 @@
           <div class="metric-value" id="perfSummary">YOLO — | DENS —</div>
           <div class="metric-footnote" id="captureTimeLabel">Capture: —ms</div>
         </article>
+        <article class="metric-card wide">
+          <div class="metric-title">YOLO internal (ms)</div>
+          <div class="metric-value" id="yoloInternalValue">Inf: — · Draw: —</div>
+          <div class="metric-footnote">Total internal: <span id="yoloInternalTotalValue">—</span>ms</div>
+        </article>
       </div>
       <div class="control-group">
         <label class="toggle">
@@ -87,9 +96,11 @@
         </label>
         <div class="profile-controls">
           <select id="profileViewSelect">
-            <option value="Live Metrics" {% if active_profile == 'Live Metrics' %}selected{% endif %}>Live Metrics</option>
+            <option value="Live Metrics" {% if active_profile=='Live Metrics' %}selected{% endif %}>Live Metrics
+            </option>
             {% for profile in profiles %}
-              <option value="{{ profile }}" {% if profile == active_profile %}selected{% endif %}>{{ profile.replace('_', ' ') }}</option>
+            <option value="{{ profile }}" {% if profile==active_profile %}selected{% endif %}>{{ profile.replace('_', '
+              ') }}</option>
             {% endfor %}
           </select>
           <button id="profileStart" type="button">Start Profiling</button>
@@ -104,11 +115,14 @@
         <p class="log-empty">Profiles will appear here when profiling is active.</p>
       </div>
       <div class="instruction-card">
-        <p>Use this web UI to monitor FPS, alerts, and device status while the camera feeds the backend in the same terminal.</p>
-        <p>The profile selector mirrors what the launch script can configure via <code>scripts/configs</code> when you need a different backend.</p>
+        <p>Use this web UI to monitor FPS, alerts, and device status while the camera feeds the backend in the same
+          terminal.</p>
+        <p>The profile selector mirrors what the launch script can configure via <code>scripts/configs</code> when you
+          need a different backend.</p>
       </div>
     </section>
   </main>
   <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
 </body>
+
 </html>

@@ -65,6 +65,32 @@ sequenceDiagram
    P->>D: overlay + metrics (includes t_inf, t_draw, total_internal)
 ```
 
+## 🧱 Tiling + pré/post-traitement (4K vs 1080p)
+
+La version 4K découpe les 3840×2160 pixels en un *global tile* 640×640 (pour conserver la vue d'ensemble) et en une grille d'îlots 640×640 répartis sur la scène (8 à 12 tiles selon le niveau de zoom). Le *global tile* sert deux objectifs clés : il fournit une vue native pour la fusion finale (les masques des sous-tiles sont recollés sur ce canevas global) et il agit de référence pour déterminer les offsets/scales des tiles locales. En 1080p, la grille reste plus compacte (4-6 tiles) mais le pattern est identique.
+
+Chaque tile (global ou local) est copiée en mémoire CPU, ses métadonnées (position/échelle) sont stockées, puis la séquence est envoyée au moteur TensorRT pour être traitée. Les 45 ms du GPU représentent la somme des inférences sur toutes les tiles locales + le global tile, pas un « passage 4K » en un seul batch. Dans l’implémentation actuelle, le recadrage, la mise à l’échelle et la reconstruction des masques se font sur CPU, ce qui explique les 195 ms de bout en bout.
+
+Pour optimiser, il faut déplacer le plus de ces étapes sur CUDA : activer `YOLO_USE_GPU_PREPROC=1` permet de travailler sur des buffers GPU avec un pipeline de kernels (resize, crop, copy) et `YOLO_USE_GPU_POST=1` donne à TensorRT les moyens de dessiner les masques directement sur la texture globale. Un pipeline CUDA typique ici définirait des streams dédiés pour (1) charger l’image globale dans un buffer, (2) produire une version downscalée (global tile) et des crops pour chacun des tiles locaux, (3) lancer les inférences TensorRT en parallèle via un « batch » composé de ces tiles, et enfin (4) fusionner les résultats dans un buffer de sortie que la couche CPU/visu peut alpha-blender. Les streams CUDA permettent d’overlapper copie/inférence/post-processing pour éviter les goulets d’étranglement.
+
+En complément, on peut brider les classes détectées sur l’index 0 (personne) pour éviter de diluer le moteur sur des catégories inutiles. La fusion des masques elle-même peut être déléguée à un fragment shader OpenGL ou CUDA (voir `YOLO_USE_GPU_POST=1` / un shader simple) pour faire le blend sur le canevas global sans repasser en CPU.
+
+```mermaid
+flowchart TB
+   Capture4K["Capture 4K / 3840×2160"] --> Crop4K["CPU crop & tile (global + 9+ tiles à 640)"]
+   Capture1080["Capture 1080p / 1920×1080"] --> Crop1080["CPU crop & tile (global + 4-6 tiles à 640)"]
+   Crop4K --> Upload4K["Staging CPU → GPU (async batches)"]
+   Crop1080 --> Upload1080["Staging CPU → GPU (fewer tiles)"]
+   Upload4K --> TensorRT["TensorRT (batch 32 tiles max)"]
+   Upload1080 --> TensorRT
+   TensorRT --> CPUFuse["Fusion et dessin de masques (CPU)"]
+   CPUFuse --> WebMetrics["Web UI + métriques t_inf / t_draw"]
+   style TensorRT stroke:#b83232,stroke-width:3px
+   style CPUFuse stroke:#2d5f8b,stroke-width:2px
+```
+
+Le point d'optimisation principal est donc de réduire le temps passé sur le CPU : activer `YOLO_USE_GPU_PREPROC=1` et/ou `YOLO_USE_GPU_POST=1` permet de déporter la resize/crop et la fusion vers des kernels CUDA (en conjonction avec la version TensorRT native). D'autres pistes : groupement plus agressif des tiles dans des batches TensorRT plus larges, mise en pré-charge des copies via des streams CUDA dédiés, ou bien délégation de la fusion des masques à un fragment shader (OpenGL/CUDA) pour éviter les copies sur l'image finale.
+
 ## 🚀 Exécution de l'application
 
 Utilisez le script d'exécution qui gère automatiquement les accès GPU, caméras et ports réseaux.
@@ -127,18 +153,6 @@ Une fois la caméra détectée :
 ---
 
 ## 📂 Gestion des fichiers et GitHub
-
-### Fichiers obsolètes (à supprimer)
-Les fichiers suivants sont des reliquats d'anciennes versions et ne sont plus nécessaires avec le nouveau `Dockerfile` :
-- `Dockerfile.probe` : Test temporaire.
-- `setup.sh`, `run_docker.sh`, `setup_docker.sh` : Remplacés par le workflow Docker standard.
-- `make_wheelhouse.sh` (racine) : Utilisez `scripts/make_wheelhouse.sh`.
-
-### Que faut-il commiter ?
-- **OUI** : `Dockerfile`, `requirements.cuda.txt`, `scripts/make_wheelhouse.sh`.
-- **NON** : Le dossier `wheelhouse/` (trop lourd, contient des binaires `.whl` qui sont téléchargés dynamiquement durant le build Docker via le cache).
-- **NON** : Les dossiers `models/` (doivent être gérés via un script de téléchargement ou stockés séparément).
-
 ### Structure des modèles
 Le dossier `models/` est monté depuis l’hôte et doit conserver cette arborescence claire :
 
@@ -152,4 +166,3 @@ Le dossier `models/` est monté depuis l’hôte et doit conserver cette arbores
 
 Les scripts `prepare_models.py`, `download_lwcc_weights.py` et `export_yolos_to_trt.py` font maintenant en sorte de créer ces dossiers avec des permissions 775, d’exécuter les conversions à partir de la racine du dépôt, puis de nettoyer les sous-arborescences temporaires (`models/models/`). Il suffit de relancer `./run_app.sh` (ou `python3 prepare_models.py`) après toute mise à jour pour regénérer les poids aux bons emplacements.
 
-```

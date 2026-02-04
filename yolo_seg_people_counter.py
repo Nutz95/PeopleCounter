@@ -20,7 +20,8 @@ class YoloSegPeopleCounter:
         # On augmente le nombre de workers pour couvrir les 28 tuiles du mode 4K en parallèle
         max_workers = min(32, (os.cpu_count() or 4) * 2)
         self.pool = ThreadPoolExecutor(max_workers=max_workers)
-        self.last_perf = {} 
+        self.last_perf = {}
+        self.last_internal = {}
         self.last_device = "Unknown"
 
         if self.backend == 'tensorrt_native':
@@ -208,6 +209,13 @@ class YoloSegPeopleCounter:
 
         # On log le détail si on est en décalage
         total_internal = t_crop + t_inf + t_fuse + t_draw
+        self.last_internal = {
+            't_crop': t_crop,
+            't_inf': t_inf,
+            't_fuse': t_fuse,
+            't_draw': t_draw,
+            'total_internal': total_internal
+        }
         print(f"  [YOLO DETAILED] Crop={t_crop*1000:.1f}ms | Infer={t_inf*1000:.1f}ms | Fuse={t_fuse*1000:.1f}ms | Draw={t_draw*1000:.1f}ms | Total={total_internal*1000:.1f}ms")
 
         return int(total_count), image_out if draw_boxes else int(total_count)

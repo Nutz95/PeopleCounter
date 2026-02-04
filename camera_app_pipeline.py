@@ -287,6 +287,7 @@ class CameraAppPipeline:
                     yolo_dev = getattr(self.yolo_counter, 'last_device', 'GPU')
                     dens_dev = getattr(self.processor, 'last_device', 'GPU')
                     yp = getattr(self.yolo_counter, 'last_perf', {}) if self.yolo_counter else {}
+                    yolo_internal = getattr(self.yolo_counter, 'last_internal', {}) if self.yolo_counter else {}
                     dp = getattr(self.processor, 'last_perf', {}) if self.processor else {}
                     
                     cpu_usage = psutil.cpu_percent()
@@ -409,6 +410,9 @@ class CameraAppPipeline:
                         "yolo_pre_ms": float(yp.get('preprocess', 0) * 1000),
                         "yolo_gpu_ms": float(yp.get('infer', 0) * 1000),
                         "yolo_post_ms": float(yp.get('postprocess', 0) * 1000),
+                        "yolo_internal_inf_ms": float(yolo_internal.get('t_inf', 0) * 1000),
+                        "yolo_internal_draw_ms": float(yolo_internal.get('t_draw', 0) * 1000),
+                        "yolo_internal_total_ms": float(yolo_internal.get('total_internal', 0) * 1000),
                         "density_pre_ms": float(dp.get('preprocess', 0) * 1000),
                         "density_gpu_ms": float(dp.get('infer', 0) * 1000),
                         "density_post_ms": float(dp.get('postprocess', 0) * 1000),
