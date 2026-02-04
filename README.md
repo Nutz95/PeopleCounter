@@ -191,7 +191,9 @@ Les classes `YoloTensorRTEngine` et `YoloSegPeopleCounter` utilisent désormais 
 
 Vous pouvez vérifier quel chemin est emprunté en relançant `./run_app.sh --profile <profil> --verbose` et en surveillant le log `[DEBUG] PERF BREAKDOWN` : `preprocess` devrait chuter vers la dizaine de millisecondes quand `YOLO_USE_GPU_PREPROC` est actif et que `torch.cuda.is_available()` retourne `True`.
 
-Le nouveau sélecteur **YOLO pipeline** dans l’interface Web expose les modes `auto`, `gpu` et `cpu` pour tester sans modifier les `.env`. `YOLO_USE_GPU_RENDER=1` force le choix GPU par défaut et active la classe `GpuMaskRenderer`, qui fusionne les masques sur la RTX avant de repartir sur l’image. Lorsqu’`EXTREME_DEBUG=1`, un log `[DEBUG] YOLO pipeline` indique à la fois le prétraitement et le renderer sélectionnés.
+Le nouveau sélecteur **YOLO pipeline** dans l’interface Web expose les modes `auto`, `gpu`, `gpu_full` et `cpu` afin de basculer immédiatement entre les pipelines. `YOLO_USE_GPU_RENDER=1` force le choix GPU par défaut et active la classe `GpuMaskRenderer`, qui fusionne les masques sur la RTX avant de repartir sur l’image. L’option **Full GPU pipeline** conserve toute la chaîne (tiling, redimensionnement, inférence et rendu des masques) sur CUDA, évitant les copies intercalaires vers le CPU. Lorsqu’`EXTREME_DEBUG=1`, un log `[DEBUG] YOLO pipeline` indique à la fois le prétraitement et le renderer sélectionnés et les métriques retournent `yolo_pipeline_mode_effective` pour confirmer le chemin réellement emprunté.
+
+Vous pouvez également pré-configurer ce mode en exportant `YOLO_PIPELINE_MODE=gpu_full` dans vos profils (par exemple `scripts/configs/rtx_extreme.env`).
 
 ### Exemples de profils :
 

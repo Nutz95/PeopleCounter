@@ -158,7 +158,7 @@ class CameraAppPipeline:
 
     def set_yolo_pipeline_mode(self, mode):
         normalized = (mode or 'auto').lower()
-        if normalized not in ('auto', 'cpu', 'gpu'):
+        if normalized not in ('auto', 'cpu', 'gpu', 'gpu_full'):
             return False
         self.yolo_pipeline_mode = normalized
         if self.yolo_counter and hasattr(self.yolo_counter, 'configure_pipeline'):
@@ -426,6 +426,7 @@ class CameraAppPipeline:
                         "yolo_gpu_ms": float(yp.get('infer', 0) * 1000),
                         "yolo_post_ms": float(yp.get('postprocess', 0) * 1000),
                         "yolo_pipeline_mode": self.yolo_pipeline_mode,
+                        "yolo_pipeline_mode_effective": getattr(self.yolo_counter, 'active_pipeline_mode', self.yolo_pipeline_mode),
                         "yolo_preproc_mode": getattr(self.yolo_counter, 'preprocessor_mode', 'cpu'),
                         "yolo_renderer_mode": getattr(self.yolo_counter, 'renderer_mode', 'cpu'),
                         "yolo_internal_inf_ms": float(yolo_internal.get('t_inf', 0) * 1000),

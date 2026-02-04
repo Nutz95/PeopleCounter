@@ -270,6 +270,12 @@ main.page-column {
   font-size: 0.9rem;
 }
 
+.pipeline-footnote {
+  margin: 0;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.74);
+}
+
 .profile-controls select,
 .profile-controls button {
   background: rgba(255, 255, 255, 0.08);

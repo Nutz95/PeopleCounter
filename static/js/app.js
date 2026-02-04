@@ -16,6 +16,7 @@ const captureTimeLabel = document.getElementById('captureTimeLabel');
 const overlayToggle = document.getElementById('overlayToggle');
 const overlayStatus = document.getElementById('overlayStatus');
 const pipelineModeSelect = document.getElementById('pipelineModeSelect');
+const pipelineModeEffective = document.getElementById('pipelineModeEffective');
 const videoHistoryList = document.getElementById('videoHistoryList');
 const historyChartShell = document.getElementById('historyChartShell');
 const historyChart = document.getElementById('historyChart');
@@ -208,6 +209,17 @@ async function refreshMetrics() {
     }
     if (pipelineModeSelect && typeof data.yolo_pipeline_mode === 'string') {
       pipelineModeSelect.value = data.yolo_pipeline_mode;
+    }
+    if (pipelineModeEffective) {
+      const effective = data.yolo_pipeline_mode_effective || data.yolo_pipeline_mode;
+      const displayMap = {
+        auto: 'Auto (preferred)',
+        gpu_full: 'Full GPU pipeline',
+        gpu: 'GPU preprocess + render',
+        cpu: 'CPU fallback',
+      };
+      const label = effective ? displayMap[effective] || effective.replace('_', ' ') : '—';
+      pipelineModeEffective.textContent = `Effective pipeline: ${label}`;
     }
     const captureMs = data.capture_ms;
     captureTimeLabel.textContent = `Capture: ${typeof captureMs === 'number' ? captureMs.toFixed(1) : '—'}ms`;

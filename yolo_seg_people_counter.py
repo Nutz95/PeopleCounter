@@ -11,8 +11,10 @@ from engines.yolo.renderers import CpuMaskRenderer, GpuMaskRenderer
 
 try:
     import torch
+    import torch.nn.functional as F
 except Exception:
     torch = None
+    F = None
 
 class YoloSegPeopleCounter:
     def __init__(self, model_path, confidence_threshold=0.25, backend='tensorrt_native', device='cuda'):
@@ -36,6 +38,7 @@ class YoloSegPeopleCounter:
         self.preprocessor_mode = 'cpu'
         self.renderer_mode = 'cpu'
         self.renderer = CpuMaskRenderer()
+        self.active_pipeline_mode = 'cpu'
 
         if self.backend == 'tensorrt_native':
             use_gpu_pre = os.environ.get('YOLO_USE_GPU_PREPROC', '0') == '1'
@@ -58,25 +61,7 @@ class YoloSegPeopleCounter:
 
         # --- Crop / tiles ---
         t_crop_start = time.time()
-        tiles = []
-        metadata = []  # (x, y, sw, sh, orig_w, orig_h)
-
-        if not use_tiling or (h <= 640 and w <= 640):
-            tiles.append(image_rgb)
-            metadata.append((0, 0, 1.0, 1.0, w, h))
-        else:
-            # 1. global anchor
-            global_tile = cv2.resize(image_rgb, (640, 640))
-            tiles.append(global_tile)
-            metadata.append((0, 0, w / 640.0, h / 640.0, w, h))
-
-            # 2. high-res tiles from tiler
-            tiles_coords = self.tiler.get_tiles(image_rgb.shape)
-            for x1, y1, x2, y2 in tiles_coords:
-                tw, th = x2 - x1, y2 - y1
-                tiles.append(image_rgb[y1:y2, x1:x2])
-                metadata.append((x1, y1, tw / 640.0, th / 640.0, tw, th))
-
+        tiles, metadata = self._prepare_tiles(image_rgb, use_tiling)
         t_crop = time.time() - t_crop_start
 
         # --- Inference ---
@@ -140,13 +125,18 @@ class YoloSegPeopleCounter:
         normalized = (mode or 'auto').lower()
         resolved = self._resolve_mode(normalized)
         self.pipeline_mode = normalized
+        preproc_mode = 'gpu' if resolved in ('gpu', 'gpu_full') else 'cpu'
         if hasattr(self.engine, 'set_preprocessor_mode'):
-            self.engine.set_preprocessor_mode(resolved)
-        self.preprocessor_mode = resolved
-        self._set_renderer_mode(resolved)
+            self.engine.set_preprocessor_mode(preproc_mode)
+        self.preprocessor_mode = preproc_mode
+        renderer_mode = 'gpu' if resolved in ('gpu', 'gpu_full') else 'cpu'
+        self._set_renderer_mode(renderer_mode)
+        self.active_pipeline_mode = resolved
         return resolved
 
     def _resolve_mode(self, mode):
+        if mode == 'gpu_full' and self._gpu_available:
+            return 'gpu_full'
         if mode == 'gpu' and self._gpu_available:
             return 'gpu'
         if mode == 'auto':
@@ -155,6 +145,8 @@ class YoloSegPeopleCounter:
             gpu_pre = getattr(self.engine, 'use_gpu_preproc', False)
             if gpu_pre and self._gpu_available:
                 return 'gpu'
+            return 'cpu'
+        if mode == 'cpu':
             return 'cpu'
         return 'cpu'
 
@@ -168,4 +160,80 @@ class YoloSegPeopleCounter:
                 pass
         self.renderer = CpuMaskRenderer()
         self.renderer_mode = 'cpu'
+
+    def _prepare_tiles(self, image_rgb, use_tiling):
+        if self._is_full_gpu_pipeline():
+            try:
+                return self._prepare_tiles_gpu(image_rgb, use_tiling)
+            except Exception as exc:
+                if self.debug_mode:
+                    print(f"[WARN] Full GPU tiling failed, falling back to CPU tiles: {exc}")
+        return self._prepare_tiles_cpu(image_rgb, use_tiling)
+
+    def _prepare_tiles_cpu(self, image_rgb, use_tiling):
+        tiles = []
+        metadata = []  # (x, y, sw, sh, orig_w, orig_h)
+        h, w = image_rgb.shape[:2]
+        tile_size = self.tiler.tile_size
+
+        if not use_tiling or (h <= tile_size and w <= tile_size):
+            tiles.append(image_rgb)
+            metadata.append((0, 0, 1.0, 1.0, w, h))
+            return tiles, metadata
+
+        tiles.append(cv2.resize(image_rgb, (tile_size, tile_size)))
+        metadata.append((0, 0, w / tile_size, h / tile_size, w, h))
+
+        tiles_coords = self.tiler.get_tiles(image_rgb.shape)
+        for x1, y1, x2, y2 in tiles_coords:
+            tw, th = x2 - x1, y2 - y1
+            tiles.append(image_rgb[y1:y2, x1:x2])
+            metadata.append((x1, y1, tw / tile_size, th / tile_size, tw, th))
+
+        return tiles, metadata
+
+    def _prepare_tiles_gpu(self, image_rgb, use_tiling):
+        if torch is None or F is None or not torch.cuda.is_available():
+            raise EnvironmentError("CUDA resources unavailable for full GPU tiling.")
+        tile_size = self.tiler.tile_size
+        h, w = image_rgb.shape[:2]
+        device = torch.device('cuda')
+        frame_tensor = torch.from_numpy(image_rgb.astype(np.float32)).permute(2, 0, 1).contiguous().to(device)
+        tiles = []
+        metadata = []
+
+        if not use_tiling or (h <= tile_size and w <= tile_size):
+            tiles.append(frame_tensor.clone())
+            metadata.append((0, 0, 1.0, 1.0, w, h))
+            return tiles, metadata
+
+        tiles.append(self._resize_tensor(frame_tensor, tile_size, tile_size))
+        metadata.append((0, 0, w / tile_size, h / tile_size, w, h))
+
+        tiles_coords = self.tiler.get_tiles(image_rgb.shape)
+        for x1, y1, x2, y2 in tiles_coords:
+            crop = frame_tensor[:, y1:y2, x1:x2]
+            if crop.shape[1:] != (tile_size, tile_size):
+                crop = self._resize_tensor(crop, tile_size, tile_size)
+            tiles.append(crop.contiguous())
+            tw, th = x2 - x1, y2 - y1
+            metadata.append((x1, y1, tw / tile_size, th / tile_size, tw, th))
+
+        return tiles, metadata
+
+    def _resize_tensor(self, tensor, height, width):
+        if F is None:
+            raise RuntimeError("Torch functional API is required to resize CUDA tensors.")
+        if tensor.ndim == 3:
+            tensor = tensor.unsqueeze(0)
+        resized = F.interpolate(
+            tensor,
+            size=(height, width),
+            mode='bilinear',
+            align_corners=False,
+        ).squeeze(0)
+        return resized.contiguous()
+
+    def _is_full_gpu_pipeline(self):
+        return self.active_pipeline_mode == 'gpu_full' and self._gpu_available
 

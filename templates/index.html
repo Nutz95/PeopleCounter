@@ -98,11 +98,13 @@
           <label for="pipelineModeSelect">YOLO pipeline</label>
           <select id="pipelineModeSelect">
             <option value="auto">Auto (preferred)</option>
+            <option value="gpu_full">Full GPU pipeline (CUDA tiler + render)</option>
             <option value="gpu">GPU preprocess + render</option>
             <option value="cpu">CPU fallback</option>
           </select>
-          <p class="metric-footnote" style="margin: 0.2rem 0 0; font-size: 0.75rem;">Switches the preprocessor/renderer
-            combo.</p>
+          <p class="metric-footnote pipeline-footnote" id="pipelineModeEffective">Effective pipeline: —</p>
+          <p class="metric-footnote" style="margin: 0.2rem 0 0; font-size: 0.75rem;">Switches the renderer/preprocessor
+            combo. The full CUDA pipeline keeps tiling + overlay on the GPU.</p>
         </div>
         <div class="profile-controls">
           <select id="profileViewSelect">
