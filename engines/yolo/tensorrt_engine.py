@@ -1,8 +1,8 @@
 import tensorrt as trt
 import numpy as np
 import time
-import cv2
 from .base import YoloEngine
+from .preprocessors import CpuPreprocessor, GpuPreprocessor
 
 # Optional GPU helpers
 try:
@@ -23,8 +23,11 @@ class YoloTensorRTEngine(YoloEngine):
         self.person_class_id = 0
         self.pool = pool
         self.last_perf = {'preprocess': 0, 'h2d': 0, 'infer': 0, 'd2h': 0, 'postprocess': 0}
-        self.use_gpu_preproc = use_gpu_preproc and (torch is not None)
+        self.use_gpu_preproc = bool(use_gpu_preproc and (torch is not None) and torch.cuda.is_available())
         self.use_gpu_post = use_gpu_post and (torch is not None)
+        self.target_size = (640, 640)
+        preprocessor_cls = GpuPreprocessor if self.use_gpu_preproc else CpuPreprocessor
+        self.preprocessor = preprocessor_cls(self.target_size)
 
         logger = trt.Logger(trt.Logger.WARNING)
         with open(model_path, 'rb') as f:
@@ -80,38 +83,30 @@ class YoloTensorRTEngine(YoloEngine):
         if self.outputs_ordered[0] is None and len(self.trt_outputs) > 0:
             self.outputs_ordered[0] = self.trt_outputs[0]
 
-        self._host_input = None
 
     def infer(self, tiles, metadata):
         batch_size = 32
-        target_h, target_w = 640, 640
+        target_h, target_w = self.target_size
         all_boxes, all_scores, all_masks, all_visible_boxes = [], [], [], []
         self.last_perf = {k: 0 for k in self.last_perf}
-
-        def preprocess_parallel(tile):
-            if tile.shape[:2] != (target_h, target_w):
-                tile = cv2.resize(tile, (target_w, target_h))
-            return np.transpose(tile.astype(np.float32) * (1.0/255.0), (2, 0, 1))
 
         for i in range(0, len(tiles), batch_size):
             chunk = tiles[i:i+batch_size]
             actual_b = len(chunk)
 
             t_pre_0 = time.time()
-            if self._host_input is None or self._host_input.shape[0] < actual_b:
-                self._host_input = np.empty((32, 3, target_h, target_w), dtype=np.float32)
-            input_data = self._host_input[:actual_b]
-
-            from concurrent.futures import ThreadPoolExecutor as _TPE
-            with _TPE(max_workers=min(8, actual_b)) as exe:
-                futures = [exe.submit(lambda j, t: input_data.__setitem__(j, preprocess_parallel(t)), j, chunk[j]) for j in range(actual_b)]
-                for f in futures: f.result()
+            input_tensor = self.preprocessor.preprocess(chunk)
             self.last_perf['preprocess'] += time.time() - t_pre_0
 
+            if actual_b == 0:
+                continue
+
             t1 = time.time()
-            # H2D via Torch
             input_name = self.trt_inputs[0]['name']
-            self._torch_tensors[input_name][:actual_b].copy_(torch.from_numpy(input_data))
+            input_chunk = input_tensor[:actual_b]
+            if input_chunk.device.type != 'cuda':
+                input_chunk = input_chunk.to('cuda', non_blocking=True)
+            self._torch_tensors[input_name][:actual_b].copy_(input_chunk)
             self.last_perf['h2d'] += time.time() - t1
             
             # Execution
@@ -241,3 +236,19 @@ class YoloTensorRTEngine(YoloEngine):
 
     def get_perf(self):
         return self.last_perf
+
+    def set_preprocessor_mode(self, mode):
+        target = (mode or 'auto').lower()
+        if target not in ('auto', 'cpu', 'gpu'):
+            target = 'auto'
+        if target == 'gpu' and torch is not None and torch.cuda.is_available():
+            self.use_gpu_preproc = True
+            self.preprocessor = GpuPreprocessor(self.target_size)
+        elif target == 'auto':
+            use_gpu = torch is not None and torch.cuda.is_available()
+            self.use_gpu_preproc = use_gpu
+            preprocessor_cls = GpuPreprocessor if use_gpu else CpuPreprocessor
+            self.preprocessor = preprocessor_cls(self.target_size)
+        else:
+            self.use_gpu_preproc = False
+            self.preprocessor = CpuPreprocessor(self.target_size)

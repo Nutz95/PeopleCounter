@@ -77,6 +77,7 @@ class CameraAppPipeline:
         self.latest_metrics = {}
         self.history_data = []
         self.history_len = 600
+        self.yolo_pipeline_mode = os.environ.get('YOLO_PIPELINE_MODE', 'auto').lower()
         self.density_quads_coords = []
         self.yolo_device = 'cpu'
         self.density_device = 'GPU'
@@ -134,6 +135,9 @@ class CameraAppPipeline:
         self.density_device = metadata.get('processor_device', getattr(self.processor, 'last_device', 'GPU'))
         self.model_metadata = metadata
         self._models_loaded = True
+        self.set_yolo_pipeline_mode(self.yolo_pipeline_mode)
+        if self.yolo_counter and hasattr(self.yolo_counter, 'set_debug_mode'):
+            self.yolo_counter.set_debug_mode(self.extreme_debug)
         return True
 
     def apply_profile(self, profile_name):
@@ -149,6 +153,17 @@ class CameraAppPipeline:
 
     def set_debug_mode(self, enabled):
         self.extreme_debug = bool(enabled)
+        if self.yolo_counter and hasattr(self.yolo_counter, 'set_debug_mode'):
+            self.yolo_counter.set_debug_mode(self.extreme_debug)
+
+    def set_yolo_pipeline_mode(self, mode):
+        normalized = (mode or 'auto').lower()
+        if normalized not in ('auto', 'cpu', 'gpu'):
+            return False
+        self.yolo_pipeline_mode = normalized
+        if self.yolo_counter and hasattr(self.yolo_counter, 'configure_pipeline'):
+            self.yolo_counter.configure_pipeline(normalized)
+        return True
 
     def set_profile_logging(self, active):
         self.profile_active = bool(active)
@@ -410,6 +425,9 @@ class CameraAppPipeline:
                         "yolo_pre_ms": float(yp.get('preprocess', 0) * 1000),
                         "yolo_gpu_ms": float(yp.get('infer', 0) * 1000),
                         "yolo_post_ms": float(yp.get('postprocess', 0) * 1000),
+                        "yolo_pipeline_mode": self.yolo_pipeline_mode,
+                        "yolo_preproc_mode": getattr(self.yolo_counter, 'preprocessor_mode', 'cpu'),
+                        "yolo_renderer_mode": getattr(self.yolo_counter, 'renderer_mode', 'cpu'),
                         "yolo_internal_inf_ms": float(yolo_internal.get('t_inf', 0) * 1000),
                         "yolo_internal_draw_ms": float(yolo_internal.get('t_draw', 0) * 1000),
                         "yolo_internal_total_ms": float(yolo_internal.get('total_internal', 0) * 1000),

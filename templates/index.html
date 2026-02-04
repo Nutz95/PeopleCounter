@@ -94,6 +94,16 @@
           <input type="checkbox" id="debugToggle">
           <span>Enable verbose debug logs</span>
         </label>
+        <div class="pipeline-control">
+          <label for="pipelineModeSelect">YOLO pipeline</label>
+          <select id="pipelineModeSelect">
+            <option value="auto">Auto (preferred)</option>
+            <option value="gpu">GPU preprocess + render</option>
+            <option value="cpu">CPU fallback</option>
+          </select>
+          <p class="metric-footnote" style="margin: 0.2rem 0 0; font-size: 0.75rem;">Switches the preprocessor/renderer
+            combo.</p>
+        </div>
         <div class="profile-controls">
           <select id="profileViewSelect">
             <option value="Live Metrics" {% if active_profile=='Live Metrics' %}selected{% endif %}>Live Metrics

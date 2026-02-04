@@ -65,6 +65,11 @@ class WebServer:
             if overlay_state is not None:
                 self.pipeline.set_graph_overlay(bool(overlay_state))
                 response['overlay'] = bool(overlay_state)
+            pipeline_mode = payload.get('pipeline_mode')
+            if pipeline_mode is not None and hasattr(self.pipeline, 'set_yolo_pipeline_mode'):
+                applied = self.pipeline.set_yolo_pipeline_mode(pipeline_mode)
+                response['pipeline_mode'] = pipeline_mode
+                response['pipeline_mode_applied'] = applied
             profile_name = payload.get('profile_name')
             if profile_name is not None:
                 display_name = profile_name

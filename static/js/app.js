@@ -15,6 +15,7 @@ const perfSummary = document.getElementById('perfSummary');
 const captureTimeLabel = document.getElementById('captureTimeLabel');
 const overlayToggle = document.getElementById('overlayToggle');
 const overlayStatus = document.getElementById('overlayStatus');
+const pipelineModeSelect = document.getElementById('pipelineModeSelect');
 const videoHistoryList = document.getElementById('videoHistoryList');
 const historyChartShell = document.getElementById('historyChartShell');
 const historyChart = document.getElementById('historyChart');
@@ -166,6 +167,11 @@ overlayToggle.addEventListener('click', () => {
   updateOverlayButton(nextState);
   sendControl({ overlay: nextState });
 });
+if (pipelineModeSelect) {
+  pipelineModeSelect.addEventListener('change', (event) => {
+    sendControl({ pipeline_mode: event.target.value });
+  });
+}
 updateOverlayButton(overlayToggle.dataset.state === 'on');
 
 async function refreshMetrics() {
@@ -199,6 +205,9 @@ async function refreshMetrics() {
       if (matchingOption) {
         profileViewSelect.value = activeProfileName;
       }
+    }
+    if (pipelineModeSelect && typeof data.yolo_pipeline_mode === 'string') {
+      pipelineModeSelect.value = data.yolo_pipeline_mode;
     }
     const captureMs = data.capture_ms;
     captureTimeLabel.textContent = `Capture: ${typeof captureMs === 'number' ? captureMs.toFixed(1) : '—'}ms`;

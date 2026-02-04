@@ -185,6 +185,14 @@ L'application permet de répartir la charge de calcul sur les différentes puces
 | `LWCC_BACKEND` | Moteur Densité | `tensorrt`, `openvino`, `torch` |
 | `OPENVINO_DEVICE` | Puce pour Densité OV | `GPU`, `NPU`, `CPU` |
 
+### Pipeline CPU / CUDA
+
+Les classes `YoloTensorRTEngine` et `YoloSegPeopleCounter` utilisent désormais `engines/yolo/preprocessors.py` pour séparer clairement le prétraitement CPU (`cv2`) de la variante CUDA (`torch` + `F.interpolate`). Activer `YOLO_USE_GPU_PREPROC=1` dans vos profils (par exemple `scripts/configs/rtx_extreme.env`) bascule sur le pipeline GPU et déporte la mise à l’échelle/copiage dans un kernel `interpolate` qui tourne directement sur la RTX. Le flag `YOLO_USE_GPU_POST=1` reste responsable de la génération des masques via `torch` ou `cupy` afin de ne pas repasser sur le CPU.
+
+Vous pouvez vérifier quel chemin est emprunté en relançant `./run_app.sh --profile <profil> --verbose` et en surveillant le log `[DEBUG] PERF BREAKDOWN` : `preprocess` devrait chuter vers la dizaine de millisecondes quand `YOLO_USE_GPU_PREPROC` est actif et que `torch.cuda.is_available()` retourne `True`.
+
+Le nouveau sélecteur **YOLO pipeline** dans l’interface Web expose les modes `auto`, `gpu` et `cpu` pour tester sans modifier les `.env`. `YOLO_USE_GPU_RENDER=1` force le choix GPU par défaut et active la classe `GpuMaskRenderer`, qui fusionne les masques sur la RTX avant de repartir sur l’image. Lorsqu’`EXTREME_DEBUG=1`, un log `[DEBUG] YOLO pipeline` indique à la fois le prétraitement et le renderer sélectionnés.
+
 ### Exemples de profils :
 
 **1. Mode Full RTX (NVIDIA uniquement) :**
