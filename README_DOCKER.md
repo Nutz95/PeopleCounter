@@ -17,6 +17,54 @@ Une fois l'image créée, vérifiez que le GPU est bien accessible :
 docker run --rm --gpus all people-counter:gpu-final python3 -c "import cv2; import torch; print('OpenCV CUDA:', cv2.cuda.getCudaEnabledDeviceCount()); print('PyTorch CUDA:', torch.cuda.is_available())"
 ```
 
+## 🧱 Architecture CPU / GPU
+```mermaid
+flowchart LR
+   subgraph Host[Hôte Docker]
+      CameraUSB -->|USB| CaptureService(Capture Process)
+      CameraIP -->|RTSP/HLS| CaptureService
+      CaptureService -->|Métadonnées| Pipeline
+   end
+
+   subgraph Pipeline["Application (containeur)"]
+      Pipeline --> CPUQueue["CPU Pré-traitement"]
+      CPUQueue --> GPUInfer["TensorRT YOLO / LWCC"]
+      GPUInfer --> CPUDraw["CPU Fusion / Dessin"]
+      CPUDraw --> WebUI["Web UI Metrics"]
+   end
+
+   subgraph Devices[Matériel]
+      GPU["GPU (CUDA, TensorRT)"]
+      CPU["CPU (Linux host)"]
+      GPUInfer --> GPU
+      CPUQueue --> CPU
+      CPUDraw --> CPU
+      WebUI -->|HTTP| Browser
+   end
+
+   style GPUInfer stroke:#b83232,stroke-width:3px
+   style GPU fill:#b83232,color:#fff
+   style CPU fill:#2d5f8b,color:#fff
+```
+
+## 🎞️ Flux vidéo par tuiles
+```mermaid
+sequenceDiagram
+   participant C as Capture
+   participant P as Pipeline
+   participant Y as YOLO Seg
+   participant GPU as GPU
+   participant D as Draw/UI
+
+   C->>P: frame
+   P->>Y: split into tiles
+   Y->>Y: t_crop (CPU)
+   Y->>GPU: t_inf (TensorRT)
+   Y->>Y: t_fuse & t_draw (CPU)
+   Y->>P: merged masks
+   P->>D: overlay + metrics (includes t_inf, t_draw, total_internal)
+```
+
 ## 🚀 Exécution de l'application
 
 Utilisez le script d'exécution qui gère automatiquement les accès GPU, caméras et ports réseaux.
