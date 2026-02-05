@@ -461,6 +461,9 @@ class CameraAppPipeline:
                     avg_instant = (yolo_count + density_count) / 2.0
                     self.metrics_collector.append(yolo_count, density_count, avg_instant)
                     history_snapshot = self.metrics_collector.snapshot() if self.graph_overlay_enabled else []
+                    detection_payload = None
+                    if self.yolo_counter and hasattr(self.yolo_counter, 'get_detection_payload'):
+                        detection_payload = self.yolo_counter.get_detection_payload()
                     metrics = {
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                         "yolo_count": int(yolo_count),
@@ -496,6 +499,10 @@ class CameraAppPipeline:
                         "history": history_snapshot,
                         "yolo_pipeline_report": pipeline_report
                     }
+                    if detection_payload is not None:
+                        metrics["yolo_detection_payload"] = detection_payload
+                    else:
+                        metrics["yolo_detection_payload"] = {"clusters": [], "detections": []}
                     self.latest_metrics = metrics
                     if self.profile_active:
                         self.profile_log.append(metrics.copy())

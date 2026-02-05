@@ -1,3 +1,4 @@
+import copy
 import cv2
 import numpy as np
 import os
@@ -50,6 +51,7 @@ class YoloSegPeopleCounter:
         self._cuda_frame_stager = None
         self._cuda_tiler = None
         self.last_pipeline_report = {}
+        self.last_detection_payload = {'clusters': [], 'detections': []}
 
         if self.backend == 'tensorrt_native':
             use_gpu_pre = os.environ.get('YOLO_USE_GPU_PREPROC', '0') == '1'
@@ -95,6 +97,7 @@ class YoloSegPeopleCounter:
         t_fuse_start = time.time()
         clusters = self.tiler.fuse_results(all_boxes, all_scores, all_masks, iou_threshold=0.3)
         total_count = len(clusters)
+        self._capture_detection_payload(clusters, all_boxes, all_scores, all_masks, all_visible_boxes)
         t_fuse = time.time() - t_fuse_start
 
         # --- Draw (optimized combined mask) ---
@@ -195,6 +198,51 @@ class YoloSegPeopleCounter:
                 pass
         self.renderer = CpuMaskRenderer()
         self.renderer_mode = 'cpu'
+
+    def get_detection_payload(self):
+        return copy.deepcopy(self.last_detection_payload)
+
+    def _capture_detection_payload(self, clusters, all_boxes, all_scores, all_masks, all_visible_boxes):
+        if not len(all_boxes):
+            self.last_detection_payload = {'clusters': [], 'detections': []}
+            return
+
+        detections = []
+        for idx in range(len(all_boxes)):
+            bbox = [float(v) for v in all_boxes[idx]]
+            visible_box = [float(v) for v in all_visible_boxes[idx]]
+            mask_present = all_masks[idx] is not None
+            detections.append({
+                'index': int(idx),
+                'confidence': float(all_scores[idx]) if idx < len(all_scores) else 0.0,
+                'box': bbox,
+                'visible_box': visible_box,
+                'has_mask': bool(mask_present),
+            })
+
+        clusters_summary = []
+        for cluster_idx, cluster in enumerate(clusters):
+            if not cluster:
+                continue
+            cluster_boxes = [all_boxes[i] for i in cluster if i < len(all_boxes)]
+            if not cluster_boxes:
+                continue
+            min_x = min(box[0] for box in cluster_boxes)
+            min_y = min(box[1] for box in cluster_boxes)
+            max_x = max(box[2] for box in cluster_boxes)
+            max_y = max(box[3] for box in cluster_boxes)
+            mask_count = int(sum(1 for i in cluster if i < len(all_masks) and all_masks[i] is not None))
+            clusters_summary.append({
+                'id': int(cluster_idx),
+                'members': [int(i) for i in cluster],
+                'bbox': [float(min_x), float(min_y), float(max_x), float(max_y)],
+                'mask_members': mask_count,
+            })
+
+        self.last_detection_payload = {
+            'clusters': clusters_summary,
+            'detections': detections,
+        }
 
     def _prepare_tiles(self, image_rgb, use_tiling):
         if self._is_full_gpu_pipeline():
