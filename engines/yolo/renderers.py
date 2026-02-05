@@ -129,6 +129,7 @@ class GpuMaskRenderer(BaseMaskRenderer):
             raise EnvironmentError("CUDA is required for GPU mask rendering.")
         self.device = torch.device('cuda')
         self.last_draw_metrics = None
+        self.overlay_color = torch.tensor([0, 255, 0], dtype=torch.float16, device=self.device).view(3, 1, 1)
 
     def render(
         self,
@@ -193,11 +194,19 @@ class GpuMaskRenderer(BaseMaskRenderer):
         mask_end.record()
 
         blend_start.record()
-        image_tensor = torch.from_numpy(image.astype(np.float32)).permute(2, 0, 1).to(self.device)
-        overlay_color = torch.tensor([0, 255, 0], dtype=torch.float32, device=self.device).view(3, 1, 1)
-        blend = image_tensor * 0.6 + overlay_color * 0.4
-        mask_expanded = mask_tensor.unsqueeze(0).expand(3, -1, -1)
-        image_tensor = torch.where(mask_expanded, blend, image_tensor)
+        image_tensor = torch.from_numpy(image.astype(np.float32)).permute(2, 0, 1).to(self.device).half()
+        mask_coords = torch.nonzero(mask_tensor, as_tuple=False)
+        if mask_coords.numel():
+            y_min = int(mask_coords[:, 0].min())
+            y_max = int(mask_coords[:, 0].max()) + 1
+            x_min = int(mask_coords[:, 1].min())
+            x_max = int(mask_coords[:, 1].max()) + 1
+            roi = image_tensor[:, y_min:y_max, x_min:x_max]
+            if roi.numel():
+                blend_region = roi * 0.6 + self.overlay_color * 0.4
+                mask_roi = mask_tensor[y_min:y_max, x_min:x_max]
+                mask_expanded = mask_roi.unsqueeze(0).expand_as(roi)
+                image_tensor[:, y_min:y_max, x_min:x_max] = torch.where(mask_expanded, blend_region, roi)
         blend_end.record()
 
         convert_start.record()
