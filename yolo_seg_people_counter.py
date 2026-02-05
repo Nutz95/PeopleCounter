@@ -67,23 +67,26 @@ class YoloSegPeopleCounter:
 
         self.configure_pipeline(self.pipeline_mode)
 
-    def count_people(self, image, tile_size=640, draw_boxes=True, use_tiling=True, draw_tiles=False):
+    def count_people(self, image, tile_size=640, draw_boxes=True, use_tiling=True, draw_tiles=False, global_tile_only=False):
         t0_total = time.time()
         image_rgb = image[..., ::-1].copy()
         h, w = image_rgb.shape[:2]
 
         # --- Crop / tiles ---
         t_crop_start = time.time()
-        tiles, metadata = self._prepare_tiles(image_rgb, use_tiling)
+        tiles, metadata = self._prepare_tiles(image_rgb, use_tiling, global_tile_only)
         t_crop = time.time() - t_crop_start
 
         # --- Inference ---
         t_inf_start = time.time()
         results = self.engine.infer(tiles, metadata)
-        if len(results) == 4:
+        detection_metadata = None
+        if len(results) == 5:
+            all_boxes, all_scores, all_masks, all_visible_boxes, detection_metadata = results
+        elif len(results) == 4:
             all_boxes, all_scores, all_masks, all_visible_boxes = results
         else:
-            all_boxes, all_scores, all_masks = results
+            all_boxes, all_scores, all_masks = results[:3]
             all_visible_boxes = all_boxes
         t_inf = time.time() - t_inf_start
 
@@ -119,6 +122,15 @@ class YoloSegPeopleCounter:
             )
         else:
             image_out = image.copy()
+        if draw_tiles:
+            image_out = self._apply_debug_tiling_overlay(
+                image_out,
+                draw_tiles,
+                metadata,
+                detection_metadata,
+                all_masks,
+                all_visible_boxes,
+            )
         t_draw = time.time() - t_draw_start
 
         # On log le détail si on est en décalage
@@ -244,45 +256,50 @@ class YoloSegPeopleCounter:
             'detections': detections,
         }
 
-    def _prepare_tiles(self, image_rgb, use_tiling):
+    def _prepare_tiles(self, image_rgb, use_tiling, global_tile_only=False):
         if self._is_full_gpu_pipeline():
             try:
-                return self._prepare_tiles_gpu(image_rgb, use_tiling)
+                return self._prepare_tiles_gpu(image_rgb, use_tiling, global_tile_only)
             except Exception as exc:
                 if self.debug_mode:
                     print(f"[WARN] Full GPU tiling failed, falling back to CPU tiles: {exc}")
                 self.last_pipeline_report = self._build_pipeline_report(last_gpu_full_success=False, last_gpu_full_error=str(exc))
-        return self._prepare_tiles_cpu(image_rgb, use_tiling)
+        return self._prepare_tiles_cpu(image_rgb, use_tiling, global_tile_only)
 
-    def _prepare_tiles_cpu(self, image_rgb, use_tiling):
+    def _prepare_tiles_cpu(self, image_rgb, use_tiling, global_tile_only=False):
         tiles = []
         metadata = []  # (x, y, sw, sh, orig_w, orig_h)
         h, w = image_rgb.shape[:2]
         tile_size = self.tiler.tile_size
 
+        if global_tile_only:
+            tiles.append(cv2.resize(image_rgb, (tile_size, tile_size)))
+            metadata.append((0, 0, w / tile_size, h / tile_size, w, h, True))
+            return tiles, metadata
+
         if not use_tiling or (h <= tile_size and w <= tile_size):
             tiles.append(image_rgb)
-            metadata.append((0, 0, 1.0, 1.0, w, h))
+            metadata.append((0, 0, 1.0, 1.0, w, h, True))
             return tiles, metadata
 
         tiles.append(cv2.resize(image_rgb, (tile_size, tile_size)))
-        metadata.append((0, 0, w / tile_size, h / tile_size, w, h))
+        metadata.append((0, 0, w / tile_size, h / tile_size, w, h, True))
 
         tiles_coords = self.tiler.get_tiles(image_rgb.shape)
         for x1, y1, x2, y2 in tiles_coords:
             tw, th = x2 - x1, y2 - y1
             tiles.append(image_rgb[y1:y2, x1:x2])
-            metadata.append((x1, y1, tw / tile_size, th / tile_size, tw, th))
+            metadata.append((x1, y1, tw / tile_size, th / tile_size, tw, th, False))
 
         return tiles, metadata
 
-    def _prepare_tiles_gpu(self, image_rgb, use_tiling):
+    def _prepare_tiles_gpu(self, image_rgb, use_tiling, global_tile_only=False):
         if not self._ensure_cuda_helpers():
             raise EnvironmentError("CUDA tiling helpers could not be initialized.")
 
         frame_tensor = self._cuda_frame_stager.stage(image_rgb)
         try:
-            tiles, metadata = self._cuda_tiler.tile_frame(frame_tensor, use_tiling)
+            tiles, metadata = self._cuda_tiler.tile_frame(frame_tensor, use_tiling, global_tile_only)
             self.last_pipeline_report = self._build_pipeline_report(last_gpu_full_success=True)
             return tiles, metadata
         finally:
@@ -306,6 +323,104 @@ class YoloSegPeopleCounter:
 
     def _is_full_gpu_pipeline(self):
         return self.active_pipeline_mode == 'gpu_full' and self._gpu_available
+
+    def _apply_debug_tiling_overlay(self, image, draw_tiles, tile_metadata, detection_metadata, all_masks, all_visible_boxes):
+        if not draw_tiles or image is None:
+            return image
+
+        def _draw(canvas):
+            self._draw_tile_grid(canvas, tile_metadata)
+            self._draw_main_tile_segments(canvas, all_masks, all_visible_boxes, detection_metadata)
+
+        return self._render_debug_canvas(image, _draw)
+
+    def _render_debug_canvas(self, image, draw_callback):
+        if image is None:
+            return image
+        using_tensor = torch is not None and torch.is_tensor(image)
+        if using_tensor:
+            device = image.device
+            canvas = image.detach().permute(1, 2, 0).cpu().numpy().astype(np.uint8, copy=True)
+        else:
+            canvas = image.copy()
+            if canvas.dtype != np.uint8:
+                canvas = canvas.astype(np.uint8, copy=False)
+        draw_callback(canvas)
+        canvas = np.ascontiguousarray(canvas)
+        if using_tensor:
+            return torch.from_numpy(canvas).permute(2, 0, 1).to(device)
+        return canvas
+
+    def _draw_tile_grid(self, canvas, metadata):
+        if not metadata:
+            return
+        h_img, w_img = canvas.shape[:2]
+        color = (0, 165, 255)
+        thickness = 2
+        for entry in metadata:
+            if not entry or len(entry) < 6:
+                continue
+            x, y, _, _, tw, th = entry[:6]
+            x1 = int(round(x))
+            y1 = int(round(y))
+            x2 = int(round(x + tw))
+            y2 = int(round(y + th))
+            x1 = max(0, min(x1, w_img))
+            y1 = max(0, min(y1, h_img))
+            x2 = max(0, min(x2, w_img))
+            y2 = max(0, min(y2, h_img))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            cv2.rectangle(canvas, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
+
+    def _draw_main_tile_segments(self, canvas, all_masks, all_visible_boxes, detection_metadata):
+        if not all_masks or detection_metadata is None or not all_visible_boxes:
+            return
+        h_img, w_img = canvas.shape[:2]
+        for idx, mask_fragment in enumerate(all_masks):
+            if idx >= len(detection_metadata):
+                break
+            meta = detection_metadata[idx]
+            if not meta or len(meta) < 7 or not meta[6]:
+                continue
+            if idx >= len(all_visible_boxes):
+                continue
+            vx1, vy1, vx2, vy2 = [int(round(v)) for v in all_visible_boxes[idx]]
+            vx1 = max(0, min(vx1, w_img))
+            vy1 = max(0, min(vy1, h_img))
+            vx2 = max(0, min(vx2, w_img))
+            vy2 = max(0, min(vy2, h_img))
+            fw = vx2 - vx1
+            fh = vy2 - vy1
+            if fw <= 0 or fh <= 0:
+                continue
+            mask_arr = mask_fragment
+            if torch is not None and torch.is_tensor(mask_arr):
+                if mask_arr.numel() == 0:
+                    continue
+                mask_arr = mask_arr.detach().cpu().numpy()
+            else:
+                if mask_arr is None:
+                    continue
+                mask_arr = np.asarray(mask_arr)
+            if mask_arr.size == 0:
+                continue
+            mask_arr = mask_arr.astype(np.float32, copy=False)
+            try:
+                mask_resized = cv2.resize(mask_arr, (fw, fh), interpolation=cv2.INTER_LINEAR)
+            except Exception:
+                continue
+            mask_bool = mask_resized > 0.5
+            if not mask_bool.any():
+                continue
+            roi = canvas[vy1:vy2, vx1:vx2]
+            overlay = roi.copy()
+            overlay[mask_bool] = (0, 0, 255)
+            blended = cv2.addWeighted(overlay, 0.4, roi, 0.6, 0)
+            roi[mask_bool] = blended[mask_bool]
+            contours, _ = cv2.findContours(mask_bool.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                cv2.drawContours(roi, contours, -1, (0, 0, 255), 2, cv2.LINE_AA)
 
     def _build_pipeline_report(self, *, last_gpu_full_success=None, last_gpu_full_error=None):
         return {

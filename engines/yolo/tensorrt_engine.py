@@ -95,6 +95,7 @@ class YoloTensorRTEngine(YoloEngine):
         batch_size = 32
         target_h, target_w = self.target_size
         all_boxes, all_scores, all_masks, all_visible_boxes = [], [], [], []
+        all_metadata = []
         self.last_perf = {k: 0 for k in self.last_perf}
 
         for i in range(0, len(tiles), batch_size):
@@ -154,7 +155,7 @@ class YoloTensorRTEngine(YoloEngine):
                 boxes = p[mask_idx, :4]
                 scores_final = confidences[mask_idx]
                 
-                x_offset, y_offset, _, _, ow, oh = metadata[i+j]
+                x_offset, y_offset, _, _, ow, oh, _ = metadata[i+j]
                 sw, sh = ow / target_w, oh / target_h
                 
                 # Coordonnées du masque (0..160)
@@ -237,19 +238,22 @@ class YoloTensorRTEngine(YoloEngine):
                             all_scores.append(confidences[mask_idx[k]])
                             all_masks.append(mask_box)
                             all_visible_boxes.append([gx1_v, gy1_v, gx2_v, gy2_v])
+                            all_metadata.append(metadata[i+j])
                         else:
                             all_boxes.append([gx1_f, gy1_f, gx2_f, gy2_f])
                             all_scores.append(confidences[mask_idx[k]])
                             all_masks.append(None)
                             all_visible_boxes.append([gx1_v, gy1_v, gx2_v, gy2_v])
+                            all_metadata.append(metadata[i+j])
                     else:
                         all_boxes.append([gx1_f, gy1_f, gx2_f, gy2_f])
                         all_scores.append(confidences[mask_idx[k]])
                         all_masks.append(None)
                         all_visible_boxes.append([gx1_f, gy1_f, gx2_f, gy2_f])
+                        all_metadata.append(metadata[i+j])
             self.last_perf['postprocess'] += time.time() - t4
 
-        return np.array(all_boxes), np.array(all_scores), all_masks, all_visible_boxes
+        return np.array(all_boxes), np.array(all_scores), all_masks, all_visible_boxes, all_metadata
 
     def get_perf(self):
         return self.last_perf

@@ -64,6 +64,8 @@ flowchart TD
 - [ ] Wire the new `gpu_full` path under a `CudaPipelineController`, ensuring `auto`/`gpu` modes remain available.
 - [x] Add instrumentation/logging to confirm we never revisit the CPU tiler when `gpu_full` is engaged.
 - [ ] Provide helper tests or manual checks verifying the GPU-only path executes end-to-end.
+- [ ] Verify the full-resolution anchor tile still projects a meaningful global mask and that the CUDA tiler merges it with the crop tiles correctly when `gpu_full` runs.
+ - Check that the anchor tile runs even when the GPU helper outputs multiple crops so downstream fusion benefits from the global detection once again.
  
 ### Validation Notes
 - GPU metrics now report `[DEBUG] YOLO pipeline report: {'requested_mode': 'gpu_full', 'active_mode': 'gpu_full', 'helpers_available': True, 'last_gpu_full_success': True}` and CPU usage ~14–33%, proving the tiler/report instrumentation works.
@@ -72,6 +74,10 @@ flowchart TD
 - [ ] Document the new pipeline layout, required dependencies (torch/cuda), and how to use the UI toggle for the full path.
 - [ ] Update the README/metrics dashboard to show the new `yolo_pipeline_mode_effective` values and explain the GPU staging layer.
 - [ ] Remove this plan once the full CUDA pipeline is merged (per your request).
+### 8. Density Model Recovery
+- [ ] Diagnose why `PeopleCounterProcessor` currently returns zero counts and masks (check TensorRT/OpenVINO availability, fallback trigger, and batch path).
+- [ ] Restore the GPU density heatmap by re-enabling the fully-inferred Dense model (ensure its output passes through `camera_app_pipeline` metrics and preview overlays without leaving CUDA).
+- [ ] Once density works, feed its heatmap/contours into the shared CUDA preview composer so the GUI renders the combined segment+heatmap frame before encoding.
 
 ## Tracking Notes
 - Current plan file: `cuda_pipeline_plan.md` (delete once complete).

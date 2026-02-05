@@ -22,10 +22,11 @@ class CudaTiler:
         self,
         frame_tensor: torch.Tensor,
         use_tiling: bool = True,
-    ) -> Tuple[List[torch.Tensor], List[Tuple[int, int, float, float, int, int]]]:
+        global_tile_only: bool = False,
+    ) -> Tuple[List[torch.Tensor], List[Tuple[int, int, float, float, int, int, bool]]]:
         """Return (tiles, metadata) for the provided CUDA tensor.
 
-        Metadata entries use the same format as the CPU tiler: (x, y, scale_w, scale_h, width, height).
+        Metadata entries use the same format as the CPU tiler: (x, y, scale_w, scale_h, width, height, is_global).
         """
         if frame_tensor.device != self.device:
             frame_tensor = frame_tensor.to(self.device)
@@ -34,15 +35,20 @@ class CudaTiler:
 
         _, h, w = frame_tensor.shape
         tiles: List[torch.Tensor] = []
-        metadata: List[Tuple[int, int, float, float, int, int]] = []
+        metadata: List[Tuple[int, int, float, float, int, int, bool]] = []
+
+        if global_tile_only:
+            tiles.append(self._resize_tensor(frame_tensor, self.tile_size, self.tile_size))
+            metadata.append((0, 0, w / self.tile_size, h / self.tile_size, w, h, True))
+            return tiles, metadata
 
         if not use_tiling or (h <= self.tile_size and w <= self.tile_size):
             tiles.append(frame_tensor.clone())
-            metadata.append((0, 0, 1.0, 1.0, w, h))
+            metadata.append((0, 0, 1.0, 1.0, w, h, True))
             return tiles, metadata
 
         tiles.append(self._resize_tensor(frame_tensor, self.tile_size, self.tile_size))
-        metadata.append((0, 0, w / self.tile_size, h / self.tile_size, w, h))
+        metadata.append((0, 0, w / self.tile_size, h / self.tile_size, w, h, True))
 
         for x1, y1, x2, y2 in self._tiling_manager.get_tiles((h, w, 3)):
             tw, th = x2 - x1, y2 - y1
@@ -50,7 +56,7 @@ class CudaTiler:
             if crop.shape[1:] != (self.tile_size, self.tile_size):
                 crop = self._resize_tensor(crop, self.tile_size, self.tile_size)
             tiles.append(crop.contiguous())
-            metadata.append((x1, y1, tw / self.tile_size, th / self.tile_size, tw, th))
+            metadata.append((x1, y1, tw / self.tile_size, th / self.tile_size, tw, th, False))
 
         return tiles, metadata
 

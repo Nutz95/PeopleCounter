@@ -66,6 +66,7 @@ class CameraAppPipeline:
         self.density_tiling = os.environ.get('DENSITY_TILING', '1') == '1'
         self.debug_tiling = os.environ.get('DEBUG_TILING', '0') == '1'
         self.extreme_debug = os.environ.get('EXTREME_DEBUG', '0') == '1'
+        self.yolo_global_tile_only = os.environ.get('YOLO_GLOBAL_TILE_ONLY', '0') == '1'
 
         if cmode == 'mqtt':
             print("Using MqttCapture (Maixcam/MQTT)")
@@ -124,6 +125,7 @@ class CameraAppPipeline:
         self.density_tiling = settings.get('DENSITY_TILING', '1') == '1'
         self.debug_tiling = settings.get('DEBUG_TILING', '0') == '1'
         self.extreme_debug = settings.get('EXTREME_DEBUG', '0') == '1'
+        self.yolo_global_tile_only = settings.get('YOLO_GLOBAL_TILE_ONLY', '1' if self.yolo_global_tile_only else '0') == '1'
         self.yolo_conf = float(settings.get('YOLO_CONF', self.yolo_conf))
         self.density_threshold = int(settings.get('DENSITY_THRESHOLD', self.density_threshold))
         self.denoise_strength = int(settings.get('DENOISE_STRENGTH', self.denoise_strength))
@@ -283,7 +285,8 @@ class CameraAppPipeline:
                         tile_size=640, 
                         draw_boxes=True, 
                         use_tiling=self.yolo_tiling,
-                        draw_tiles=self.debug_tiling
+                        draw_tiles=self.debug_tiling,
+                        global_tile_only=self.yolo_global_tile_only,
                     )
 
                     yolo_label = getattr(self.yolo_counter, 'model_name', 'YOLO')
