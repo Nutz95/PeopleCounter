@@ -17,6 +17,8 @@ const overlayToggle = document.getElementById('overlayToggle');
 const overlayStatus = document.getElementById('overlayStatus');
 const pipelineModeSelect = document.getElementById('pipelineModeSelect');
 const pipelineModeEffective = document.getElementById('pipelineModeEffective');
+const pipelineReportStatus = document.getElementById('pipelineReportStatus');
+const pipelineHelperStatus = document.getElementById('pipelineHelperStatus');
 const videoHistoryList = document.getElementById('videoHistoryList');
 const historyChartShell = document.getElementById('historyChartShell');
 const historyChart = document.getElementById('historyChart');
@@ -210,6 +212,7 @@ async function refreshMetrics() {
     if (pipelineModeSelect && typeof data.yolo_pipeline_mode === 'string') {
       pipelineModeSelect.value = data.yolo_pipeline_mode;
     }
+    const pipelineReport = data.yolo_pipeline_report || {};
     if (pipelineModeEffective) {
       const effective = data.yolo_pipeline_mode_effective || data.yolo_pipeline_mode;
       const displayMap = {
@@ -219,7 +222,30 @@ async function refreshMetrics() {
         cpu: 'CPU fallback',
       };
       const label = effective ? displayMap[effective] || effective.replace('_', ' ') : '—';
-      pipelineModeEffective.textContent = `Effective pipeline: ${label}`;
+      const fallbackNote = pipelineReport.last_gpu_full_success === false ? ' (fallbacked to CPU tiler)' :
+        (pipelineReport.last_gpu_full_success === true ? ' (GPU tiler ran)' : '');
+      pipelineModeEffective.textContent = `Effective pipeline: ${label}${fallbackNote}`;
+    }
+    if (pipelineReportStatus) {
+      const statusParts = [];
+      if (pipelineReport.active_mode) {
+        statusParts.push(pipelineReport.active_mode === 'gpu_full' ? 'gpu_full active' : pipelineReport.active_mode);
+      }
+      if (pipelineReport.last_gpu_full_success === true) {
+        statusParts.push('GPU tiler succeeded');
+      } else if (pipelineReport.last_gpu_full_success === false) {
+        const errMsg = pipelineReport.last_gpu_full_error ? `error: ${pipelineReport.last_gpu_full_error}` : 'error';
+        statusParts.push(`GPU tiler failed (${errMsg})`);
+      }
+      if (!statusParts.length) {
+        statusParts.push('Awaiting GPU pipeline data…');
+      }
+      pipelineReportStatus.textContent = `Pipeline status: ${statusParts.join(' · ')}`;
+    }
+    if (pipelineHelperStatus) {
+      const helperState = pipelineReport.helpers_available;
+      const helperText = helperState === true ? 'available' : helperState === false ? 'missing' : 'unknown';
+      pipelineHelperStatus.textContent = `CUDA helpers: ${helperText}`;
     }
     const captureMs = data.capture_ms;
     captureTimeLabel.textContent = `Capture: ${typeof captureMs === 'number' ? captureMs.toFixed(1) : '—'}ms`;

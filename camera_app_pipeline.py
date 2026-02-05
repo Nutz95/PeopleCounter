@@ -443,7 +443,8 @@ class CameraAppPipeline:
                         "density_pre_ms": float(dp.get('preprocess', 0) * 1000),
                         "density_gpu_ms": float(dp.get('infer', 0) * 1000),
                         "density_post_ms": float(dp.get('postprocess', 0) * 1000),
-                        "history": history_snapshot
+                        "history": history_snapshot,
+                        "yolo_pipeline_report": pipeline_report
                     }
                     self.latest_metrics = metrics
                     if self.profile_active:
