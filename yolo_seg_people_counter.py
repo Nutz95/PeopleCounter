@@ -92,10 +92,6 @@ class YoloSegPeopleCounter:
 
         self.last_perf = self.engine.get_perf()
 
-        if all_boxes.size == 0:
-            final_img = image.copy()
-            return (0, final_img) if draw_boxes else 0
-
         # --- Fusion ---
         t_fuse_start = time.time()
         clusters = self.tiler.fuse_results(all_boxes, all_scores, all_masks, iou_threshold=0.3)
@@ -328,6 +324,9 @@ class YoloSegPeopleCounter:
         if not draw_tiles or image is None:
             return image
 
+        if torch is not None and torch.is_tensor(image):
+            return self._draw_cuda_debug_overlay(image, tile_metadata, detection_metadata, all_masks, all_visible_boxes)
+
         def _draw(canvas):
             self._draw_tile_grid(canvas, tile_metadata)
             self._draw_main_tile_segments(canvas, all_masks, all_visible_boxes, detection_metadata)
@@ -421,6 +420,109 @@ class YoloSegPeopleCounter:
             contours, _ = cv2.findContours(mask_bool.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if contours:
                 cv2.drawContours(roi, contours, -1, (0, 0, 255), 2, cv2.LINE_AA)
+
+    def _draw_cuda_debug_overlay(self, tensor, tile_metadata, detection_metadata, all_masks, all_visible_boxes):
+        if tensor is None or tensor.ndim not in (3, 4):
+            return tensor
+        canvas = tensor
+        squeeze_first = False
+        if canvas.ndim == 4:
+            if canvas.shape[0] == 1:
+                canvas = canvas[0]
+                squeeze_first = True
+            else:
+                canvas = canvas.squeeze(0)
+        if canvas.ndim != 3:
+            return tensor
+        device = canvas.device
+        dtype = canvas.dtype
+        self._cuda_draw_tile_grid(canvas, tile_metadata)
+        self._cuda_draw_global_tile_segments(canvas, detection_metadata, all_masks, all_visible_boxes)
+        if squeeze_first:
+            return canvas.unsqueeze(0)
+        if tensor.ndim == 4:
+            return canvas.unsqueeze(0)
+        return canvas
+
+    def _cuda_draw_tile_grid(self, canvas, metadata):
+        if not metadata or canvas.ndim != 3:
+            return
+        h_img, w_img = canvas.shape[1], canvas.shape[2]
+        color_vec = torch.tensor((0, 165, 255), dtype=canvas.dtype, device=canvas.device)
+        thickness = 2
+        for entry in metadata:
+            if not entry or len(entry) < 6:
+                continue
+            x, y, _, _, tw, th = entry[:6]
+            x1 = max(0, min(int(round(x)), w_img))
+            y1 = max(0, min(int(round(y)), h_img))
+            x2 = max(0, min(int(round(x + tw)), w_img))
+            y2 = max(0, min(int(round(y + th)), h_img))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            for t in range(thickness):
+                y_top = y1 + t
+                y_bot = y2 - 1 - t
+                if 0 <= y_top < h_img:
+                    canvas[:, y_top, x1:x2] = color_vec[:, None]
+                if 0 <= y_bot < h_img and y_bot != y_top:
+                    canvas[:, y_bot, x1:x2] = color_vec[:, None]
+                x_left = x1 + t
+                x_right = x2 - 1 - t
+                if 0 <= x_left < w_img:
+                    canvas[:, y1:y2, x_left] = color_vec[:, None]
+                if 0 <= x_right < w_img and x_right != x_left:
+                    canvas[:, y1:y2, x_right] = color_vec[:, None]
+
+    def _cuda_draw_global_tile_segments(self, canvas, detection_metadata, all_masks, all_visible_boxes):
+        if (not detection_metadata) or (not all_masks) or (not all_visible_boxes):
+            return
+        device = canvas.device
+        dtype = canvas.dtype
+        alpha = 0.4
+        color = torch.tensor((0.0, 0.0, 255.0), dtype=torch.float32, device=device).view(3, 1, 1)
+        for idx, mask_fragment in enumerate(all_masks):
+            if idx >= len(detection_metadata) or idx >= len(all_visible_boxes):
+                break
+            meta = detection_metadata[idx]
+            if not meta or len(meta) < 7 or not meta[6]:
+                continue
+            vx1, vy1, vx2, vy2 = [int(round(v)) for v in all_visible_boxes[idx]]
+            vx1 = max(0, min(vx1, canvas.shape[2]))
+            vy1 = max(0, min(vy1, canvas.shape[1]))
+            vx2 = max(0, min(vx2, canvas.shape[2]))
+            vy2 = max(0, min(vy2, canvas.shape[1]))
+            fw = vx2 - vx1
+            fh = vy2 - vy1
+            if fw <= 0 or fh <= 0:
+                continue
+            mask_tensor = self._mask_fragment_to_tensor(mask_fragment, device)
+            if mask_tensor is None:
+                continue
+            mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0)
+            if mask_tensor.shape[-2:] != (fh, fw):
+                mask_tensor = F.interpolate(mask_tensor, size=(fh, fw), mode='bilinear', align_corners=False)
+            mask_tensor = mask_tensor.squeeze(0).squeeze(0)
+            if not mask_tensor.numel() or (mask_tensor <= 0.5).all():
+                continue
+            region = canvas[:, vy1:vy2, vx1:vx2].to(dtype=torch.float32)
+            mask_bool = (mask_tensor > 0.5).unsqueeze(0)
+            alpha_map = mask_bool * alpha
+            blend = region * (1 - alpha_map) + color * alpha_map
+            canvas[:, vy1:vy2, vx1:vx2] = blend.clamp(0, 255).to(dtype=dtype)
+
+    def _mask_fragment_to_tensor(self, mask_fragment, device):
+        if mask_fragment is None:
+            return None
+        if torch.is_tensor(mask_fragment):
+            return mask_fragment.to(device=device, dtype=torch.float32)
+        try:
+            arr = np.asarray(mask_fragment, dtype=np.float32)
+        except Exception:
+            return None
+        if arr.size == 0:
+            return None
+        return torch.from_numpy(arr).to(device=device)
 
     def _build_pipeline_report(self, *, last_gpu_full_success=None, last_gpu_full_error=None):
         return {

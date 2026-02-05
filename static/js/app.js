@@ -25,6 +25,9 @@ const historyChart = document.getElementById('historyChart');
 const historyCtx = historyChart ? historyChart.getContext('2d') : null;
 const yoloInternalValue = document.getElementById('yoloInternalValue');
 const yoloInternalTotalValue = document.getElementById('yoloInternalTotalValue');
+const overlayComposeValue = document.getElementById('overlayComposeValue');
+const overlayPreviewValue = document.getElementById('overlayPreviewValue');
+const overlayCpuPreviewValue = document.getElementById('overlayCpuPreviewValue');
 const graphEmpty = document.getElementById('graphEmpty');
 const metricsInterval = 1100;
 const MAX_LOGS = 6;
@@ -274,6 +277,15 @@ async function refreshMetrics() {
     }
     if (yoloInternalTotalValue) {
       yoloInternalTotalValue.textContent = formatMsValue(data.yolo_internal_total_ms);
+    }
+    if (overlayComposeValue) {
+      overlayComposeValue.textContent = formatMsValue(data.overlay_compose_ms);
+    }
+    if (overlayPreviewValue) {
+      overlayPreviewValue.textContent = formatMsValue(data.overlay_preview_ms);
+    }
+    if (overlayCpuPreviewValue) {
+      overlayCpuPreviewValue.textContent = formatMsValue(data.overlay_cpu_preview_ms);
     }
     updateProfileLog(data.profile_log || []);
   } catch (error) {

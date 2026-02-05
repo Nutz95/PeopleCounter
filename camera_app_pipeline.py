@@ -16,8 +16,10 @@ from pipeline_components import MetricsCollector, ModelLoader, ProfileManager
 
 try:
     import torch
+    import torch.nn.functional as F
 except Exception:
     torch = None
+    F = None
 
 try:
     from cuda_pipeline.preview import CudaPreviewComposer
@@ -97,6 +99,7 @@ class CameraAppPipeline:
         self.processor = None
         self.yolo_counter = None
         self.latest_pipeline_report = {}
+        self._overlay_stats = {"compose_ms": None, "preview_ms": None, "cpu_preview_ms": None}
 
         self._apply_profile_settings(self.profile_manager.profile_settings)
         if not self._refresh_models(force=True):
@@ -154,12 +157,218 @@ class CameraAppPipeline:
         composer = self._create_cuda_preview_composer()
         if composer is None:
             return None
+        start = time.perf_counter()
         try:
             return composer.compose(overlay_tensor, target_size=(win_h, win_w))
         except Exception as exc:
             if self.extreme_debug:
                 print(f"[WARN] CUDA preview compose failed: {exc}")
             return None
+        finally:
+            self._overlay_stats["preview_ms"] = (time.perf_counter() - start) * 1000
+
+    def _log_cpu_fallback(self, reason):
+        if not hasattr(self, '_cpu_fallback_reasons'):
+            self._cpu_fallback_reasons = set()
+        if reason in self._cpu_fallback_reasons:
+            return
+        self._cpu_fallback_reasons.add(reason)
+        print(f"[CPU FALLBACK] {reason}")
+
+    def _resize_tensor(self, tensor, size, mode="bilinear"):
+        if tensor is None or F is None:
+            raise RuntimeError("CUDA resize requested without torch functional API.")
+        resize_kwargs = {"mode": mode}
+        if mode in ("bilinear", "bicubic"):
+            resize_kwargs["align_corners"] = False
+        return F.interpolate(
+            tensor.unsqueeze(0),
+            size=size,
+            **resize_kwargs,
+        ).squeeze(0)
+
+    def _build_density_tensors(self, density_result, render_size, device):
+        if torch is None or density_result is None:
+            return None, None
+        render_h, render_w = render_size
+        target_h = max(1, render_h)
+        target_w = max(1, render_w)
+        color_tensor = torch.zeros((3, target_h, target_w), device=device, dtype=torch.float32)
+        mask_tensor = torch.zeros((1, target_h, target_w), device=device, dtype=torch.float32)
+        try:
+            if self.density_tiling and len(density_result) >= 4:
+                _, quad_colors, _, quad_masks = density_result
+                mid_h = target_h // 2
+                mid_w = target_w // 2
+                positions = [
+                    (0, mid_h, 0, mid_w),
+                    (0, mid_h, mid_w, target_w),
+                    (mid_h, target_h, 0, mid_w),
+                    (mid_h, target_h, mid_w, target_w),
+                ]
+                for idx, (color_np, mask_np) in enumerate(zip(quad_colors, quad_masks)):
+                    if color_np is None or mask_np is None:
+                        continue
+                    y0, y1, x0, x1 = positions[idx]
+                    chunk_h = max(1, y1 - y0)
+                    chunk_w = max(1, x1 - x0)
+                    src_color = torch.from_numpy(color_np).permute(2, 0, 1).to(device=device, dtype=torch.float32)
+                    src_mask = torch.from_numpy(mask_np).unsqueeze(0).to(device=device, dtype=torch.float32)
+                    resized_color = self._resize_tensor(src_color, (chunk_h, chunk_w))
+                    resized_mask = self._resize_tensor(src_mask, (chunk_h, chunk_w), mode="nearest")
+                    color_tensor[:, y0:y1, x0:x1] = resized_color
+                    mask_tensor[:, y0:y1, x0:x1] = resized_mask
+            elif len(density_result) >= 4:
+                _, dens_raw, _, dens_mask = density_result
+                if dens_raw is None or dens_mask is None:
+                    return None, None
+                src_color = torch.from_numpy(dens_raw).permute(2, 0, 1).to(device=device, dtype=torch.float32)
+                src_mask = torch.from_numpy(dens_mask).unsqueeze(0).to(device=device, dtype=torch.float32)
+                color_tensor = self._resize_tensor(src_color, (target_h, target_w))
+                mask_tensor = self._resize_tensor(src_mask, (target_h, target_w), mode="nearest")
+            else:
+                return None, None
+        except Exception as exc:
+            if self.extreme_debug:
+                print(f"[WARN] Failed to build density tensors on CUDA: {exc}")
+            return None, None
+        return color_tensor, mask_tensor
+
+    def _overlay_hotspots(self, overlay, mask_norm, device):
+        if mask_norm is None or overlay is None:
+            return overlay
+        normalized = mask_norm.squeeze(0)
+        if normalized.numel() == 0 or normalized.max() <= 0.05:
+            return overlay
+        candidates = torch.nonzero(normalized > 0.05, as_tuple=False)
+        if candidates.numel() == 0:
+            return overlay
+        values = normalized[candidates[:, 0], candidates[:, 1]]
+        limit = min(6, candidates.shape[0])
+        topk_vals, topk_idx = torch.topk(values, limit)
+        selection = candidates[topk_idx]
+        for coord in selection:
+            center_y, center_x = int(coord[0].item()), int(coord[1].item())
+            overlay = self._blend_hotspot(overlay, center_y, center_x)
+        return overlay
+
+    def _blend_hotspot(self, overlay, center_y, center_x, radius=6):
+        if overlay is None:
+            return overlay
+        h, w = overlay.shape[1], overlay.shape[2]
+        y0 = max(0, center_y - radius - 1)
+        y1 = min(h, center_y + radius + 2)
+        x0 = max(0, center_x - radius - 1)
+        x1 = min(w, center_x + radius + 2)
+        if y0 >= y1 or x0 >= x1:
+            return overlay
+        rows = torch.arange(y0, y1, device=overlay.device).view(-1, 1)
+        cols = torch.arange(x0, x1, device=overlay.device).view(1, -1)
+        dist_sq = (rows - center_y) ** 2 + (cols - center_x) ** 2
+        mask = (dist_sq <= (radius ** 2)).float().unsqueeze(0)
+        if mask.max() == 0:
+            return overlay
+        alpha = 0.65
+        red = torch.tensor([0.0, 0.0, 255.0], dtype=overlay.dtype, device=overlay.device).view(3, 1, 1)
+        patch = overlay[:, y0:y1, x0:x1]
+        overlay[:, y0:y1, x0:x1] = patch * (1 - alpha * mask) + red * (alpha * mask)
+        return overlay
+
+    def _compose_cuda_overlay(self, frame_tensor, density_result, render_size):
+        if torch is None or F is None or not torch.cuda.is_available():
+            self._log_cpu_fallback("CUDA overlay skipped: torch CUDA unavailable.")
+            return None
+        try:
+            device = torch.device("cuda")
+            start = time.perf_counter()
+            base = frame_tensor.to(device=device, dtype=torch.float32, non_blocking=True)
+            base_resized = self._resize_tensor(base, render_size)
+            density_color, density_mask = self._build_density_tensors(density_result, render_size, device)
+            if density_color is None or density_mask is None:
+                self._overlay_stats["compose_ms"] = (time.perf_counter() - start) * 1000
+                return base_resized
+            mask_norm = (density_mask / 255.0).clamp(0.0, 1.0)
+            heatmap = density_color * mask_norm
+            overlay = torch.clamp(base_resized + heatmap * 0.6, 0, 255)
+            overlay = self._overlay_hotspots(overlay, mask_norm, device)
+            self._overlay_stats["compose_ms"] = (time.perf_counter() - start) * 1000
+            return overlay
+        except Exception as exc:
+            self._log_cpu_fallback(f"CUDA overlay composition failed: {exc}")
+            self._overlay_stats["compose_ms"] = (time.perf_counter() - start) * 1000 if 'start' in locals() else None
+            return None
+
+    def _tensor_to_preview_frame(self, tensor):
+        if torch is None or tensor is None:
+            return None
+        if not torch.is_tensor(tensor):
+            raise RuntimeError("Expected a torch tensor for CUDA preview conversion.")
+        start = time.perf_counter()
+        try:
+            return tensor.detach().permute(1, 2, 0).contiguous().cpu().numpy()
+        finally:
+            self._overlay_stats["preview_ms"] = (time.perf_counter() - start) * 1000
+            self._overlay_stats["cpu_preview_ms"] = None
+
+    def _get_density_count(self, density_result):
+        if density_result is None:
+            return 0.0
+        if self.density_tiling and len(density_result) >= 4:
+            quad_counts = density_result[2] or []
+            return sum(float(c) for c in quad_counts)
+        if len(density_result) >= 3 and density_result[2] is not None:
+            return float(density_result[2])
+        return 0.0
+
+    def _cpu_preview_render(self, frame_image, density_result, render_size, win_size):
+        self._log_cpu_fallback("CPU preview rendering (CUDA overlay unavailable).")
+        start = time.perf_counter()
+        render_h, render_w = render_size
+        win_h, win_w = win_size
+        frame_render = cv2.resize(frame_image, (render_w, render_h))
+        density_raw_small = np.zeros((render_h, render_w, 3), dtype=np.uint8)
+        density_mask_small = np.zeros((render_h, render_w), dtype=np.uint8)
+        mid_h, mid_w = render_h // 2, render_w // 2
+
+        if self.density_tiling and density_result and len(density_result) >= 4:
+            _, quad_res_color, _, quad_res_masks = density_result
+            density_raw_small[0:mid_h, 0:mid_w] = cv2.resize(quad_res_color[0], (mid_w, mid_h))
+            density_raw_small[0:mid_h, mid_w:render_w] = cv2.resize(quad_res_color[1], (render_w-mid_w, mid_h))
+            density_raw_small[mid_h:render_h, 0:mid_w] = cv2.resize(quad_res_color[2], (mid_w, render_h-mid_h))
+            density_raw_small[mid_h:render_h, mid_w:render_w] = cv2.resize(quad_res_color[3], (render_w-mid_w, render_h-mid_h))
+
+            density_mask_small[0:mid_h, 0:mid_w] = cv2.resize(quad_res_masks[0], (mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
+            density_mask_small[0:mid_h, mid_w:render_w] = cv2.resize(quad_res_masks[1], (render_w-mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
+            density_mask_small[mid_h:render_h, 0:mid_w] = cv2.resize(quad_res_masks[2], (mid_w, render_h-mid_h), interpolation=cv2.INTER_NEAREST)
+            density_mask_small[mid_h:render_h, mid_w:render_w] = cv2.resize(quad_res_masks[3], (render_w-mid_w, render_h-mid_h), interpolation=cv2.INTER_NEAREST)
+        elif density_result and len(density_result) >= 4:
+            _, dens_raw, _, dens_mask = density_result
+            if dens_raw is not None:
+                density_raw_small = cv2.resize(dens_raw, (render_w, render_h))
+            if dens_mask is not None:
+                density_mask_small = cv2.resize(dens_mask, (render_w, render_h), interpolation=cv2.INTER_NEAREST)
+
+        mask_3ch = cv2.cvtColor(density_mask_small, cv2.COLOR_GRAY2BGR)
+        heatmap_on_black = cv2.bitwise_and(density_raw_small, mask_3ch)
+        overlay2 = cv2.addWeighted(frame_render, 1.0, heatmap_on_black, 0.6, 0)
+
+        kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        density_mask_dilated = cv2.dilate(density_mask_small, kernel_dilate, iterations=1)
+        contours, _ = cv2.findContours(density_mask_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            if cv2.contourArea(cnt) > 30:
+                (x, y), radius = cv2.minEnclosingCircle(cnt)
+                cv2.circle(overlay2, (int(x), int(y)), int(radius) + 2, (0, 0, 255), 1)
+
+        scale = min(win_w / render_w, win_h / render_h)
+        target_w, target_h = int(render_w * scale), int(render_h * scale)
+        preview_frame = np.zeros((win_h, win_w, 3), dtype=np.uint8)
+        resized = cv2.resize(overlay2, (target_w, target_h))
+        y_off, x_off = (win_h - target_h) // 2, (win_w - target_w) // 2
+        preview_frame[y_off:y_off+target_h, x_off:x_off+target_w] = resized
+        self._overlay_stats["cpu_preview_ms"] = (time.perf_counter() - start) * 1000
+        self._overlay_stats["preview_ms"] = None
+        return preview_frame
 
     def _refresh_models(self, force=False):
         if not force and getattr(self, '_models_loaded', False):
@@ -350,22 +559,57 @@ class CameraAppPipeline:
                     else:
                         win_w, win_h = 1280, 720
 
-                    preview_payload = None
-                    frame_for_display = frame_with_bbox
+                    density_result = thr_density.result
+                    density_count = self._get_density_count(density_result)
+
                     if torch is not None and torch.is_tensor(frame_with_bbox):
-                        preview_payload = self._generate_cuda_preview_payload(frame_with_bbox, win_w, win_h)
-                        frame_for_display = frame_with_bbox.detach().permute(1, 2, 0).cpu().numpy()
+                        frame_height, frame_width = frame_with_bbox.shape[1], frame_with_bbox.shape[2]
+                    else:
+                        frame_height, frame_width = frame_with_bbox.shape[:2]
+                    render_h = min(frame_height, 1080)
+                    render_w = min(frame_width, 1920)
+                    render_size = (render_h, render_w)
+                    win_size = (win_h, win_w)
 
-                    # Debug Tiling Densité (Magenta)
-                    if self.debug_tiling and self.density_tiling and hasattr(self, 'density_quads_coords'):
-                        for x1, y1, x2, y2 in self.density_quads_coords:
-                            cv2.rectangle(frame_for_display, (x1, y1), (x2, y2), (255, 0, 255), 2)
+                    preview_payload = None
+                    preview_frame = None
+                    overlay_tensor = None
+                    self._overlay_stats = {"compose_ms": None, "preview_ms": None, "cpu_preview_ms": None}
+                    frame_tensor = None
+                    if torch is not None:
+                        if torch.is_tensor(frame_with_bbox):
+                            frame_tensor = frame_with_bbox
+                        elif isinstance(frame_with_bbox, np.ndarray):
+                            try:
+                                frame_tensor = torch.from_numpy(frame_with_bbox.copy()).permute(2, 0, 1).contiguous()
+                            except Exception as exc:
+                                self._log_cpu_fallback(f"CUDA overlay tensor conversion failed: {exc}")
+                    frame_tensor_available = frame_tensor is not None
+                    if frame_tensor_available:
+                        overlay_tensor = self._compose_cuda_overlay(frame_tensor, density_result, render_size)
+                        if overlay_tensor is not None:
+                            preview_payload = self._generate_cuda_preview_payload(overlay_tensor, win_w, win_h)
+                            if preview_payload is not None:
+                                preview_frame = preview_payload.frame
+                            else:
+                                try:
+                                    preview_frame = self._tensor_to_preview_frame(overlay_tensor)
+                                except Exception as exc:
+                                    preview_frame = frame_with_bbox.detach().permute(1, 2, 0).cpu().numpy()
+                                    self._log_cpu_fallback(f"CUDA preview conversion failed: {exc}")
+                        else:
+                            self._log_cpu_fallback("CUDA overlay failed to produce a tensor.")
+                    if preview_frame is None:
+                        if frame_tensor_available:
+                            frame_for_cpu = frame_with_bbox.detach().permute(1, 2, 0).cpu().numpy()
+                        else:
+                            frame_for_cpu = frame_with_bbox
+                        preview_frame = self._cpu_preview_render(frame_for_cpu, density_result, render_size, win_size)
+                        preview_payload = None
 
-                    # Récupération des temps d'exécution réels de chaque moteur via le Thread
                     yolo_time = thr_yolo.duration
                     density_time = thr_density.duration
 
-                    # Récupération des devices utilisés
                     yolo_dev = getattr(self.yolo_counter, 'last_device', 'GPU')
                     dens_dev = getattr(self.processor, 'last_device', 'GPU')
                     yp = getattr(self.yolo_counter, 'last_perf', {}) if self.yolo_counter else {}
@@ -374,91 +618,27 @@ class CameraAppPipeline:
 
                     cpu_usage = psutil.cpu_percent()
 
-                    # --- OPTIMISATION RENDU : Travail en 1080p pour libérer le CPU ---
-                    # Faire du 4K bitwise/dilate/contours tue les perfs, on passe en 1080p pour l'affichage
-                    h_4k, w_4k = frame_for_display.shape[:2]
-                    render_h, render_w = 1080, 1920
-                    if h_4k < render_h: render_h, render_w = h_4k, w_4k
-
-                    frame_render = cv2.resize(frame_for_display, (render_w, render_h))
-                    density_raw_small = np.zeros((render_h, render_w, 3), dtype=np.uint8)
-                    density_mask_small = np.zeros((render_h, render_w), dtype=np.uint8)
-                    mid_h, mid_w = render_h // 2, render_w // 2
-
-                    if self.density_tiling and thr_density.result is not None:
-                        _, quad_res_color, quad_res_counts, quad_res_masks = thr_density.result
-                        # On utilise sum sur les flottants pour éviter la troncature
-                        density_count = sum(float(c) for c in quad_res_counts)
-                        
-                        # Stitching direct en 1080p
-                        density_raw_small[0:mid_h, 0:mid_w] = cv2.resize(quad_res_color[0], (mid_w, mid_h))
-                        density_raw_small[0:mid_h, mid_w:render_w] = cv2.resize(quad_res_color[1], (render_w-mid_w, mid_h))
-                        density_raw_small[mid_h:render_h, 0:mid_w] = cv2.resize(quad_res_color[2], (mid_w, render_h-mid_h))
-                        density_raw_small[mid_h:render_h, mid_w:render_w] = cv2.resize(quad_res_color[3], (render_w-mid_w, render_h-mid_h))
-                        
-                        density_mask_small[0:mid_h, 0:mid_w] = cv2.resize(quad_res_masks[0], (mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
-                        density_mask_small[0:mid_h, mid_w:render_w] = cv2.resize(quad_res_masks[1], (render_w-mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
-                        density_mask_small[mid_h:render_h, 0:mid_w] = cv2.resize(quad_res_masks[2], (mid_w, render_h-mid_h), interpolation=cv2.INTER_NEAREST)
-                        density_mask_small[mid_h:render_h, mid_w:render_w] = cv2.resize(quad_res_masks[3], (render_w-mid_w, render_h-mid_h), interpolation=cv2.INTER_NEAREST)
-                    else:
-                        res = thr_density.result
-                        if res is not None:
-                            _, dens_raw, density_count, dens_mask = res
-                            density_raw_small = cv2.resize(dens_raw, (render_w, render_h))
-                            density_mask_small = cv2.resize(dens_mask, (render_w, render_h), interpolation=cv2.INTER_NEAREST)
-                        else:
-                            density_count = 0
-                    
                     capture_time = getattr(self.capture, 'last_capture_time', 0.0)
-                    # Affichage des métriques d'instrumentation si extreme_debug est actif
                     if self.extreme_debug:
                         yp_engine = getattr(self.yolo_counter, 'engine', None)
                         yp_debug = getattr(yp_engine, 'last_perf', {}) if yp_engine else yp
                         dp_debug = getattr(self.processor, 'last_perf', {})
-                        
                         print(f"[DEBUG] PERF BREAKDOWN (ms):")
                         print(f"  Capture: {capture_time*1000:.1f}ms")
                         print(f"  YOLO {self.yolo_counter.model_name}: Pre={yp_debug.get('preprocess',0)*1000:.1f} | GPU={yp_debug.get('infer',0)*1000:.1f} | Post={yp_debug.get('postprocess',0)*1000:.1f}")
                         print(f"  DENS {self.processor.model_name}: Pre={dp_debug.get('preprocess',0)*1000:.1f} | GPU={dp_debug.get('infer',0)*1000:.1f} | Post={dp_debug.get('postprocess',0)*1000:.1f}")
 
                     total_process_time = time.time() - t_loop_start
-                    
-                    # Superposition Heatmap optimisée (en 1080p)
-                    mask_3ch = cv2.cvtColor(density_mask_small, cv2.COLOR_GRAY2BGR)
-                    heatmap_on_black = cv2.bitwise_and(density_raw_small, mask_3ch)
-                    overlay2 = cv2.addWeighted(frame_render, 1.0, heatmap_on_black, 0.6, 0)
-                    
-                    # --- RENDU DES "OREILLES ROUGES" (HOTSPOTS) ---
-                    # On détecte les pics de densité pour alerter l'utilisateur
-                    # Utilisation d'un noyau plus petit (5x5) pour être plus précis et moins "nonsense"
-                    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                    density_mask_dilated = cv2.dilate(density_mask_small, kernel_dilate, iterations=1)
-                    
-                    contours, _ = cv2.findContours(density_mask_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    for cnt in contours:
-                        # Uniquement les hotspots significatifs
-                        if cv2.contourArea(cnt) > 30: 
-                            (x, y), radius = cv2.minEnclosingCircle(cnt)
-                            # Dessine des petits cercles rouges discrets
-                            cv2.circle(overlay2, (int(x), int(y)), int(radius) + 2, (0, 0, 255), 1)
 
-                    # --- GESTION DE LA FENÊTRE D'AFFICHAGE ET CALLBACK ---
-                    h_curr, w_curr = overlay2.shape[:2]
-                    scale = min(win_w / w_curr, win_h / h_curr)
-                    target_w, target_h = int(w_curr * scale), int(h_curr * scale)
-                    
-                    preview_frame = np.zeros((win_h, win_w, 3), dtype=np.uint8)
-                    resized = cv2.resize(overlay2, (target_w, target_h))
-                    y_off, x_off = (win_h - target_h) // 2, (win_w - target_w) // 2
-                    preview_frame[y_off:y_off+target_h, x_off:x_off+target_w] = resized
-                    
-                    # Envoi au serveur Web si actif
+                    if preview_frame is None:
+                        preview_frame = frame_with_bbox.detach().permute(1, 2, 0).cpu().numpy() if torch is not None and torch.is_tensor(frame_with_bbox) else frame_with_bbox
+
                     if self.frame_callback:
                         if preview_payload is not None:
                             self.frame_callback(preview_payload.to_payload())
                         else:
                             self.frame_callback(preview_frame)
-                    
+
                     total_time = time.time() - start_time
                     fps = 1.0 / total_time if total_time > 0 else 0
                     avg_instant = (yolo_count + density_count) / 2.0
@@ -496,6 +676,9 @@ class CameraAppPipeline:
                         "yolo_internal_inf_ms": float(yolo_internal.get('t_inf', 0) * 1000),
                         "yolo_internal_draw_ms": float(yolo_internal.get('t_draw', 0) * 1000),
                         "yolo_internal_total_ms": float(yolo_internal.get('total_internal', 0) * 1000),
+                        "overlay_compose_ms": self._overlay_stats.get("compose_ms"),
+                        "overlay_preview_ms": self._overlay_stats.get("preview_ms"),
+                        "overlay_cpu_preview_ms": self._overlay_stats.get("cpu_preview_ms"),
                         "density_pre_ms": float(dp.get('preprocess', 0) * 1000),
                         "density_gpu_ms": float(dp.get('infer', 0) * 1000),
                         "density_post_ms": float(dp.get('postprocess', 0) * 1000),

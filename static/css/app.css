@@ -211,6 +211,11 @@ main.page-column {
   font-weight: 600;
 }
 
+.metric-value.metric-value--small {
+  font-size: 1.2rem;
+  font-weight: 500;
+}
+
 .metric-value .perf-line {
   font-size: 0.95rem;
   font-weight: 500;
