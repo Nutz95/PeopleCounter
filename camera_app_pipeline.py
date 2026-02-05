@@ -83,6 +83,7 @@ class CameraAppPipeline:
         self.density_device = 'GPU'
         self.processor = None
         self.yolo_counter = None
+        self.latest_pipeline_report = {}
 
         self._apply_profile_settings(self.profile_manager.profile_settings)
         if not self._refresh_models(force=True):
@@ -283,6 +284,13 @@ class CameraAppPipeline:
                     else:
                         print("[ERROR] YOLO thread returned None.")
                         yolo_count, frame_with_bbox = 0, frame.copy()
+                    pipeline_report = {}
+                    if self.yolo_counter and hasattr(self.yolo_counter, 'get_pipeline_report'):
+                        pipeline_report = self.yolo_counter.get_pipeline_report() or {}
+                        self.latest_pipeline_report = pipeline_report
+                        self.latest_metrics['yolo_pipeline_mode'] = pipeline_report.get('active_mode', 'unknown')
+                        if self.extreme_debug and pipeline_report:
+                            print(f"[DEBUG] YOLO pipeline report: {pipeline_report}")
                     
                     # Attente Density
                     thr_density.join()

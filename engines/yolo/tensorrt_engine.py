@@ -23,7 +23,7 @@ class YoloTensorRTEngine(YoloEngine):
         self.person_class_id = 0
         self.pool = pool
         self.last_perf = {'preprocess': 0, 'h2d': 0, 'infer': 0, 'd2h': 0, 'postprocess': 0}
-        self.use_gpu_preproc = bool(use_gpu_preproc and (torch is not None) and torch.cuda.is_available())
+        self.use_gpu_preproc = bool(use_gpu_preproc and GpuPreprocessor is not None and (torch is not None) and torch.cuda.is_available())
         self.use_gpu_post = use_gpu_post and (torch is not None)
         self.target_size = (640, 640)
         preprocessor_cls = GpuPreprocessor if self.use_gpu_preproc else CpuPreprocessor
@@ -241,11 +241,12 @@ class YoloTensorRTEngine(YoloEngine):
         target = (mode or 'auto').lower()
         if target not in ('auto', 'cpu', 'gpu'):
             target = 'auto'
-        if target == 'gpu' and torch is not None and torch.cuda.is_available():
+        if target == 'gpu' and GpuPreprocessor is not None and torch is not None and torch.cuda.is_available():
             self.use_gpu_preproc = True
             self.preprocessor = GpuPreprocessor(self.target_size)
-        elif target == 'auto':
-            use_gpu = torch is not None and torch.cuda.is_available()
+            return
+        if target == 'auto':
+            use_gpu = bool(GpuPreprocessor is not None and torch is not None and torch.cuda.is_available())
             self.use_gpu_preproc = use_gpu
             preprocessor_cls = GpuPreprocessor if use_gpu else CpuPreprocessor
             self.preprocessor = preprocessor_cls(self.target_size)

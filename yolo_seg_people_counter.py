@@ -16,6 +16,13 @@ except Exception:
     torch = None
     F = None
 
+try:
+    from cuda_pipeline.capture import GpuFrameStager
+    from cuda_pipeline.tiler import CudaTiler
+except Exception:
+    GpuFrameStager = None
+    CudaTiler = None
+
 class YoloSegPeopleCounter:
     def __init__(self, model_path, confidence_threshold=0.25, backend='tensorrt_native', device='cuda'):
         self.model_path = model_path
@@ -39,6 +46,10 @@ class YoloSegPeopleCounter:
         self.renderer_mode = 'cpu'
         self.renderer = CpuMaskRenderer()
         self.active_pipeline_mode = 'cpu'
+        self._cuda_helpers_initialized = False
+        self._cuda_frame_stager = None
+        self._cuda_tiler = None
+        self.last_pipeline_report = {}
 
         if self.backend == 'tensorrt_native':
             use_gpu_pre = os.environ.get('YOLO_USE_GPU_PREPROC', '0') == '1'
@@ -132,10 +143,11 @@ class YoloSegPeopleCounter:
         renderer_mode = 'gpu' if resolved in ('gpu', 'gpu_full') else 'cpu'
         self._set_renderer_mode(renderer_mode)
         self.active_pipeline_mode = resolved
+        self.last_pipeline_report = self._build_pipeline_report()
         return resolved
 
     def _resolve_mode(self, mode):
-        if mode == 'gpu_full' and self._gpu_available:
+        if mode == 'gpu_full' and self._has_full_cuda_support():
             return 'gpu_full'
         if mode == 'gpu' and self._gpu_available:
             return 'gpu'
@@ -149,6 +161,27 @@ class YoloSegPeopleCounter:
         if mode == 'cpu':
             return 'cpu'
         return 'cpu'
+
+    def _has_full_cuda_support(self):
+        return (
+            bool(GpuFrameStager and CudaTiler)
+            and self._gpu_available
+        )
+
+    def _ensure_cuda_helpers(self):
+        if self._cuda_helpers_initialized:
+            return True
+        if not self._has_full_cuda_support():
+            return False
+        try:
+            self._cuda_frame_stager = GpuFrameStager()
+            self._cuda_tiler = CudaTiler(tile_size=self.tiler.tile_size)
+        except EnvironmentError as exc:
+            if self.debug_mode:
+                print(f"[WARN] CUDA helpers unavailable: {exc}")
+            return False
+        self._cuda_helpers_initialized = True
+        return True
 
     def _set_renderer_mode(self, mode):
         if mode == 'gpu' and self._gpu_available:
@@ -168,6 +201,7 @@ class YoloSegPeopleCounter:
             except Exception as exc:
                 if self.debug_mode:
                     print(f"[WARN] Full GPU tiling failed, falling back to CPU tiles: {exc}")
+                self.last_pipeline_report = self._build_pipeline_report(last_gpu_full_success=False, last_gpu_full_error=str(exc))
         return self._prepare_tiles_cpu(image_rgb, use_tiling)
 
     def _prepare_tiles_cpu(self, image_rgb, use_tiling):
@@ -193,33 +227,19 @@ class YoloSegPeopleCounter:
         return tiles, metadata
 
     def _prepare_tiles_gpu(self, image_rgb, use_tiling):
-        if torch is None or F is None or not torch.cuda.is_available():
-            raise EnvironmentError("CUDA resources unavailable for full GPU tiling.")
-        tile_size = self.tiler.tile_size
-        h, w = image_rgb.shape[:2]
-        device = torch.device('cuda')
-        frame_tensor = torch.from_numpy(image_rgb.astype(np.float32)).permute(2, 0, 1).contiguous().to(device)
-        tiles = []
-        metadata = []
+        if not self._ensure_cuda_helpers():
+            raise EnvironmentError("CUDA tiling helpers could not be initialized.")
 
-        if not use_tiling or (h <= tile_size and w <= tile_size):
-            tiles.append(frame_tensor.clone())
-            metadata.append((0, 0, 1.0, 1.0, w, h))
+        frame_tensor = self._cuda_frame_stager.stage(image_rgb)
+        try:
+            tiles, metadata = self._cuda_tiler.tile_frame(frame_tensor, use_tiling)
+            self.last_pipeline_report = self._build_pipeline_report(last_gpu_full_success=True)
             return tiles, metadata
+        finally:
+            self._cuda_frame_stager.release()
 
-        tiles.append(self._resize_tensor(frame_tensor, tile_size, tile_size))
-        metadata.append((0, 0, w / tile_size, h / tile_size, w, h))
-
-        tiles_coords = self.tiler.get_tiles(image_rgb.shape)
-        for x1, y1, x2, y2 in tiles_coords:
-            crop = frame_tensor[:, y1:y2, x1:x2]
-            if crop.shape[1:] != (tile_size, tile_size):
-                crop = self._resize_tensor(crop, tile_size, tile_size)
-            tiles.append(crop.contiguous())
-            tw, th = x2 - x1, y2 - y1
-            metadata.append((x1, y1, tw / tile_size, th / tile_size, tw, th))
-
-        return tiles, metadata
+    def get_pipeline_report(self):
+        return dict(self.last_pipeline_report)
 
     def _resize_tensor(self, tensor, height, width):
         if F is None:
@@ -236,4 +256,13 @@ class YoloSegPeopleCounter:
 
     def _is_full_gpu_pipeline(self):
         return self.active_pipeline_mode == 'gpu_full' and self._gpu_available
+
+    def _build_pipeline_report(self, *, last_gpu_full_success=None, last_gpu_full_error=None):
+        return {
+            'requested_mode': self.pipeline_mode,
+            'active_mode': self.active_pipeline_mode,
+            'helpers_available': self._cuda_helpers_initialized,
+            'last_gpu_full_success': last_gpu_full_success,
+            'last_gpu_full_error': last_gpu_full_error,
+        }
 
