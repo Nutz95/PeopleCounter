@@ -101,6 +101,7 @@ class YoloSegPeopleCounter:
         if self.debug_mode:
             print(f"[DEBUG] YOLO pipeline tiles={len(tiles)} preproc={self.preprocessor_mode} renderer={self.renderer_mode}")
         t_draw_start = time.time()
+        return_tensor = self.active_pipeline_mode == 'gpu_full' and self.renderer_mode == 'gpu'
         if draw_boxes:
             image_out = self.renderer.render(
                 image.copy(),
@@ -111,6 +112,7 @@ class YoloSegPeopleCounter:
                 metadata,
                 draw_boxes,
                 self.debug_mode,
+                return_tensor=return_tensor,
             )
         else:
             image_out = image.copy()

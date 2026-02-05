@@ -10,6 +10,7 @@ class WebServer:
         self.app = Flask(__name__)
         self.port = port
         self.frame = None
+        self.encoded_frame = None
         self.lock = threading.Lock()
         self.metrics = {}
         self.pipeline = None
@@ -86,8 +87,32 @@ class WebServer:
 
     def update_frame(self, frame):
         with self.lock:
-            if frame is not None:
+            if frame is None:
+                self.frame = None
+                self.encoded_frame = None
+                return
+            if isinstance(frame, dict):
+                encoded = frame.get('encoded')
+                if isinstance(encoded, (bytes, bytearray)):
+                    self.encoded_frame = bytes(encoded)
+                else:
+                    self.encoded_frame = None
+                payload = frame.get('frame')
+                if payload is None:
+                    self.frame = None
+                elif hasattr(payload, 'copy'):
+                    try:
+                        self.frame = payload.copy()
+                    except Exception:
+                        self.frame = payload
+                else:
+                    self.frame = payload
+            elif isinstance(frame, (bytes, bytearray)):
+                self.encoded_frame = bytes(frame)
+                self.frame = None
+            else:
                 self.frame = frame.copy()
+                self.encoded_frame = None
 
     def update_metrics(self, metrics):
         with self.lock:
@@ -106,12 +131,17 @@ class WebServer:
     def generate(self):
         while True:
             with self.lock:
-                if self.frame is None:
-                    continue
-                ret, jpeg = cv2.imencode('.jpg', self.frame)
+                frame = self.frame
+                encoded = self.encoded_frame
+            if encoded is not None:
+                frame_bytes = encoded
+            elif frame is not None:
+                ret, jpeg = cv2.imencode('.jpg', frame)
                 if not ret:
                     continue
                 frame_bytes = jpeg.tobytes()
+            else:
+                continue
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
 

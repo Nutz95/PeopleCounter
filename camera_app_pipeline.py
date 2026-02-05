@@ -14,6 +14,16 @@ from rtsp_capture import RTSPCapture
 from mqtt_capture import MqttCapture
 from pipeline_components import MetricsCollector, ModelLoader, ProfileManager
 
+try:
+    import torch
+except Exception:
+    torch = None
+
+try:
+    from cuda_pipeline.preview import CudaPreviewComposer
+except Exception:
+    CudaPreviewComposer = None
+
 # --- Task for threading models ---
 class ModelThread(threading.Thread):
     def __init__(self, func, *args, **kwargs):
@@ -38,6 +48,8 @@ class CameraAppPipeline:
         self.capture_mode = cmode
         self.frame_callback = frame_callback
         self.metrics_callback = metrics_callback
+        self._cuda_preview_composer = None
+        self._cuda_preview_enabled = bool(CudaPreviewComposer is not None and torch is not None and torch.cuda.is_available())
         self.use_gui = os.environ.get('USE_GUI', '0') == '1'
         self.graph_overlay_enabled = os.environ.get('GRAPH_OVERLAY', '1') == '1'
 
@@ -117,6 +129,35 @@ class CameraAppPipeline:
         self.denoise_strength = int(settings.get('DENOISE_STRENGTH', self.denoise_strength))
         self.model_loader.yolo_conf = self.yolo_conf
         self.model_loader.density_threshold = self.density_threshold
+
+    def _create_cuda_preview_composer(self):
+        if not self._cuda_preview_enabled:
+            return None
+        if self._cuda_preview_composer is not None:
+            return self._cuda_preview_composer
+        try:
+            quality = int(os.environ.get('CUDA_PREVIEW_JPEG_QUALITY', '80'))
+        except ValueError:
+            quality = 80
+        try:
+            self._cuda_preview_composer = CudaPreviewComposer(jpeg_quality=quality)
+        except EnvironmentError as exc:
+            self._cuda_preview_enabled = False
+            if self.extreme_debug:
+                print(f"[WARN] CUDA preview composer unavailable: {exc}")
+            return None
+        return self._cuda_preview_composer
+
+    def _generate_cuda_preview_payload(self, overlay_tensor, win_w, win_h):
+        composer = self._create_cuda_preview_composer()
+        if composer is None:
+            return None
+        try:
+            return composer.compose(overlay_tensor, target_size=(win_h, win_w))
+        except Exception as exc:
+            if self.extreme_debug:
+                print(f"[WARN] CUDA preview compose failed: {exc}")
+            return None
 
     def _refresh_models(self, force=False):
         if not force and getattr(self, '_models_loaded', False):
@@ -297,31 +338,46 @@ class CameraAppPipeline:
 
                     postprocess_start = time.monotonic()
 
+                    if self.use_gui:
+                        try:
+                            win_rect = cv2.getWindowImageRect("People Count")
+                            win_w, win_h = (win_rect[2], win_rect[3]) if win_rect and win_rect[2] > 0 else (1280, 720)
+                        except Exception:
+                            win_w, win_h = 1280, 720
+                    else:
+                        win_w, win_h = 1280, 720
+
+                    preview_payload = None
+                    frame_for_display = frame_with_bbox
+                    if torch is not None and torch.is_tensor(frame_with_bbox):
+                        preview_payload = self._generate_cuda_preview_payload(frame_with_bbox, win_w, win_h)
+                        frame_for_display = frame_with_bbox.detach().permute(1, 2, 0).cpu().numpy()
+
                     # Debug Tiling Densité (Magenta)
                     if self.debug_tiling and self.density_tiling and hasattr(self, 'density_quads_coords'):
                         for x1, y1, x2, y2 in self.density_quads_coords:
-                            cv2.rectangle(frame_with_bbox, (x1, y1), (x2, y2), (255, 0, 255), 2)
-                    
+                            cv2.rectangle(frame_for_display, (x1, y1), (x2, y2), (255, 0, 255), 2)
+
                     # Récupération des temps d'exécution réels de chaque moteur via le Thread
                     yolo_time = thr_yolo.duration
                     density_time = thr_density.duration
-                    
+
                     # Récupération des devices utilisés
                     yolo_dev = getattr(self.yolo_counter, 'last_device', 'GPU')
                     dens_dev = getattr(self.processor, 'last_device', 'GPU')
                     yp = getattr(self.yolo_counter, 'last_perf', {}) if self.yolo_counter else {}
                     yolo_internal = getattr(self.yolo_counter, 'last_internal', {}) if self.yolo_counter else {}
                     dp = getattr(self.processor, 'last_perf', {}) if self.processor else {}
-                    
+
                     cpu_usage = psutil.cpu_percent()
-                    
+
                     # --- OPTIMISATION RENDU : Travail en 1080p pour libérer le CPU ---
                     # Faire du 4K bitwise/dilate/contours tue les perfs, on passe en 1080p pour l'affichage
-                    h_4k, w_4k = frame_with_bbox.shape[:2]
+                    h_4k, w_4k = frame_for_display.shape[:2]
                     render_h, render_w = 1080, 1920
                     if h_4k < render_h: render_h, render_w = h_4k, w_4k
-                    
-                    frame_render = cv2.resize(frame_with_bbox, (render_w, render_h))
+
+                    frame_render = cv2.resize(frame_for_display, (render_w, render_h))
                     density_raw_small = np.zeros((render_h, render_w, 3), dtype=np.uint8)
                     density_mask_small = np.zeros((render_h, render_w), dtype=np.uint8)
                     mid_h, mid_w = render_h // 2, render_w // 2
@@ -384,15 +440,6 @@ class CameraAppPipeline:
                             cv2.circle(overlay2, (int(x), int(y)), int(radius) + 2, (0, 0, 255), 1)
 
                     # --- GESTION DE LA FENÊTRE D'AFFICHAGE ET CALLBACK ---
-                    if self.use_gui:
-                        try:
-                            win_rect = cv2.getWindowImageRect("People Count")
-                            win_w, win_h = (win_rect[2], win_rect[3]) if win_rect and win_rect[2] > 0 else (1280, 720)
-                        except Exception:
-                            win_w, win_h = 1280, 720
-                    else:
-                        win_w, win_h = 1280, 720
-
                     h_curr, w_curr = overlay2.shape[:2]
                     scale = min(win_w / w_curr, win_h / h_curr)
                     target_w, target_h = int(w_curr * scale), int(h_curr * scale)
@@ -404,7 +451,10 @@ class CameraAppPipeline:
                     
                     # Envoi au serveur Web si actif
                     if self.frame_callback:
-                        self.frame_callback(preview_frame)
+                        if preview_payload is not None:
+                            self.frame_callback(preview_payload.to_payload())
+                        else:
+                            self.frame_callback(preview_frame)
                     
                     total_time = time.time() - start_time
                     fps = 1.0 / total_time if total_time > 0 else 0

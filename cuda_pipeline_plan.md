@@ -39,24 +39,34 @@ flowchart TD
 - [x] Add a lightweight helper to run arbitrary commands inside `people-counter:gpu-final` so CUDA experiments can be launched without modifying the main launcher.
 
 ### 3. GPU Preprocessor & Inference Path
-- [ ] Introduce `cuda_pipeline/preprocessor.py` that accepts tensors from the tiler, normalizes them, and batches them for TensorRT.
-- [ ] Reuse `YoloTensorRTEngine`’s `set_preprocessor_mode` to hook into this path when `gpu_full` is active.
-- [ ] Guard the existing CPU path so no regressions occur when CUDA is unavailable.
+- [x] Introduce `cuda_pipeline/preprocessor.py` that accepts tensors from the tiler, normalizes them, and batches them for TensorRT.
+- [x] Reuse `YoloTensorRTEngine`’s `set_preprocessor_mode` to hook into this path when `gpu_full` is active.
+- [x] Guard the existing CPU path so no regressions occur when CUDA is unavailable.
+#### Notes
+- `YoloSegPeopleCounter.configure_pipeline` now forces the TensorRT engine into GPU preprocessing when the effective pipeline is `gpu`/`gpu_full`, and the helper only registers when CUDA is available so CPU builds stay untouched.
 
 ### 4. GPU Postprocessing & Renderer
-- [ ] Refactor `cuda_pipeline/postprocessor.py` to compute masks from prototypes directly on CUDA (reusing Torch/CuPy ops).
-- [ ] Update `GpuMaskRenderer` (or add `CudaMaskRenderer`) to blend the mask onto the full-resolution tensor and create a downscaled preview tensor.
-- [ ] Produce fused detection outputs (clusters + masks) in GPU memory but still convert final mask list to CPU/numpy only when needed by non-GPU consumers.
+- [x] Refactor `cuda_pipeline/postprocessor.py` to compute masks from prototypes directly on CUDA (reusing Torch/CuPy ops).
+- [x] Update `GpuMaskRenderer` (or add `CudaMaskRenderer`) to blend the mask onto the full-resolution tensor and create a downscaled preview tensor.
+- [x] Produce fused detection outputs (clusters + masks) in GPU memory but still convert final mask list to CPU/numpy only when needed by non-GPU consumers.
+#### Notes
+- `CudaMaskPostprocessor` now rebuilds mask fragments on CUDA before passing them to the renderer, and `GpuMaskRenderer`/`CpuMaskRenderer` accept torch tensors so GPU output never shrinks before the overlay is composed.
 
 ### 5. Preview, Encoding & GUI Handoff
-- [ ] Create `cuda_pipeline/preview.py` that resizes the overlayed tensor to the GUI-friendly resolution on CUDA, then encodes directly to MJPEG (NVENC or CUDA-friendly ffmpeg wrapper) before optionally copying the final frame to the CPU.
+- [x] Create `cuda_pipeline/preview.py` that resizes the overlayed tensor to the GUI-friendly resolution on CUDA, then encodes directly to MJPEG (NVENC or CUDA-friendly ffmpeg wrapper) before optionally copying the final frame to the CPU.
 - [ ] Emit metrics & detection data from the CUDA path (list of clusters + mask outlines) without additional copies.
-- [ ] Update `camera_app_pipeline.py` + web server to handle CUDA outputs while preserving existing metrics.
+- [x] Update `camera_app_pipeline.py` + web server to handle CUDA outputs while preserving existing metrics.
+
+#### Notes
+- The CUDA preview composer now letterboxes the GPU overlay to the GUI window size, encodes it to MJPEG, and feeds that payload through the shared `frame_callback` so the web server can stream the GPU frame without re-encoding.
 
 ### 6. Integration & Fallbacks
 - [ ] Wire the new `gpu_full` path under a `CudaPipelineController`, ensuring `auto`/`gpu` modes remain available.
 - [x] Add instrumentation/logging to confirm we never revisit the CPU tiler when `gpu_full` is engaged.
 - [ ] Provide helper tests or manual checks verifying the GPU-only path executes end-to-end.
+ 
+### Validation Notes
+- GPU metrics now report `[DEBUG] YOLO pipeline report: {'requested_mode': 'gpu_full', 'active_mode': 'gpu_full', 'helpers_available': True, 'last_gpu_full_success': True}` and CPU usage ~14–33%, proving the tiler/report instrumentation works.
 
 ### 7. Cleanup & Documentation
 - [ ] Document the new pipeline layout, required dependencies (torch/cuda), and how to use the UI toggle for the full path.

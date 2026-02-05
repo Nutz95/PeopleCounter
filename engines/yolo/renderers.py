@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Sequence
+from typing import Sequence, Union
 
 import cv2
 import numpy as np
@@ -24,12 +24,24 @@ class BaseMaskRenderer(ABC):
         metadata: Sequence[tuple],
         draw_boxes: bool,
         debug_mode: bool,
-    ) -> np.ndarray:
+        return_tensor: bool = False,
+    ) -> Union[np.ndarray, 'torch.Tensor']:
         raise NotImplementedError()
 
 
 class CpuMaskRenderer(BaseMaskRenderer):
-    def render(self, image, clusters, all_boxes, all_masks, all_visible_boxes, metadata, draw_boxes, debug_mode):
+    def render(
+        self,
+        image,
+        clusters,
+        all_boxes,
+        all_masks,
+        all_visible_boxes,
+        metadata,
+        draw_boxes,
+        debug_mode,
+        return_tensor: bool = False,
+    ):
         if not draw_boxes or image is None:
             return image
 
@@ -59,7 +71,11 @@ class CpuMaskRenderer(BaseMaskRenderer):
 
             for idx in cluster:
                 mask_fragment = all_masks[idx]
-                if mask_fragment is None or mask_fragment.size == 0:
+                if mask_fragment is None:
+                    continue
+                if torch is not None and torch.is_tensor(mask_fragment):
+                    mask_fragment = mask_fragment.cpu().numpy()
+                if mask_fragment is None or (hasattr(mask_fragment, 'size') and mask_fragment.size == 0):
                     continue
                 has_any_mask = True
                 vx1, vy1, vx2, vy2 = [int(v) for v in all_visible_boxes[idx]]
@@ -113,21 +129,41 @@ class GpuMaskRenderer(BaseMaskRenderer):
             raise EnvironmentError("CUDA is required for GPU mask rendering.")
         self.device = torch.device('cuda')
 
-    def render(self, image, clusters, all_boxes, all_masks, all_visible_boxes, metadata, draw_boxes, debug_mode):
+    def render(
+        self,
+        image,
+        clusters,
+        all_boxes,
+        all_masks,
+        all_visible_boxes,
+        metadata,
+        draw_boxes,
+        debug_mode,
+        return_tensor: bool = False,
+    ):
         if not draw_boxes or image is None:
             return image
 
         h_img, w_img = image.shape[:2]
         mask_tensor = torch.zeros((h_img, w_img), dtype=torch.bool, device=self.device)
         for idx, mask_fragment in enumerate(all_masks):
-            if mask_fragment is None or mask_fragment.size == 0:
+            if mask_fragment is None:
                 continue
+            if torch.is_tensor(mask_fragment):
+                if mask_fragment.numel() == 0:
+                    continue
+            else:
+                if getattr(mask_fragment, 'size', 0) == 0:
+                    continue
             vx1, vy1, vx2, vy2 = [int(v) for v in all_visible_boxes[idx]]
             h_roi = vy2 - vy1
             w_roi = vx2 - vx1
             if h_roi <= 0 or w_roi <= 0:
                 continue
-            mask_tensor_roi = torch.from_numpy(mask_fragment.astype(np.float32)).to(self.device)
+            if torch.is_tensor(mask_fragment):
+                mask_tensor_roi = mask_fragment.to(dtype=torch.float32, device=self.device)
+            else:
+                mask_tensor_roi = torch.from_numpy(mask_fragment.astype(np.float32)).to(self.device)
             mask_tensor_roi = mask_tensor_roi.unsqueeze(0).unsqueeze(0)
             if F is not None and mask_tensor_roi.shape[-2:] != (h_roi, w_roi):
                 mask_tensor_roi = F.interpolate(mask_tensor_roi, size=(h_roi, w_roi), mode='bilinear', align_corners=False)
@@ -143,4 +179,7 @@ class GpuMaskRenderer(BaseMaskRenderer):
         blend = image_tensor * 0.6 + overlay_color * 0.4
         mask_expanded = mask_tensor.unsqueeze(0).expand(3, -1, -1)
         image_tensor = torch.where(mask_expanded, blend, image_tensor)
-        return image_tensor.clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
+        rendered = image_tensor.clamp(0, 255).byte()
+        if return_tensor:
+            return rendered
+        return rendered.permute(1, 2, 0).cpu().numpy()

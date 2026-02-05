@@ -4,7 +4,6 @@ import time
 from .base import YoloEngine
 from .preprocessors import CpuPreprocessor, GpuPreprocessor
 
-# Optional GPU helpers
 try:
     import cupy as cp
 except Exception:
@@ -16,6 +15,11 @@ try:
 except Exception:
     torch = None
 
+try:
+    from cuda_pipeline.postprocessor import CudaMaskPostprocessor
+except Exception:
+    CudaMaskPostprocessor = None
+
 class YoloTensorRTEngine(YoloEngine):
     def __init__(self, model_path, confidence_threshold=0.25, device='cuda', pool=None, use_gpu_preproc=False, use_gpu_post=False):
         self.confidence_threshold = confidence_threshold
@@ -24,10 +28,13 @@ class YoloTensorRTEngine(YoloEngine):
         self.pool = pool
         self.last_perf = {'preprocess': 0, 'h2d': 0, 'infer': 0, 'd2h': 0, 'postprocess': 0}
         self.use_gpu_preproc = bool(use_gpu_preproc and GpuPreprocessor is not None and (torch is not None) and torch.cuda.is_available())
-        self.use_gpu_post = use_gpu_post and (torch is not None)
+        self.use_gpu_post = bool(use_gpu_post and CudaMaskPostprocessor is not None and (torch is not None) and torch.cuda.is_available())
         self.target_size = (640, 640)
         preprocessor_cls = GpuPreprocessor if self.use_gpu_preproc else CpuPreprocessor
         self.preprocessor = preprocessor_cls(self.target_size)
+        self._postprocessor_helper = None
+        if self.use_gpu_post:
+            self._postprocessor_helper = CudaMaskPostprocessor(device=self.device)
 
         logger = trt.Logger(trt.Logger.WARNING)
         with open(model_path, 'rb') as f:
@@ -181,44 +188,54 @@ class YoloTensorRTEngine(YoloEngine):
                         coeffs = p[mask_idx[k], start_coeffs : start_coeffs + num_mask_coeffs]
                         m_protos = protos[j] # [32, ph, pw]
                         ph, pw = m_protos.shape[1], m_protos.shape[2]
-                        
-                        # Indices dans le prototype (0..160)
-                        mx1 = max(0, int(ix1 * (pw/target_w)))
-                        my1 = max(0, int(iy1 * (ph/target_h)))
-                        mx2 = min(pw, int(ix2 * (pw/target_w)))
-                        my2 = min(ph, int(iy2 * (ph/target_h)))
-                        
-                        if mx2 > mx1 and my2 > my1:
-                            # Sigmoid sur la zone d'intérêt seulement (mask fragment)
-                            protos_crop = m_protos[:, my1:my2, mx1:mx2].reshape(num_mask_coeffs, -1)
-                            # GPU post-processing path
-                            if self.use_gpu_post and cp is not None:
-                                try:
-                                    coeffs_gpu = cp.asarray(coeffs)
-                                    protos_gpu = cp.asarray(protos_crop)
-                                    m_raw_gpu = 1.0 / (1.0 + cp.exp(- (coeffs_gpu @ protos_gpu)))
-                                    mask_box = cp.asnumpy(m_raw_gpu).reshape(my2-my1, mx2-mx1)
-                                except Exception:
-                                    # fallback to numpy
-                                    m_raw = 1 / (1 + np.exp(-(coeffs @ protos_crop)))
-                                    mask_box = m_raw.reshape(my2-my1, mx2-mx1)
-                            elif self.use_gpu_post and torch is not None and torch.cuda.is_available():
-                                try:
-                                    t_coeff = torch.from_numpy(coeffs).cuda()
-                                    t_protos = torch.from_numpy(protos_crop).cuda()
-                                    t_res = torch.matmul(t_coeff, t_protos)
-                                    t_sig = torch.sigmoid(t_res)
-                                    mask_box = t_sig.cpu().numpy().reshape(my2-my1, mx2-mx1)
-                                except Exception:
+                    
+                        mask_box = None
+                        if self.use_gpu_post and self._postprocessor_helper is not None:
+                            mask_box = self._postprocessor_helper.build_mask_fragment(
+                                coeffs,
+                                m_protos,
+                                ix1,
+                                iy1,
+                                ix2,
+                                iy2,
+                                target_w,
+                                target_h,
+                            )
+                        if mask_box is None:
+                            mx1 = max(0, int(ix1 * (pw/target_w)))
+                            my1 = max(0, int(iy1 * (ph/target_h)))
+                            mx2 = min(pw, int(ix2 * (pw/target_w)))
+                            my2 = min(ph, int(iy2 * (ph/target_h)))
+                            if mx2 > mx1 and my2 > my1:
+                                protos_crop = m_protos[:, my1:my2, mx1:mx2].reshape(num_mask_coeffs, -1)
+                                if self.use_gpu_post and cp is not None:
+                                    try:
+                                        coeffs_gpu = cp.asarray(coeffs)
+                                        protos_gpu = cp.asarray(protos_crop)
+                                        m_raw_gpu = 1.0 / (1.0 + cp.exp(- (coeffs_gpu @ protos_gpu)))
+                                        mask_box = cp.asnumpy(m_raw_gpu).reshape(my2-my1, mx2-mx1)
+                                    except Exception:
+                                        m_raw = 1 / (1 + np.exp(-(coeffs @ protos_crop)))
+                                        mask_box = m_raw.reshape(my2-my1, mx2-mx1)
+                                elif self.use_gpu_post and torch is not None and torch.cuda.is_available():
+                                    try:
+                                        t_coeff = torch.from_numpy(coeffs).cuda()
+                                        t_protos = torch.from_numpy(protos_crop).cuda()
+                                        t_res = torch.matmul(t_coeff, t_protos)
+                                        t_sig = torch.sigmoid(t_res)
+                                        mask_box = t_sig.cpu().numpy().reshape(my2-my1, mx2-mx1)
+                                    except Exception:
+                                        m_raw = 1 / (1 + np.exp(-(coeffs @ protos_crop)))
+                                        mask_box = m_raw.reshape(my2-my1, mx2-mx1)
+                                else:
                                     m_raw = 1 / (1 + np.exp(-(coeffs @ protos_crop)))
                                     mask_box = m_raw.reshape(my2-my1, mx2-mx1)
                             else:
-                                m_raw = 1 / (1 + np.exp(-(coeffs @ protos_crop)))
-                                mask_box = m_raw.reshape(my2-my1, mx2-mx1)
-
+                                mask_box = None
+                        if mask_box is not None:
                             all_boxes.append([gx1_f, gy1_f, gx2_f, gy2_f])
                             all_scores.append(confidences[mask_idx[k]])
-                            all_masks.append(mask_box.copy())
+                            all_masks.append(mask_box)
                             all_visible_boxes.append([gx1_v, gy1_v, gx2_v, gy2_v])
                         else:
                             all_boxes.append([gx1_f, gy1_f, gx2_f, gy2_f])
