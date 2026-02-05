@@ -99,7 +99,17 @@ class CameraAppPipeline:
         self.processor = None
         self.yolo_counter = None
         self.latest_pipeline_report = {}
-        self._overlay_stats = {"compose_ms": None, "preview_ms": None, "cpu_preview_ms": None}
+        self._overlay_stats = {
+            "compose_ms": None,
+            "preview_ms": None,
+            "cpu_preview_ms": None,
+            "draw_kernel_ms": None,
+            "draw_blend_ms": None,
+            "draw_convert_ms": None,
+            "draw_total_ms": None,
+            "draw_returned_tensor": False,
+            "renderer_fallback_reason": None,
+        }
 
         self._apply_profile_settings(self.profile_manager.profile_settings)
         if not self._refresh_models(force=True):
@@ -574,7 +584,17 @@ class CameraAppPipeline:
                     preview_payload = None
                     preview_frame = None
                     overlay_tensor = None
-                    self._overlay_stats = {"compose_ms": None, "preview_ms": None, "cpu_preview_ms": None}
+                    self._overlay_stats = {
+                        "compose_ms": None,
+                        "preview_ms": None,
+                        "cpu_preview_ms": None,
+                        "draw_kernel_ms": None,
+                        "draw_blend_ms": None,
+                        "draw_convert_ms": None,
+                        "draw_total_ms": None,
+                        "draw_returned_tensor": False,
+                        "renderer_fallback_reason": None,
+                    }
                     frame_tensor = None
                     if torch is not None:
                         if torch.is_tensor(frame_with_bbox):
@@ -615,6 +635,29 @@ class CameraAppPipeline:
                     yp = getattr(self.yolo_counter, 'last_perf', {}) if self.yolo_counter else {}
                     yolo_internal = getattr(self.yolo_counter, 'last_internal', {}) if self.yolo_counter else {}
                     dp = getattr(self.processor, 'last_perf', {}) if self.processor else {}
+
+                    renderer_draw_kernel = yolo_internal.get('t_draw_kernel_ms')
+                    renderer_draw_blend = yolo_internal.get('t_draw_blend_ms')
+                    renderer_draw_convert = yolo_internal.get('t_draw_convert_ms')
+                    renderer_draw_total = yolo_internal.get('t_draw_total_ms')
+                    renderer_returned_tensor = bool(yolo_internal.get('renderer_returned_tensor'))
+                    renderer_fallback_reason = yolo_internal.get('renderer_fallback_reason')
+                    self._overlay_stats.update({
+                        "draw_kernel_ms": renderer_draw_kernel,
+                        "draw_blend_ms": renderer_draw_blend,
+                        "draw_convert_ms": renderer_draw_convert,
+                        "draw_total_ms": renderer_draw_total,
+                        "draw_returned_tensor": renderer_returned_tensor,
+                        "renderer_fallback_reason": renderer_fallback_reason,
+                    })
+                    compose_ms = self._overlay_stats.get("compose_ms")
+                    threshold_ms = float(os.environ.get('GPU_OVERLAY_WARN_MS', '18.0'))
+                    compose_breach = compose_ms is not None and compose_ms > threshold_ms
+                    draw_breach = renderer_draw_total is not None and renderer_draw_total > threshold_ms
+                    if compose_breach or draw_breach:
+                        compose_label = f"{compose_ms:.1f}" if compose_ms is not None else '—'
+                        draw_label = f"{renderer_draw_total:.1f}" if renderer_draw_total is not None else '—'
+                        print(f"[GPU PERF] Overlay compose={compose_label}ms draw={draw_label}ms")
 
                     cpu_usage = psutil.cpu_percent()
 
@@ -677,6 +720,12 @@ class CameraAppPipeline:
                         "yolo_internal_draw_ms": float(yolo_internal.get('t_draw', 0) * 1000),
                         "yolo_internal_total_ms": float(yolo_internal.get('total_internal', 0) * 1000),
                         "overlay_compose_ms": self._overlay_stats.get("compose_ms"),
+                        "overlay_draw_kernel_ms": self._overlay_stats.get("draw_kernel_ms"),
+                        "overlay_draw_blend_ms": self._overlay_stats.get("draw_blend_ms"),
+                        "overlay_draw_convert_ms": self._overlay_stats.get("draw_convert_ms"),
+                        "overlay_draw_total_ms": self._overlay_stats.get("draw_total_ms"),
+                        "overlay_draw_returned_tensor": self._overlay_stats.get("draw_returned_tensor"),
+                        "overlay_renderer_fallback": self._overlay_stats.get("renderer_fallback_reason"),
                         "overlay_preview_ms": self._overlay_stats.get("preview_ms"),
                         "overlay_cpu_preview_ms": self._overlay_stats.get("cpu_preview_ms"),
                         "density_pre_ms": float(dp.get('preprocess', 0) * 1000),

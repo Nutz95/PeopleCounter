@@ -128,6 +128,7 @@ class GpuMaskRenderer(BaseMaskRenderer):
         if torch is None or not torch.cuda.is_available():
             raise EnvironmentError("CUDA is required for GPU mask rendering.")
         self.device = torch.device('cuda')
+        self.last_draw_metrics = None
 
     def render(
         self,
@@ -142,10 +143,26 @@ class GpuMaskRenderer(BaseMaskRenderer):
         return_tensor: bool = False,
     ):
         if not draw_boxes or image is None:
+            self.last_draw_metrics = None
             return image
 
         h_img, w_img = image.shape[:2]
+        mask_metrics = {
+            'draw_kernel_ms': None,
+            'draw_blend_ms': None,
+            'draw_convert_ms': None,
+            'draw_total_ms': None,
+            'returned_tensor': bool(return_tensor),
+        }
         mask_tensor = torch.zeros((h_img, w_img), dtype=torch.bool, device=self.device)
+        mask_start = torch.cuda.Event(enable_timing=True)
+        mask_end = torch.cuda.Event(enable_timing=True)
+        blend_start = torch.cuda.Event(enable_timing=True)
+        blend_end = torch.cuda.Event(enable_timing=True)
+        convert_start = torch.cuda.Event(enable_timing=True)
+        convert_end = torch.cuda.Event(enable_timing=True)
+
+        mask_start.record()
         for idx, mask_fragment in enumerate(all_masks):
             if mask_fragment is None:
                 continue
@@ -173,13 +190,27 @@ class GpuMaskRenderer(BaseMaskRenderer):
             if mask_bool.numel() == 0:
                 continue
             mask_tensor[vy1:vy2, vx1:vx2] |= mask_bool
+        mask_end.record()
 
+        blend_start.record()
         image_tensor = torch.from_numpy(image.astype(np.float32)).permute(2, 0, 1).to(self.device)
         overlay_color = torch.tensor([0, 255, 0], dtype=torch.float32, device=self.device).view(3, 1, 1)
         blend = image_tensor * 0.6 + overlay_color * 0.4
         mask_expanded = mask_tensor.unsqueeze(0).expand(3, -1, -1)
         image_tensor = torch.where(mask_expanded, blend, image_tensor)
+        blend_end.record()
+
+        convert_start.record()
         rendered = image_tensor.clamp(0, 255).byte()
+        convert_end.record()
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            mask_metrics['draw_kernel_ms'] = mask_start.elapsed_time(mask_end)
+            mask_metrics['draw_blend_ms'] = blend_start.elapsed_time(blend_end)
+            mask_metrics['draw_convert_ms'] = convert_start.elapsed_time(convert_end)
+            mask_metrics['draw_total_ms'] = mask_start.elapsed_time(convert_end)
+        self.last_draw_metrics = mask_metrics
         if return_tensor:
             return rendered
         return rendered.permute(1, 2, 0).cpu().numpy()

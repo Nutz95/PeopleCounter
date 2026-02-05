@@ -88,11 +88,18 @@
           <div class="metric-value" id="yoloInternalValue">Inf: — · Draw: —</div>
           <div class="metric-footnote">Total internal: <span id="yoloInternalTotalValue">—</span></div>
         </article>
-        <article class="metric-card wide">
+        <article class="metric-card wide overlay-timing-card">
           <div class="metric-title">Overlay timing (ms)</div>
-          <div class="metric-value metric-value--small">Compose: <span id="overlayComposeValue">—</span></div>
+          <div class="metric-value metric-value--overlay">GPU draw: <span id="overlayDrawGpuValue">—</span></div>
+          <div class="metric-footnote metric-footnote--inline">
+            Kernel: <span id="overlayDrawKernelValue">—</span> · Blend: <span id="overlayDrawBlendValue">—</span> · Convert: <span id="overlayDrawConvertValue">—</span>
+          </div>
+          <div class="metric-footnote metric-footnote--status">
+            Tensor returned: <span id="overlayDrawReturnedValue">—</span> · Renderer fallback: <span id="overlayRendererFallbackValue">—</span>
+          </div>
+          <div class="metric-footnote metric-footnote--compose">Compose: <span id="overlayComposeValue">—</span></div>
           <div class="metric-footnote">GPU preview: <span id="overlayPreviewValue">—</span></div>
-          <div class="metric-footnote">CPU fallback: <span id="overlayCpuPreviewValue">—</span></div>
+          <div class="metric-footnote">CPU preview: <span id="overlayCpuPreviewValue">—</span></div>
         </article>
       </div>
       <div class="control-group">

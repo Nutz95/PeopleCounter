@@ -28,6 +28,12 @@ const yoloInternalTotalValue = document.getElementById('yoloInternalTotalValue')
 const overlayComposeValue = document.getElementById('overlayComposeValue');
 const overlayPreviewValue = document.getElementById('overlayPreviewValue');
 const overlayCpuPreviewValue = document.getElementById('overlayCpuPreviewValue');
+const overlayDrawGpuValue = document.getElementById('overlayDrawGpuValue');
+const overlayDrawKernelValue = document.getElementById('overlayDrawKernelValue');
+const overlayDrawBlendValue = document.getElementById('overlayDrawBlendValue');
+const overlayDrawConvertValue = document.getElementById('overlayDrawConvertValue');
+const overlayDrawReturnedValue = document.getElementById('overlayDrawReturnedValue');
+const overlayRendererFallbackValue = document.getElementById('overlayRendererFallbackValue');
 const graphEmpty = document.getElementById('graphEmpty');
 const metricsInterval = 1100;
 const MAX_LOGS = 6;
@@ -280,6 +286,25 @@ async function refreshMetrics() {
     }
     if (overlayComposeValue) {
       overlayComposeValue.textContent = formatMsValue(data.overlay_compose_ms);
+    }
+    if (overlayDrawGpuValue) {
+      overlayDrawGpuValue.textContent = formatMsValue(data.overlay_draw_total_ms);
+    }
+    if (overlayDrawKernelValue) {
+      overlayDrawKernelValue.textContent = formatMsValue(data.overlay_draw_kernel_ms);
+    }
+    if (overlayDrawBlendValue) {
+      overlayDrawBlendValue.textContent = formatMsValue(data.overlay_draw_blend_ms);
+    }
+    if (overlayDrawConvertValue) {
+      overlayDrawConvertValue.textContent = formatMsValue(data.overlay_draw_convert_ms);
+    }
+    if (overlayDrawReturnedValue) {
+      const tensorFlag = data.overlay_draw_returned_tensor ? 'yes' : 'no';
+      overlayDrawReturnedValue.textContent = tensorFlag;
+    }
+    if (overlayRendererFallbackValue) {
+      overlayRendererFallbackValue.textContent = data.overlay_renderer_fallback || '—';
     }
     if (overlayPreviewValue) {
       overlayPreviewValue.textContent = formatMsValue(data.overlay_preview_ms);

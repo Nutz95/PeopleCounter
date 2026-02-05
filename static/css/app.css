@@ -199,6 +199,27 @@ main.page-column {
   grid-column: span 2;
 }
 
+.overlay-timing-card .metric-value--overlay {
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+
+.overlay-timing-card .metric-footnote--inline {
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.85);
+  letter-spacing: 0.04em;
+}
+
+.overlay-timing-card .metric-footnote--status {
+  color: rgba(138, 255, 255, 0.95);
+}
+
+.overlay-timing-card .metric-footnote--compose {
+  color: rgba(181, 255, 171, 0.95);
+}
+
 .metric-title {
   font-size: 0.85rem;
   letter-spacing: 0.08em;

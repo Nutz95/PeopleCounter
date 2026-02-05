@@ -52,6 +52,8 @@ class YoloSegPeopleCounter:
         self._cuda_tiler = None
         self.last_pipeline_report = {}
         self.last_detection_payload = {'clusters': [], 'detections': []}
+        self._renderer_fallback_reason = None
+        self._renderer_fallback_last_reason = None
 
         if self.backend == 'tensorrt_native':
             use_gpu_pre = os.environ.get('YOLO_USE_GPU_PREPROC', '0') == '1'
@@ -131,11 +133,23 @@ class YoloSegPeopleCounter:
 
         # On log le détail si on est en décalage
         total_internal = t_crop + t_inf + t_fuse + t_draw
+        render_metrics = getattr(self.renderer, 'last_draw_metrics', {}) or {}
+        draw_kernel_ms = render_metrics.get('draw_kernel_ms')
+        draw_blend_ms = render_metrics.get('draw_blend_ms')
+        draw_convert_ms = render_metrics.get('draw_convert_ms')
+        draw_total_ms = render_metrics.get('draw_total_ms')
+        draw_returned_tensor = bool(render_metrics.get('returned_tensor'))
         self.last_internal = {
             't_crop': t_crop,
             't_inf': t_inf,
             't_fuse': t_fuse,
             't_draw': t_draw,
+            't_draw_kernel_ms': draw_kernel_ms,
+            't_draw_blend_ms': draw_blend_ms,
+            't_draw_convert_ms': draw_convert_ms,
+            't_draw_total_ms': draw_total_ms,
+            'renderer_returned_tensor': draw_returned_tensor,
+            'renderer_fallback_reason': self._renderer_fallback_reason,
             'total_internal': total_internal
         }
         print(f"  [YOLO DETAILED] Crop={t_crop*1000:.1f}ms | Infer={t_inf*1000:.1f}ms | Fuse={t_fuse*1000:.1f}ms | Draw={t_draw*1000:.1f}ms | Total={total_internal*1000:.1f}ms")
@@ -201,9 +215,18 @@ class YoloSegPeopleCounter:
             try:
                 self.renderer = GpuMaskRenderer()
                 self.renderer_mode = 'gpu'
+                self._renderer_fallback_reason = None
+                self._renderer_fallback_last_reason = None
                 return
-            except EnvironmentError:
-                pass
+            except EnvironmentError as exc:
+                reason = str(exc)
+                self._renderer_fallback_reason = reason
+                if self._renderer_fallback_last_reason != reason:
+                    print(f"[CPU FALLBACK] GPU renderer unavailable: {reason}")
+                    self._renderer_fallback_last_reason = reason
+        else:
+            self._renderer_fallback_reason = None
+            self._renderer_fallback_last_reason = None
         self.renderer = CpuMaskRenderer()
         self.renderer_mode = 'cpu'
 
@@ -481,6 +504,7 @@ class YoloSegPeopleCounter:
         dtype = canvas.dtype
         alpha = 0.4
         color = torch.tensor((0.0, 0.0, 255.0), dtype=torch.float32, device=device).view(3, 1, 1)
+        mask_overlay = torch.zeros((canvas.shape[1], canvas.shape[2]), dtype=torch.bool, device=device)
         for idx, mask_fragment in enumerate(all_masks):
             if idx >= len(detection_metadata) or idx >= len(all_visible_boxes):
                 break
@@ -500,16 +524,23 @@ class YoloSegPeopleCounter:
             if mask_tensor is None:
                 continue
             mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0)
-            if mask_tensor.shape[-2:] != (fh, fw):
+            if mask_tensor.shape[-2] != fh or mask_tensor.shape[-1] != fw:
                 mask_tensor = F.interpolate(mask_tensor, size=(fh, fw), mode='bilinear', align_corners=False)
             mask_tensor = mask_tensor.squeeze(0).squeeze(0)
             if not mask_tensor.numel() or (mask_tensor <= 0.5).all():
                 continue
-            region = canvas[:, vy1:vy2, vx1:vx2].to(dtype=torch.float32)
-            mask_bool = (mask_tensor > 0.5).unsqueeze(0)
-            alpha_map = mask_bool * alpha
+            mask_bool = mask_tensor > 0.5
+            if not mask_bool.any():
+                continue
+            mask_overlay[vy1:vy2, vx1:vx2] |= mask_bool
+        if mask_overlay.any():
+            region = canvas.to(dtype=torch.float32)
+            mask_bool = mask_overlay.unsqueeze(0)
+            alpha_map = mask_bool.float() * alpha
             blend = region * (1 - alpha_map) + color * alpha_map
-            canvas[:, vy1:vy2, vx1:vx2] = blend.clamp(0, 255).to(dtype=dtype)
+            canvas[:] = blend.clamp(0, 255).to(dtype=dtype)
+            if self.debug_mode:
+                self._draw_cuda_contours(canvas, mask_overlay)
 
     def _mask_fragment_to_tensor(self, mask_fragment, device):
         if mask_fragment is None:
@@ -523,6 +554,20 @@ class YoloSegPeopleCounter:
         if arr.size == 0:
             return None
         return torch.from_numpy(arr).to(device=device)
+
+    def _draw_cuda_contours(self, canvas, mask_overlay):
+        if mask_overlay is None or not mask_overlay.any():
+            return
+        try:
+            mask_cpu = (mask_overlay.to(torch.uint8).cpu().numpy() * 255).astype('uint8')
+            contours, _ = cv2.findContours(mask_cpu, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                return
+            canvas_cpu = canvas.permute(1, 2, 0).to(torch.uint8).cpu().numpy()
+            cv2.drawContours(canvas_cpu, contours, -1, (0, 0, 255), 2, cv2.LINE_AA)
+            canvas.copy_(torch.from_numpy(canvas_cpu).permute(2, 0, 1).to(canvas.device, dtype=canvas.dtype))
+        except Exception:
+            pass
 
     def _build_pipeline_report(self, *, last_gpu_full_success=None, last_gpu_full_error=None):
         return {
