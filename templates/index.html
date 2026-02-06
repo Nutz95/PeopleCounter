@@ -65,7 +65,9 @@
         <article class="metric-card">
           <div class="metric-title">Density estimate</div>
           <div class="metric-value" id="densityCountValue">—</div>
-          <div class="metric-footnote" id="densityDeviceLabel">Device: —</div>
+          <div class="metric-footnote">
+            Device: <span id="densityDeviceLabel">—</span> · Status: <span id="densityStatusValue">—</span>
+          </div>
         </article>
         <article class="metric-card">
           <div class="metric-title">Average people</div>
@@ -90,6 +92,8 @@
         <article class="metric-card wide">
           <div class="metric-title">YOLO internal (ms)</div>
           <div class="metric-value" id="yoloInternalValue">Inf: — · Draw: —</div>
+          <div class="metric-footnote">Crop: <span id="yoloCropValue">—</span> · Fuse: <span id="yoloFuseValue">—</span>
+          </div>
           <div class="metric-footnote">Total internal: <span id="yoloInternalTotalValue">—</span></div>
         </article>
         <article class="metric-card wide overlay-timing-card">

@@ -38,6 +38,7 @@ class ProfileManager:
             'DEBUG_TILING': os.environ.get('DEBUG_TILING', '0'),
             'EXTREME_DEBUG': os.environ.get('EXTREME_DEBUG', '0'),
             'YOLO_GLOBAL_TILE_ONLY': os.environ.get('YOLO_GLOBAL_TILE_ONLY', '0'),
+            'DISABLE_DENSITY_INFERENCE': os.environ.get('DISABLE_DENSITY_INFERENCE', '0'),
             'LWCC_BACKEND': os.environ.get('LWCC_BACKEND', 'torch'),
             'LWCC_TRT_ENGINE': os.environ.get('LWCC_TRT_ENGINE', 'dm_count.engine'),
             'OPENVINO_DEVICE': os.environ.get('OPENVINO_DEVICE', 'GPU'),

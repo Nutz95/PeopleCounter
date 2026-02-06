@@ -69,6 +69,7 @@ class CameraAppPipeline:
         self.debug_tiling = os.environ.get('DEBUG_TILING', '0') == '1'
         self.extreme_debug = os.environ.get('EXTREME_DEBUG', '0') == '1'
         self.yolo_global_tile_only = os.environ.get('YOLO_GLOBAL_TILE_ONLY', '0') == '1'
+        self.density_enabled = os.environ.get('DISABLE_DENSITY_INFERENCE', '0') != '1'
 
         if cmode == 'mqtt':
             print("Using MqttCapture (Maixcam/MQTT)")
@@ -139,6 +140,9 @@ class CameraAppPipeline:
         self.debug_tiling = settings.get('DEBUG_TILING', '0') == '1'
         self.extreme_debug = settings.get('EXTREME_DEBUG', '0') == '1'
         self.yolo_global_tile_only = settings.get('YOLO_GLOBAL_TILE_ONLY', '1' if self.yolo_global_tile_only else '0') == '1'
+        disable_density = settings.get('DISABLE_DENSITY_INFERENCE')
+        if disable_density is not None:
+            self.density_enabled = disable_density != '1'
         self.yolo_conf = float(settings.get('YOLO_CONF', self.yolo_conf))
         self.density_threshold = int(settings.get('DENSITY_THRESHOLD', self.density_threshold))
         self.denoise_strength = int(settings.get('DENOISE_STRENGTH', self.denoise_strength))
@@ -492,7 +496,7 @@ class CameraAppPipeline:
                     if not self.yolo_counter:
                         print("[ERROR] Le compteur YOLO n'est pas initialisé, arrêt du pipeline.")
                         break
-                    if not self.processor:
+                    if self.density_enabled and not self.processor:
                         print("[ERROR] Le processeur density n'est pas initialisé, arrêt du pipeline.")
                         break
                     
@@ -512,33 +516,36 @@ class CameraAppPipeline:
 
                     # 2. DENSITY INFERENCE (Tiling 2x2 Batché)
                     t_loop_start = time.time()
-                    self.density_quads_coords = []
-                    if self.density_tiling:
-                        # On prépare les quadrants
-                        h, w = frame.shape[:2]
-                        mid_h, mid_w = h // 2, w // 2
-                        quads = [
-                            frame[0:mid_h, 0:mid_w],
-                            frame[0:mid_h, mid_w:w],
-                            frame[mid_h:h, 0:mid_w],
-                            frame[mid_h:h, mid_w:w]
-                        ]
-                        self.density_quads_coords = [
-                            (0, 0, mid_w, mid_h),
-                            (mid_w, 0, w, mid_h),
-                            (0, mid_h, mid_w, h),
-                            (mid_w, mid_h, w, h)
-                        ]
-                        thr_density = ModelThread(self.processor.process_batch, quads)
-                    else:
-                        # Mode standard (Inférence globale redimensionnée)
-                        thr_density = ModelThread(self.processor.process, frame)
+                    thr_density = None
+                    if self.density_enabled:
+                        self.density_quads_coords = []
+                        if self.density_tiling:
+                            # On prépare les quadrants
+                            h, w = frame.shape[:2]
+                            mid_h, mid_w = h // 2, w // 2
+                            quads = [
+                                frame[0:mid_h, 0:mid_w],
+                                frame[0:mid_h, mid_w:w],
+                                frame[mid_h:h, 0:mid_w],
+                                frame[mid_h:h, mid_w:w]
+                            ]
+                            self.density_quads_coords = [
+                                (0, 0, mid_w, mid_h),
+                                (mid_w, 0, w, mid_h),
+                                (0, mid_h, mid_w, h),
+                                (mid_w, mid_h, w, h)
+                            ]
+                            thr_density = ModelThread(self.processor.process_batch, quads)
+                        else:
+                            # Mode standard (Inférence globale redimensionnée)
+                            thr_density = ModelThread(self.processor.process, frame)
 
                     preprocess_duration = time.monotonic() - preprocess_start
                     # On lance les deux threads
                     t_cycle_start = time.time()
                     thr_yolo.start()
-                    thr_density.start()
+                    if thr_density:
+                        thr_density.start()
                     
                     # Attente YOLO
                     thr_yolo.join()
@@ -556,7 +563,8 @@ class CameraAppPipeline:
                             print(f"[DEBUG] YOLO pipeline report: {pipeline_report}")
                     
                     # Attente Density
-                    thr_density.join()
+                    if thr_density:
+                        thr_density.join()
 
                     postprocess_start = time.monotonic()
 
@@ -569,7 +577,7 @@ class CameraAppPipeline:
                     else:
                         win_w, win_h = 1280, 720
 
-                    density_result = thr_density.result
+                    density_result = thr_density.result if thr_density else None
                     density_count = self._get_density_count(density_result)
 
                     self._overlay_stats = {
@@ -589,10 +597,10 @@ class CameraAppPipeline:
                         preview_frame = preview_frame.detach().permute(1, 2, 0).cpu().numpy()
 
                     yolo_time = thr_yolo.duration
-                    density_time = thr_density.duration
+                    density_time = thr_density.duration if thr_density else 0.0
 
                     yolo_dev = getattr(self.yolo_counter, 'last_device', 'GPU')
-                    dens_dev = getattr(self.processor, 'last_device', 'GPU')
+                    dens_dev = 'disabled' if not self.density_enabled else getattr(self.processor, 'last_device', 'GPU')
                     yp = getattr(self.yolo_counter, 'last_perf', {}) if self.yolo_counter else {}
                     yolo_internal = getattr(self.yolo_counter, 'last_internal', {}) if self.yolo_counter else {}
                     dp = getattr(self.processor, 'last_perf', {}) if self.processor else {}
@@ -655,6 +663,7 @@ class CameraAppPipeline:
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                         "yolo_count": int(yolo_count),
                         "density_count": float(density_count),
+                        "density_enabled": bool(self.density_enabled),
                         "average": float(avg_instant),
                         "fps": float(fps),
                         "cpu_usage": float(cpu_usage),
@@ -679,6 +688,8 @@ class CameraAppPipeline:
                         "yolo_renderer_mode": getattr(self.yolo_counter, 'renderer_mode', 'cpu'),
                         "yolo_internal_inf_ms": float(yolo_internal.get('t_inf', 0) * 1000),
                         "yolo_internal_draw_ms": float(yolo_internal.get('t_draw', 0) * 1000),
+                        "yolo_internal_crop_ms": float(yolo_internal.get('t_crop', 0) * 1000),
+                        "yolo_internal_fuse_ms": float(yolo_internal.get('t_fuse', 0) * 1000),
                         "yolo_internal_total_ms": float(yolo_internal.get('total_internal', 0) * 1000),
                         "overlay_compose_ms": self._overlay_stats.get("compose_ms"),
                         "overlay_draw_kernel_ms": self._overlay_stats.get("draw_kernel_ms"),

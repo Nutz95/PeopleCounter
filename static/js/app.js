@@ -19,12 +19,15 @@ const pipelineModeSelect = document.getElementById('pipelineModeSelect');
 const pipelineModeEffective = document.getElementById('pipelineModeEffective');
 const pipelineReportStatus = document.getElementById('pipelineReportStatus');
 const pipelineHelperStatus = document.getElementById('pipelineHelperStatus');
+const densityStatusValue = document.getElementById('densityStatusValue');
 const videoHistoryList = document.getElementById('videoHistoryList');
 const historyChartShell = document.getElementById('historyChartShell');
 const historyChart = document.getElementById('historyChart');
 const historyCtx = historyChart ? historyChart.getContext('2d') : null;
 const yoloInternalValue = document.getElementById('yoloInternalValue');
 const yoloInternalTotalValue = document.getElementById('yoloInternalTotalValue');
+const yoloCropValue = document.getElementById('yoloCropValue');
+const yoloFuseValue = document.getElementById('yoloFuseValue');
 const overlayComposeValue = document.getElementById('overlayComposeValue');
 const overlayPreviewValue = document.getElementById('overlayPreviewValue');
 const overlayCpuPreviewValue = document.getElementById('overlayCpuPreviewValue');
@@ -54,16 +57,63 @@ function updateMaskButton(enabled) {
   maskToggle.dataset.state = enabled ? 'on' : 'off';
 }
 
+function getMaskDisplayGeometry(payload) {
+  if (!videoWrapper) {
+    return null;
+  }
+  const wrapperRect = videoWrapper.getBoundingClientRect();
+  if (wrapperRect.width <= 0 || wrapperRect.height <= 0) {
+    return null;
+  }
+  let displayWidth = wrapperRect.width;
+  let displayHeight = wrapperRect.height;
+  let offsetX = 0;
+  let offsetY = 0;
+  if (payload && payload.width && payload.height && payload.scale_x && payload.scale_y) {
+    const frameWidth = payload.width * payload.scale_x;
+    const frameHeight = payload.height * payload.scale_y;
+    if (frameWidth > 0 && frameHeight > 0) {
+      const frameRatio = frameWidth / frameHeight;
+      const wrapperRatio = wrapperRect.width / wrapperRect.height;
+      if (frameRatio > wrapperRatio) {
+        displayWidth = wrapperRect.width;
+        displayHeight = wrapperRect.width / frameRatio;
+      } else {
+        displayHeight = wrapperRect.height;
+        displayWidth = wrapperRect.height * frameRatio;
+      }
+      offsetX = (wrapperRect.width - displayWidth) / 2;
+      offsetY = (wrapperRect.height - displayHeight) / 2;
+    }
+  }
+  return {
+    width: Math.max(1, displayWidth),
+    height: Math.max(1, displayHeight),
+    left: Math.max(0, offsetX),
+    top: Math.max(0, offsetY),
+  };
+}
+
 function syncMaskCanvasSize() {
   if (!maskOverlay || !videoStream) {
     return;
   }
-  const width = Math.max(1, Math.floor(videoStream.clientWidth || 0));
-  const height = Math.max(1, Math.floor(videoStream.clientHeight || 0));
-  maskOverlay.width = width;
-  maskOverlay.height = height;
-  maskOverlay.style.width = `${width}px`;
-  maskOverlay.style.height = `${height}px`;
+  const fallbackWidth = Math.max(1, Math.floor(videoStream.clientWidth || 0));
+  const fallbackHeight = Math.max(1, Math.floor(videoStream.clientHeight || 0));
+  const geometry = getMaskDisplayGeometry(lastMaskPayload) || {
+    width: fallbackWidth,
+    height: fallbackHeight,
+    left: 0,
+    top: 0,
+  };
+  const canvasWidth = Math.max(1, Math.round(geometry.width));
+  const canvasHeight = Math.max(1, Math.round(geometry.height));
+  maskOverlay.width = canvasWidth;
+  maskOverlay.height = canvasHeight;
+  maskOverlay.style.width = `${geometry.width}px`;
+  maskOverlay.style.height = `${geometry.height}px`;
+  maskOverlay.style.left = `${geometry.left}px`;
+  maskOverlay.style.top = `${geometry.top}px`;
 }
 
 function renderMaskOverlay() {
@@ -88,6 +138,9 @@ function renderMaskOverlay() {
     }
     maskCtx.clearRect(0, 0, width, height);
     maskCtx.save();
+    maskCtx.imageSmoothingEnabled = false;
+    maskCtx.webkitImageSmoothingEnabled = false;
+    maskCtx.mozImageSmoothingEnabled = false;
     maskCtx.globalAlpha = 0.55;
     maskCtx.drawImage(img, 0, 0, width, height);
     maskCtx.globalCompositeOperation = 'source-in';
@@ -286,7 +339,16 @@ async function refreshMetrics() {
     document.getElementById('densityTimeValue').textContent = data.density_time !== undefined ? (data.density_time * 1000).toFixed(1) + 'ms' : '—';
     document.getElementById('totalTimeValue').textContent = data.total_time !== undefined ? (data.total_time * 1000).toFixed(1) + 'ms' : '—';
     document.getElementById('yoloDeviceLabel').textContent = 'Device: ' + (data.yolo_device || '—');
-    document.getElementById('densityDeviceLabel').textContent = 'Device: ' + (data.density_device || '—');
+    const densityDeviceEl = document.getElementById('densityDeviceLabel');
+    if (densityDeviceEl) {
+      densityDeviceEl.textContent = data.density_device || '—';
+    }
+    if (densityStatusValue) {
+      const statusText = typeof data.density_enabled === 'boolean'
+        ? (data.density_enabled ? 'enabled' : 'disabled')
+        : '—';
+      densityStatusValue.textContent = statusText;
+    }
     fpsBadge.textContent = 'FPS ' + (data.fps !== undefined ? data.fps.toFixed(1) : '--');
     fpsStatus.textContent = `FPS ${data.fps !== undefined ? data.fps.toFixed(1) : '--'} · ${data.profile_active ? 'Profiling' : 'Live'}`;
     debugToggle.checked = Boolean(data.debug_mode);
@@ -367,6 +429,12 @@ async function refreshMetrics() {
     }
     if (yoloInternalTotalValue) {
       yoloInternalTotalValue.textContent = formatMsValue(data.yolo_internal_total_ms);
+    }
+    if (yoloCropValue) {
+      yoloCropValue.textContent = formatMsValue(data.yolo_internal_crop_ms);
+    }
+    if (yoloFuseValue) {
+      yoloFuseValue.textContent = formatMsValue(data.yolo_internal_fuse_ms);
     }
     if (overlayComposeValue) {
       overlayComposeValue.textContent = formatMsValue(data.overlay_compose_ms);

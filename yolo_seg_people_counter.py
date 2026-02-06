@@ -1,6 +1,7 @@
 import base64
 import copy
 import cv2
+import math
 import numpy as np
 import os
 import time
@@ -238,10 +239,17 @@ class YoloSegPeopleCounter:
         return dict(self.last_mask_payload)
 
     def _build_mask_payload(self, all_boxes, all_masks, all_visible_boxes, frame_shape):
-        mask_full = self._compose_full_mask(all_boxes, all_masks, all_visible_boxes, frame_shape)
-        if mask_full is None or mask_full.sum() == 0:
+        mask_small = self._compose_downscaled_mask(all_boxes, all_masks, all_visible_boxes, frame_shape)
+        if mask_small is None:
             return None
-        mask_small = self._downscale_mask(mask_full)
+        alpha = mask_small[..., 3] if mask_small.ndim == 3 else mask_small
+        if alpha.sum() == 0:
+            return None
+        if self.debug_mode:
+            nonzero = int(np.count_nonzero(alpha))
+            total = alpha.size
+            coverage = nonzero * 100.0 / total if total else 0.0
+            print(f"[DEBUG] mask_small {mask_small.shape} nonzero {nonzero}/{total} ({coverage:.1f}%)")
         encoded = self._encode_mask_blob(mask_small)
         if encoded is None:
             return None
@@ -256,13 +264,16 @@ class YoloSegPeopleCounter:
         }
         return payload
 
-    def _compose_full_mask(self, all_boxes, all_masks, all_visible_boxes, frame_shape):
+    def _compose_downscaled_mask(self, all_boxes, all_masks, all_visible_boxes, frame_shape):
         h, w = frame_shape
         if h <= 0 or w <= 0:
             return None
-        mask_full = np.zeros((h, w), dtype=np.uint8)
+        factor = max(1, self.mask_downscale)
+        mask_h = max(1, (h + factor - 1) // factor)
+        mask_w = max(1, (w + factor - 1) // factor)
+        mask_small = np.zeros((mask_h, mask_w, 4), dtype=np.uint8)
         if not all_masks:
-            return mask_full
+            return mask_small
         use_visible = len(all_visible_boxes) == len(all_masks)
         fallback_boxes = all_boxes if len(all_boxes) == len(all_masks) else None
         for idx, mask_fragment in enumerate(all_masks):
@@ -274,41 +285,21 @@ class YoloSegPeopleCounter:
                 continue
             vx1, vy1, vx2, vy2 = [float(v) for v in bbox]
             vx1, vy1, vx2, vy2 = self._clip_bbox(vx1, vy1, vx2, vy2, frame_shape)
-            roi_w = int(round(vx2 - vx1))
-            roi_h = int(round(vy2 - vy1))
-            if roi_w <= 0 or roi_h <= 0:
+            if vx2 <= vx1 or vy2 <= vy1:
                 continue
-            mask_resized = cv2.resize(normalized, (roi_w, roi_h), interpolation=cv2.INTER_LINEAR)
+            ds_x1 = max(0, min(mask_w, int(math.floor(vx1 / factor))))
+            ds_y1 = max(0, min(mask_h, int(math.floor(vy1 / factor))))
+            ds_x2 = max(ds_x1 + 1, min(mask_w, int(math.ceil(vx2 / factor))))
+            ds_y2 = max(ds_y1 + 1, min(mask_h, int(math.ceil(vy2 / factor))))
+            ds_width = ds_x2 - ds_x1
+            ds_height = ds_y2 - ds_y1
+            if ds_width <= 0 or ds_height <= 0:
+                continue
+            mask_resized = cv2.resize(normalized, (ds_width, ds_height), interpolation=cv2.INTER_LINEAR)
             mask_bin = (mask_resized > 0.5).astype(np.uint8) * 255
-            intersect_x1 = int(max(0, vx1))
-            intersect_y1 = int(max(0, vy1))
-            intersect_x2 = int(min(w, vx2))
-            intersect_y2 = int(min(h, vy2))
-            if intersect_x2 <= intersect_x1 or intersect_y2 <= intersect_y1:
-                continue
-            mask_shape_y, mask_shape_x = mask_bin.shape
-            mask_x1 = max(0, int(intersect_x1 - vx1))
-            mask_y1 = max(0, int(intersect_y1 - vy1))
-            if mask_x1 >= mask_shape_x or mask_y1 >= mask_shape_y:
-                continue
-            width_target = intersect_x2 - intersect_x1
-            height_target = intersect_y2 - intersect_y1
-            available_w = mask_shape_x - mask_x1
-            available_h = mask_shape_y - mask_y1
-            draw_w = min(width_target, available_w)
-            draw_h = min(height_target, available_h)
-            if draw_w <= 0 or draw_h <= 0:
-                continue
-            mask_x2 = mask_x1 + draw_w
-            mask_y2 = mask_y1 + draw_h
-            intersect_x2 = intersect_x1 + draw_w
-            intersect_y2 = intersect_y1 + draw_h
-            mask_slice = mask_bin[mask_y1:mask_y2, mask_x1:mask_x2]
-            if mask_slice.size == 0:
-                continue
-            target = mask_full[intersect_y1:intersect_y2, intersect_x1:intersect_x2]
-            mask_full[intersect_y1:intersect_y2, intersect_x1:intersect_x2] = np.maximum(target, mask_slice)
-        return mask_full
+            target = mask_small[ds_y1:ds_y2, ds_x1:ds_x2, 3]
+            mask_small[ds_y1:ds_y2, ds_x1:ds_x2, 3] = np.maximum(target, mask_bin)
+        return mask_small
 
     def _normalize_mask_fragment(self, fragment):
         if fragment is None:
@@ -328,13 +319,6 @@ class YoloSegPeopleCounter:
             return None
         return array.astype(np.float32, copy=False)
 
-    def _downscale_mask(self, mask_full):
-        if self.mask_downscale <= 1:
-            return mask_full
-        target_h = max(1, mask_full.shape[0] // self.mask_downscale)
-        target_w = max(1, mask_full.shape[1] // self.mask_downscale)
-        return cv2.resize(mask_full, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
-
     def _encode_mask_blob(self, mask_small, fmt_override=None):
         fmt = fmt_override if fmt_override in ('webp', 'png') else (self.mask_format if self.mask_format in ('webp', 'png') else 'png')
         params = []
@@ -342,7 +326,13 @@ class YoloSegPeopleCounter:
             params = [cv2.IMWRITE_WEBP_QUALITY, self.mask_quality]
         elif fmt == 'png':
             params = [cv2.IMWRITE_PNG_COMPRESSION, 3]
-        success, encoded = cv2.imencode(f'.{fmt}', mask_small, params)
+        mask_input = mask_small
+        if fmt in ('png', 'webp'):
+            if mask_input.ndim == 2:
+                mask_input = cv2.cvtColor(mask_input, cv2.COLOR_GRAY2BGRA)
+            elif mask_input.ndim == 3 and mask_input.shape[2] == 3:
+                mask_input = cv2.cvtColor(mask_input, cv2.COLOR_BGR2BGRA)
+        success, encoded = cv2.imencode(f'.{fmt}', mask_input, params)
         if not success:
             if fmt != 'png':
                 return self._encode_mask_blob(mask_small, fmt_override='png')
