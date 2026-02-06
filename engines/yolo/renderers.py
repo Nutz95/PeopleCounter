@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Sequence, Union
+from typing import Optional, Sequence, Union
 
 import cv2
 import numpy as np
+
+from cuda_pipeline.blend_kernel import blend_roi_on_cuda
 
 try:
     import torch
@@ -25,6 +27,7 @@ class BaseMaskRenderer(ABC):
         draw_boxes: bool,
         debug_mode: bool,
         return_tensor: bool = False,
+        tensor_frame: Optional['torch.Tensor'] = None,
     ) -> Union[np.ndarray, 'torch.Tensor']:
         raise NotImplementedError()
 
@@ -41,6 +44,7 @@ class CpuMaskRenderer(BaseMaskRenderer):
         draw_boxes,
         debug_mode,
         return_tensor: bool = False,
+        tensor_frame: Optional['torch.Tensor'] = None,
     ):
         if not draw_boxes or image is None:
             return image
@@ -142,6 +146,7 @@ class GpuMaskRenderer(BaseMaskRenderer):
         draw_boxes,
         debug_mode,
         return_tensor: bool = False,
+        tensor_frame: Optional['torch.Tensor'] = None,
     ):
         if not draw_boxes or image is None:
             self.last_draw_metrics = None
@@ -194,19 +199,26 @@ class GpuMaskRenderer(BaseMaskRenderer):
         mask_end.record()
 
         blend_start.record()
-        image_tensor = torch.from_numpy(image.astype(np.float32)).permute(2, 0, 1).to(self.device).half()
+        if tensor_frame is not None:
+            image_tensor = tensor_frame.to(device=self.device, dtype=torch.float16, non_blocking=True)
+        else:
+            image_tensor = torch.from_numpy(image.astype(np.float32)).permute(2, 0, 1).to(self.device).half()
         mask_coords = torch.nonzero(mask_tensor, as_tuple=False)
         if mask_coords.numel():
             y_min = int(mask_coords[:, 0].min())
             y_max = int(mask_coords[:, 0].max()) + 1
             x_min = int(mask_coords[:, 1].min())
             x_max = int(mask_coords[:, 1].max()) + 1
-            roi = image_tensor[:, y_min:y_max, x_min:x_max]
-            if roi.numel():
-                blend_region = roi * 0.6 + self.overlay_color * 0.4
-                mask_roi = mask_tensor[y_min:y_max, x_min:x_max]
-                mask_expanded = mask_roi.unsqueeze(0).expand_as(roi)
-                image_tensor[:, y_min:y_max, x_min:x_max] = torch.where(mask_expanded, blend_region, roi)
+            mask_roi = mask_tensor[y_min:y_max, x_min:x_max]
+            if mask_roi.any():
+                blend_mask = mask_roi.to(dtype=torch.uint8)
+                blend_roi_on_cuda(
+                    image_tensor,
+                    blend_mask,
+                    y_min,
+                    x_min,
+                    self.overlay_color,
+                )
         blend_end.record()
 
         convert_start.record()

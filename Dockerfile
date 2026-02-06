@@ -101,8 +101,8 @@ RUN mkdir -p /workspace/logs && \
 RUN /opt/venv/bin/python -c "import tensorrt; print('TensorRT Version:', tensorrt.__version__)" && \
     /opt/venv/bin/python -c "import cv2; print('OpenCV Version:', cv2.__version__)"
 
-# Stage 2: Final Runtime Image
-FROM nvidia/cuda:13.1.1-cudnn-runtime-ubuntu24.04 AS runtime
+# Stage 2: Final Runtime Image (retain nvcc for inline builds)
+FROM nvidia/cuda:13.1.1-cudnn-devel-ubuntu24.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -124,7 +124,7 @@ RUN ldconfig
 WORKDIR /workspace
 COPY . /workspace
 
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PATH="/usr/local/cuda/bin:/opt/venv/bin:$PATH"
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
