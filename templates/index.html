@@ -25,13 +25,17 @@
     <section class="video-shell">
       <div class="video-wrapper" id="videoWrapper">
         <img id="videoStream" src="/video_feed" alt="PeopleCounter stream">
+        <canvas id="maskOverlay" class="mask-overlay"></canvas>
+        <div class="video-overlay-controls">
+          <button id="overlayToggle" class="overlay-button" type="button" data-state="on">Hide metric chart</button>
+          <button id="maskToggle" class="overlay-button" type="button" data-state="on">Hide mask overlay</button>
+        </div>
         <div class="fps-chip" id="fpsBadge">FPS —</div>
         <div class="fps-status" id="fpsStatus">Awaiting metrics...</div>
         <div class="video-actions">
           <button id="fullscreenBtn" type="button">Fullscreen</button>
           <button id="fitBtn" type="button">Fit View</button>
         </div>
-        <button id="overlayToggle" class="overlay-button" type="button" data-state="on">Hide metric chart</button>
       </div>
       <p class="video-hint">Connect from any browser at http://localhost:{{ port }} to mirror the feed from this device.
       </p>

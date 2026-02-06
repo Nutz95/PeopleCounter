@@ -572,18 +572,6 @@ class CameraAppPipeline:
                     density_result = thr_density.result
                     density_count = self._get_density_count(density_result)
 
-                    if torch is not None and torch.is_tensor(frame_with_bbox):
-                        frame_height, frame_width = frame_with_bbox.shape[1], frame_with_bbox.shape[2]
-                    else:
-                        frame_height, frame_width = frame_with_bbox.shape[:2]
-                    render_h = min(frame_height, 1080)
-                    render_w = min(frame_width, 1920)
-                    render_size = (render_h, render_w)
-                    win_size = (win_h, win_w)
-
-                    preview_payload = None
-                    preview_frame = None
-                    overlay_tensor = None
                     self._overlay_stats = {
                         "compose_ms": None,
                         "preview_ms": None,
@@ -595,37 +583,10 @@ class CameraAppPipeline:
                         "draw_returned_tensor": False,
                         "renderer_fallback_reason": None,
                     }
-                    frame_tensor = None
-                    if torch is not None:
-                        if torch.is_tensor(frame_with_bbox):
-                            frame_tensor = frame_with_bbox
-                        elif isinstance(frame_with_bbox, np.ndarray):
-                            try:
-                                frame_tensor = torch.from_numpy(frame_with_bbox.copy()).permute(2, 0, 1).contiguous()
-                            except Exception as exc:
-                                self._log_cpu_fallback(f"CUDA overlay tensor conversion failed: {exc}")
-                    frame_tensor_available = frame_tensor is not None
-                    if frame_tensor_available:
-                        overlay_tensor = self._compose_cuda_overlay(frame_tensor, density_result, render_size)
-                        if overlay_tensor is not None:
-                            preview_payload = self._generate_cuda_preview_payload(overlay_tensor, win_w, win_h)
-                            if preview_payload is not None:
-                                preview_frame = preview_payload.frame
-                            else:
-                                try:
-                                    preview_frame = self._tensor_to_preview_frame(overlay_tensor)
-                                except Exception as exc:
-                                    preview_frame = frame_with_bbox.detach().permute(1, 2, 0).cpu().numpy()
-                                    self._log_cpu_fallback(f"CUDA preview conversion failed: {exc}")
-                        else:
-                            self._log_cpu_fallback("CUDA overlay failed to produce a tensor.")
-                    if preview_frame is None:
-                        if frame_tensor_available:
-                            frame_for_cpu = frame_with_bbox.detach().permute(1, 2, 0).cpu().numpy()
-                        else:
-                            frame_for_cpu = frame_with_bbox
-                        preview_frame = self._cpu_preview_render(frame_for_cpu, density_result, render_size, win_size)
-                        preview_payload = None
+                    preview_payload = None
+                    preview_frame = frame_with_bbox
+                    if torch is not None and torch.is_tensor(preview_frame):
+                        preview_frame = preview_frame.detach().permute(1, 2, 0).cpu().numpy()
 
                     yolo_time = thr_yolo.duration
                     density_time = thr_density.duration
@@ -738,6 +699,10 @@ class CameraAppPipeline:
                         metrics["yolo_detection_payload"] = detection_payload
                     else:
                         metrics["yolo_detection_payload"] = {"clusters": [], "detections": []}
+                    mask_payload = None
+                    if self.yolo_counter and hasattr(self.yolo_counter, 'get_mask_payload'):
+                        mask_payload = self.yolo_counter.get_mask_payload()
+                    metrics["yolo_mask_payload"] = mask_payload
                     self.latest_metrics = metrics
                     if self.profile_active:
                         self.profile_log.append(metrics.copy())

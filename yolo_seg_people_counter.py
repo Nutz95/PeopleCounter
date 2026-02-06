@@ -1,3 +1,4 @@
+import base64
 import copy
 import cv2
 import numpy as np
@@ -8,7 +9,6 @@ from tiling_manager import TilingManager
 from engines.yolo.tensorrt_engine import YoloTensorRTEngine
 from engines.yolo.openvino_engine import YoloOpenVINOEngine
 from engines.yolo.ultralytics_engine import YoloUltralyticsEngine
-from engines.yolo.renderers import CpuMaskRenderer, GpuMaskRenderer
 
 try:
     import torch
@@ -45,15 +45,16 @@ class YoloSegPeopleCounter:
         self._gpu_available = bool(torch is not None and torch.cuda.is_available())
         self.preprocessor_mode = 'cpu'
         self.renderer_mode = 'cpu'
-        self.renderer = CpuMaskRenderer()
         self.active_pipeline_mode = 'cpu'
         self._cuda_helpers_initialized = False
         self._cuda_frame_stager = None
         self._cuda_tiler = None
         self.last_pipeline_report = {}
         self.last_detection_payload = {'clusters': [], 'detections': []}
-        self._renderer_fallback_reason = None
-        self._renderer_fallback_last_reason = None
+        self.mask_downscale = max(1, int(os.environ.get('YOLO_MASK_DOWNSCALE', '4')))
+        self.mask_format = os.environ.get('YOLO_MASK_FORMAT', 'webp').lower()
+        self.mask_quality = min(100, max(10, int(os.environ.get('YOLO_MASK_QUALITY', '60'))))
+        self.last_mask_payload = None
 
         if self.backend == 'tensorrt_native':
             use_gpu_pre = os.environ.get('YOLO_USE_GPU_PREPROC', '0') == '1'
@@ -99,27 +100,15 @@ class YoloSegPeopleCounter:
         clusters = self.tiler.fuse_results(all_boxes, all_scores, all_masks, iou_threshold=0.3)
         total_count = len(clusters)
         self._capture_detection_payload(clusters, all_boxes, all_scores, all_masks, all_visible_boxes)
+        image_out = image.copy()
+        self.last_mask_payload = self._build_mask_payload(all_boxes, all_masks, all_visible_boxes, (h, w))
         t_fuse = time.time() - t_fuse_start
 
         # --- Draw (optimized combined mask) ---
         if self.debug_mode:
-            print(f"[DEBUG] YOLO pipeline tiles={len(tiles)} preproc={self.preprocessor_mode} renderer={self.renderer_mode}")
+            print(f"[DEBUG] YOLO pipeline tiles={len(tiles)} preproc={self.preprocessor_mode}")
         t_draw_start = time.time()
-        return_tensor = self.active_pipeline_mode == 'gpu_full' and self.renderer_mode == 'gpu'
-        if draw_boxes:
-            image_out = self.renderer.render(
-                image.copy(),
-                clusters,
-                all_boxes,
-                all_masks,
-                all_visible_boxes,
-                metadata,
-                draw_boxes,
-                self.debug_mode,
-                return_tensor=return_tensor,
-            )
-        else:
-            image_out = image.copy()
+        image_out = image.copy()
         if draw_tiles:
             image_out = self._apply_debug_tiling_overlay(
                 image_out,
@@ -133,28 +122,16 @@ class YoloSegPeopleCounter:
 
         # On log le détail si on est en décalage
         total_internal = t_crop + t_inf + t_fuse + t_draw
-        render_metrics = getattr(self.renderer, 'last_draw_metrics', {}) or {}
-        draw_kernel_ms = render_metrics.get('draw_kernel_ms')
-        draw_blend_ms = render_metrics.get('draw_blend_ms')
-        draw_convert_ms = render_metrics.get('draw_convert_ms')
-        draw_total_ms = render_metrics.get('draw_total_ms')
-        draw_returned_tensor = bool(render_metrics.get('returned_tensor'))
         self.last_internal = {
             't_crop': t_crop,
             't_inf': t_inf,
             't_fuse': t_fuse,
             't_draw': t_draw,
-            't_draw_kernel_ms': draw_kernel_ms,
-            't_draw_blend_ms': draw_blend_ms,
-            't_draw_convert_ms': draw_convert_ms,
-            't_draw_total_ms': draw_total_ms,
-            'renderer_returned_tensor': draw_returned_tensor,
-            'renderer_fallback_reason': self._renderer_fallback_reason,
             'total_internal': total_internal
         }
         print(f"  [YOLO DETAILED] Crop={t_crop*1000:.1f}ms | Infer={t_inf*1000:.1f}ms | Fuse={t_fuse*1000:.1f}ms | Draw={t_draw*1000:.1f}ms | Total={total_internal*1000:.1f}ms")
 
-        return int(total_count), image_out if draw_boxes else int(total_count)
+        return int(total_count), image_out
 
     def set_debug_mode(self, enabled):
         self.debug_mode = bool(enabled)
@@ -167,8 +144,7 @@ class YoloSegPeopleCounter:
         if hasattr(self.engine, 'set_preprocessor_mode'):
             self.engine.set_preprocessor_mode(preproc_mode)
         self.preprocessor_mode = preproc_mode
-        renderer_mode = 'gpu' if resolved in ('gpu', 'gpu_full') else 'cpu'
-        self._set_renderer_mode(renderer_mode)
+        self.renderer_mode = 'cpu'
         self.active_pipeline_mode = resolved
         self.last_pipeline_report = self._build_pipeline_report()
         return resolved
@@ -210,25 +186,6 @@ class YoloSegPeopleCounter:
         self._cuda_helpers_initialized = True
         return True
 
-    def _set_renderer_mode(self, mode):
-        if mode == 'gpu' and self._gpu_available:
-            try:
-                self.renderer = GpuMaskRenderer()
-                self.renderer_mode = 'gpu'
-                self._renderer_fallback_reason = None
-                self._renderer_fallback_last_reason = None
-                return
-            except EnvironmentError as exc:
-                reason = str(exc)
-                self._renderer_fallback_reason = reason
-                if self._renderer_fallback_last_reason != reason:
-                    print(f"[CPU FALLBACK] GPU renderer unavailable: {reason}")
-                    self._renderer_fallback_last_reason = reason
-        else:
-            self._renderer_fallback_reason = None
-            self._renderer_fallback_last_reason = None
-        self.renderer = CpuMaskRenderer()
-        self.renderer_mode = 'cpu'
 
     def get_detection_payload(self):
         return copy.deepcopy(self.last_detection_payload)
@@ -274,6 +231,132 @@ class YoloSegPeopleCounter:
             'clusters': clusters_summary,
             'detections': detections,
         }
+
+    def get_mask_payload(self):
+        if not self.last_mask_payload:
+            return None
+        return dict(self.last_mask_payload)
+
+    def _build_mask_payload(self, all_boxes, all_masks, all_visible_boxes, frame_shape):
+        mask_full = self._compose_full_mask(all_boxes, all_masks, all_visible_boxes, frame_shape)
+        if mask_full is None or mask_full.sum() == 0:
+            return None
+        mask_small = self._downscale_mask(mask_full)
+        encoded = self._encode_mask_blob(mask_small)
+        if encoded is None:
+            return None
+        payload = {
+            'blob': base64.b64encode(encoded).decode('ascii'),
+            'format': self.mask_format,
+            'width': mask_small.shape[1],
+            'height': mask_small.shape[0],
+            'scale_x': frame_shape[1] / mask_small.shape[1] if mask_small.shape[1] else 1.0,
+            'scale_y': frame_shape[0] / mask_small.shape[0] if mask_small.shape[0] else 1.0,
+            'downscale': self.mask_downscale,
+        }
+        return payload
+
+    def _compose_full_mask(self, all_boxes, all_masks, all_visible_boxes, frame_shape):
+        h, w = frame_shape
+        if h <= 0 or w <= 0:
+            return None
+        mask_full = np.zeros((h, w), dtype=np.uint8)
+        if not all_masks:
+            return mask_full
+        use_visible = len(all_visible_boxes) == len(all_masks)
+        fallback_boxes = all_boxes if len(all_boxes) == len(all_masks) else None
+        for idx, mask_fragment in enumerate(all_masks):
+            normalized = self._normalize_mask_fragment(mask_fragment)
+            if normalized is None:
+                continue
+            bbox = all_visible_boxes[idx] if use_visible else (fallback_boxes[idx] if fallback_boxes else None)
+            if not bbox:
+                continue
+            vx1, vy1, vx2, vy2 = [float(v) for v in bbox]
+            vx1, vy1, vx2, vy2 = self._clip_bbox(vx1, vy1, vx2, vy2, frame_shape)
+            roi_w = int(round(vx2 - vx1))
+            roi_h = int(round(vy2 - vy1))
+            if roi_w <= 0 or roi_h <= 0:
+                continue
+            mask_resized = cv2.resize(normalized, (roi_w, roi_h), interpolation=cv2.INTER_LINEAR)
+            mask_bin = (mask_resized > 0.5).astype(np.uint8) * 255
+            intersect_x1 = int(max(0, vx1))
+            intersect_y1 = int(max(0, vy1))
+            intersect_x2 = int(min(w, vx2))
+            intersect_y2 = int(min(h, vy2))
+            if intersect_x2 <= intersect_x1 or intersect_y2 <= intersect_y1:
+                continue
+            mask_shape_y, mask_shape_x = mask_bin.shape
+            mask_x1 = max(0, int(intersect_x1 - vx1))
+            mask_y1 = max(0, int(intersect_y1 - vy1))
+            if mask_x1 >= mask_shape_x or mask_y1 >= mask_shape_y:
+                continue
+            width_target = intersect_x2 - intersect_x1
+            height_target = intersect_y2 - intersect_y1
+            available_w = mask_shape_x - mask_x1
+            available_h = mask_shape_y - mask_y1
+            draw_w = min(width_target, available_w)
+            draw_h = min(height_target, available_h)
+            if draw_w <= 0 or draw_h <= 0:
+                continue
+            mask_x2 = mask_x1 + draw_w
+            mask_y2 = mask_y1 + draw_h
+            intersect_x2 = intersect_x1 + draw_w
+            intersect_y2 = intersect_y1 + draw_h
+            mask_slice = mask_bin[mask_y1:mask_y2, mask_x1:mask_x2]
+            if mask_slice.size == 0:
+                continue
+            target = mask_full[intersect_y1:intersect_y2, intersect_x1:intersect_x2]
+            mask_full[intersect_y1:intersect_y2, intersect_x1:intersect_x2] = np.maximum(target, mask_slice)
+        return mask_full
+
+    def _normalize_mask_fragment(self, fragment):
+        if fragment is None:
+            return None
+        if torch is not None and torch.is_tensor(fragment):
+            if fragment.numel() == 0:
+                return None
+            array = fragment.detach().cpu().numpy()
+        else:
+            array = np.asarray(fragment)
+        if array.ndim > 2:
+            if array.shape[0] in (1,) and array.ndim == 3:
+                array = array.squeeze(0)
+            elif array.shape[-1] == 1:
+                array = array[..., 0]
+        if array.size == 0:
+            return None
+        return array.astype(np.float32, copy=False)
+
+    def _downscale_mask(self, mask_full):
+        if self.mask_downscale <= 1:
+            return mask_full
+        target_h = max(1, mask_full.shape[0] // self.mask_downscale)
+        target_w = max(1, mask_full.shape[1] // self.mask_downscale)
+        return cv2.resize(mask_full, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+
+    def _encode_mask_blob(self, mask_small, fmt_override=None):
+        fmt = fmt_override if fmt_override in ('webp', 'png') else (self.mask_format if self.mask_format in ('webp', 'png') else 'png')
+        params = []
+        if fmt == 'webp':
+            params = [cv2.IMWRITE_WEBP_QUALITY, self.mask_quality]
+        elif fmt == 'png':
+            params = [cv2.IMWRITE_PNG_COMPRESSION, 3]
+        success, encoded = cv2.imencode(f'.{fmt}', mask_small, params)
+        if not success:
+            if fmt != 'png':
+                return self._encode_mask_blob(mask_small, fmt_override='png')
+            return None
+        return encoded.tobytes()
+
+    def _clip_bbox(self, x1, y1, x2, y2, frame_shape):
+        h, w = frame_shape
+        return (
+            max(0, min(w, x1)),
+            max(0, min(h, y1)),
+            max(0, min(w, x2)),
+            max(0, min(h, y2)),
+        )
 
     def _prepare_tiles(self, image_rgb, use_tiling, global_tile_only=False):
         if self._is_full_gpu_pipeline():

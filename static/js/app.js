@@ -35,8 +35,74 @@ const overlayDrawConvertValue = document.getElementById('overlayDrawConvertValue
 const overlayDrawReturnedValue = document.getElementById('overlayDrawReturnedValue');
 const overlayRendererFallbackValue = document.getElementById('overlayRendererFallbackValue');
 const graphEmpty = document.getElementById('graphEmpty');
+const maskOverlay = document.getElementById('maskOverlay');
+const maskToggle = document.getElementById('maskToggle');
+const videoStream = document.getElementById('videoStream');
+const maskCtx = maskOverlay ? maskOverlay.getContext('2d') : null;
 const metricsInterval = 1100;
 const MAX_LOGS = 6;
+let maskVisible = true;
+let lastMaskPayload = null;
+let maskRenderToken = 0;
+
+function updateMaskButton(enabled) {
+  if (!maskToggle) {
+    return;
+  }
+  const text = enabled ? 'Hide mask overlay' : 'Show mask overlay';
+  maskToggle.textContent = text;
+  maskToggle.dataset.state = enabled ? 'on' : 'off';
+}
+
+function syncMaskCanvasSize() {
+  if (!maskOverlay || !videoStream) {
+    return;
+  }
+  const width = Math.max(1, Math.floor(videoStream.clientWidth || 0));
+  const height = Math.max(1, Math.floor(videoStream.clientHeight || 0));
+  maskOverlay.width = width;
+  maskOverlay.height = height;
+  maskOverlay.style.width = `${width}px`;
+  maskOverlay.style.height = `${height}px`;
+}
+
+function renderMaskOverlay() {
+  if (!maskCtx || !maskOverlay) {
+    return;
+  }
+  maskCtx.clearRect(0, 0, maskOverlay.width, maskOverlay.height);
+  if (!maskVisible || !lastMaskPayload || !lastMaskPayload.blob) {
+    return;
+  }
+  syncMaskCanvasSize();
+  const width = maskOverlay.width;
+  const height = maskOverlay.height;
+  if (!width || !height) {
+    return;
+  }
+  const token = ++maskRenderToken;
+  const img = new Image();
+  img.onload = () => {
+    if (token !== maskRenderToken) {
+      return;
+    }
+    maskCtx.clearRect(0, 0, width, height);
+    maskCtx.save();
+    maskCtx.globalAlpha = 0.55;
+    maskCtx.drawImage(img, 0, 0, width, height);
+    maskCtx.globalCompositeOperation = 'source-in';
+    maskCtx.fillStyle = 'rgba(255, 95, 66, 0.85)';
+    maskCtx.fillRect(0, 0, width, height);
+    maskCtx.restore();
+  };
+  img.onerror = () => {
+    if (token === maskRenderToken) {
+      maskCtx.clearRect(0, 0, width, height);
+    }
+  };
+  const format = lastMaskPayload.format || 'png';
+  img.src = `data:image/${format};base64,${lastMaskPayload.blob}`;
+}
 
 function sendControl(payload) {
   fetch(baseUrl + '/api/control', {
@@ -179,12 +245,30 @@ overlayToggle.addEventListener('click', () => {
   updateOverlayButton(nextState);
   sendControl({ overlay: nextState });
 });
+if (maskToggle) {
+  maskToggle.addEventListener('click', () => {
+    maskVisible = !maskVisible;
+    updateMaskButton(maskVisible);
+    renderMaskOverlay();
+  });
+}
 if (pipelineModeSelect) {
   pipelineModeSelect.addEventListener('change', (event) => {
     sendControl({ pipeline_mode: event.target.value });
   });
 }
 updateOverlayButton(overlayToggle.dataset.state === 'on');
+updateMaskButton(maskVisible);
+if (videoStream) {
+  videoStream.addEventListener('load', () => {
+    syncMaskCanvasSize();
+    renderMaskOverlay();
+  });
+}
+window.addEventListener('resize', () => {
+  syncMaskCanvasSize();
+  renderMaskOverlay();
+});
 
 async function refreshMetrics() {
   try {
@@ -313,6 +397,8 @@ async function refreshMetrics() {
       overlayCpuPreviewValue.textContent = formatMsValue(data.overlay_cpu_preview_ms);
     }
     updateProfileLog(data.profile_log || []);
+    lastMaskPayload = data.yolo_mask_payload || null;
+    renderMaskOverlay();
   } catch (error) {
     fpsStatus.textContent = 'Waiting for metrics...';
     console.warn('Metrics fetch failed', error);
@@ -365,6 +451,8 @@ window.addEventListener('keydown', (event) => {
   }
 });
 document.addEventListener('DOMContentLoaded', () => {
+  syncMaskCanvasSize();
+  renderMaskOverlay();
   refreshMetrics();
   setInterval(refreshMetrics, metricsInterval);
 });
