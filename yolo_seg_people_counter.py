@@ -11,6 +11,7 @@ from tiling_manager import TilingManager
 from engines.yolo.tensorrt_engine import YoloTensorRTEngine
 from engines.yolo.openvino_engine import YoloOpenVINOEngine
 from engines.yolo.ultralytics_engine import YoloUltralyticsEngine
+from cuda_profiler import cuda_profiler_enabled, cuda_profiler_start, cuda_profiler_stop
 
 try:
     import torch
@@ -38,6 +39,7 @@ class YoloSegPeopleCounter:
         # On augmente le nombre de workers pour couvrir les 28 tuiles du mode 4K en parallèle
         max_workers = min(32, (os.cpu_count() or 4) * 2)
         self.pool = ThreadPoolExecutor(max_workers=max_workers)
+        self._mask_encoder = ThreadPoolExecutor(max_workers=2)
         self.last_perf = {}
         self.last_internal = {}
         self.last_device = "Unknown"
@@ -45,6 +47,8 @@ class YoloSegPeopleCounter:
         self.pipeline_mode = os.environ.get('YOLO_PIPELINE_MODE', 'auto').lower()
         self._gpu_render_flag = os.environ.get('YOLO_USE_GPU_RENDER', '0') == '1'
         self._gpu_available = bool(torch is not None and torch.cuda.is_available())
+        self._cuda_profiler_enabled = cuda_profiler_enabled() and self._gpu_available
+        self.last_cuda_profiler_ms = None
         self.preprocessor_mode = 'cpu'
         self.renderer_mode = 'cpu'
         self.active_pipeline_mode = 'cpu'
@@ -73,6 +77,23 @@ class YoloSegPeopleCounter:
         self.configure_pipeline(self.pipeline_mode)
 
     def count_people(self, image, tile_size=640, draw_boxes=True, use_tiling=True, draw_tiles=False, global_tile_only=False):
+        profiler_start_ts = self._maybe_start_cuda_profiler()
+        try:
+            return self._count_people_impl(
+                image,
+                tile_size=tile_size,
+                draw_boxes=draw_boxes,
+                use_tiling=use_tiling,
+                draw_tiles=draw_tiles,
+                global_tile_only=global_tile_only,
+            )
+        finally:
+            profiler_ms = self._maybe_stop_cuda_profiler(profiler_start_ts)
+            self.last_cuda_profiler_ms = profiler_ms
+            if isinstance(self.last_internal, dict):
+                self.last_internal['t_profile'] = profiler_ms
+
+    def _count_people_impl(self, image, tile_size=640, draw_boxes=True, use_tiling=True, draw_tiles=False, global_tile_only=False):
         t0_total = time.time()
         image_rgb = image[..., ::-1].copy()
         h, w = image_rgb.shape[:2]
@@ -129,7 +150,8 @@ class YoloSegPeopleCounter:
             't_inf': t_inf,
             't_fuse': t_fuse,
             't_draw': t_draw,
-            'total_internal': total_internal
+            'total_internal': total_internal,
+            't_profile': None,
         }
         print(f"  [YOLO DETAILED] Crop={t_crop*1000:.1f}ms | Infer={t_inf*1000:.1f}ms | Fuse={t_fuse*1000:.1f}ms | Draw={t_draw*1000:.1f}ms | Total={total_internal*1000:.1f}ms")
 
@@ -187,6 +209,28 @@ class YoloSegPeopleCounter:
             return False
         self._cuda_helpers_initialized = True
         return True
+
+    def _should_profile_cuda(self):
+        return bool(self._cuda_profiler_enabled and self._gpu_available and self._is_full_gpu_pipeline())
+
+    def _maybe_start_cuda_profiler(self):
+        if not self._should_profile_cuda():
+            return None
+        started = cuda_profiler_start()
+        if not started:
+            if self.debug_mode:
+                print("[DEBUG] CUDA profiler start failed")
+            return None
+        return time.monotonic()
+
+    def _maybe_stop_cuda_profiler(self, start_ts):
+        if start_ts is None:
+            return None
+        stopped = cuda_profiler_stop()
+        if not stopped:
+            return None
+        elapsed_ms = (time.monotonic() - start_ts) * 1000.0
+        return max(0.0, elapsed_ms)
 
 
     def get_detection_payload(self):
@@ -253,12 +297,8 @@ class YoloSegPeopleCounter:
             print(f"[DEBUG] mask_small {mask_small.shape} nonzero {nonzero}/{total} ({coverage:.1f}%)")
         created_ts = time.time()
         created_iso = datetime.utcfromtimestamp(created_ts).isoformat() + "Z"
-        encoded = self._encode_mask_blob(mask_small)
-        if encoded is None:
-            return None
-        payload = {
-            'blob': base64.b64encode(encoded).decode('ascii'),
-            'format': self.mask_format,
+        encode_future = self._mask_encoder.submit(self._encode_mask_blob, mask_small)
+        payload_meta = {
             'width': mask_small.shape[1],
             'height': mask_small.shape[0],
             'scale_x': frame_shape[1] / mask_small.shape[1] if mask_small.shape[1] else 1.0,
@@ -266,6 +306,17 @@ class YoloSegPeopleCounter:
             'downscale': self.mask_downscale,
             'created_at': created_iso,
             'created_at_ts': created_ts,
+        }
+        try:
+            encoded = encode_future.result()
+        except Exception:
+            return None
+        if encoded is None:
+            return None
+        payload = {
+            'blob': base64.b64encode(encoded).decode('ascii'),
+            'format': self.mask_format,
+            **payload_meta,
         }
         return payload
 

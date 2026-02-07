@@ -12,6 +12,7 @@ DEFAULT_SOURCE="/dev/video0"
 SOURCE=""
 PROFILE_NAME=""
 POSITIONAL=()
+CUDA_PROFILE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -24,8 +25,12 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help|-h)
-            echo "Usage: $0 [source] [--profile name]"
+            echo "Usage: $0 [source] [--profile name] [--cuda-profile]"
             exit 0
+            ;;
+        --cuda-profile|--cuda-profiling)
+            CUDA_PROFILE=1
+            shift
             ;;
         *)
             POSITIONAL+=("$1")
@@ -101,16 +106,30 @@ else
     echo "⚠️ Profile '$PROFILE_NAME' not found (looking for $CONFIG_FILE); proceeding with defaults."
 fi
 DOCKER_ARGS+=("-e" "ACTIVE_PROFILE=$PROFILE_NAME")
+if [[ "$CUDA_PROFILE" -eq 1 ]]; then
+    DOCKER_ARGS+=("-e" "ENABLE_CUDA_PROFILING=1")
+fi
 
 echo "🌐 Web UI at http://localhost:5000 exposes profile controls, FPS, and the debug toggle."
 
+# Profiling command substitution
+ENTRY_COMMAND="python3 main.py"
+if [[ "$CUDA_PROFILE" -eq 1 ]]; then
+    ENTRY_COMMAND="nsys profile --force-overwrite true --trace=cuda --capture-range=cudaProfilerApi --output=people_counter python camera_app_pipeline.py && nsys export --report summary people_counter.qdstrm"
+fi
 echo "[DEBUG] Installation/Verif des dependances rapides..."
 # Run prepare_models.py inside the container to clone/install local lwcc if LWCC_GIT_URL is set
 # and pre-download optional YOLO models (controlled by YOLO_PREPARE env var).
 # We avoid installing 'lwcc' from PyPI here to prevent overriding local editable installs.
+EXTRA_INSTALLS=""
+DIAGNOSTIC_COMMANDS=""
+if [[ "$CUDA_PROFILE" -eq 1 ]]; then
+    EXTRA_INSTALLS="pip install --no-cache-dir cuda-python; "
+    DIAGNOSTIC_COMMANDS="./scripts/cuda_diag.sh"
+fi
 docker run --rm -it \
     "${DOCKER_ARGS[@]}" \
-    "$IMAGE_NAME" bash -c "set -e; if command -v nvidia-smi >/dev/null 2>&1; then echo '[containérisé] nvidia-smi'; nvidia-smi || true; else echo '[containérisé] nvidia-smi absent'; fi; if command -v nvcc >/dev/null 2>&1; then echo '[containérisé] nvcc --version'; nvcc --version || true; else echo '[containérisé] nvcc absent'; fi; apt-get update -qq; apt-get install -y --no-install-recommends git unzip ninja-build build-essential || true; if ! command -v nvcc >/dev/null 2>&1; then echo '⚠️ nvcc introuvable : votre image doit fournir un CUDA 13.x compat'; fi; python3 prepare_models.py; pip install --no-cache-dir flask screeninfo psutil matplotlib ninja; python3 main.py"
+    "$IMAGE_NAME" bash -c "set -e; if command -v nvidia-smi >/dev/null 2>&1; then echo '[containérisé] nvidia-smi'; nvidia-smi || true; else echo '[containérisé] nvidia-smi absent'; fi; if command -v nvcc >/dev/null 2>&1; then echo '[containérisé] nvcc --version'; nvcc --version || true; else echo '[containérisé] nvcc absent'; fi; apt-get update -qq; apt-get install -y --no-install-recommends git unzip ninja-build build-essential || true; if ! command -v nvcc >/dev/null 2>&1; then echo '⚠️ nvcc introuvable : votre image doit fournir un CUDA 13.x compat'; fi; python3 prepare_models.py; ${EXTRA_INSTALLS}pip install --no-cache-dir flask screeninfo psutil matplotlib ninja; ${DIAGNOSTIC_COMMANDS:+${DIAGNOSTIC_COMMANDS}; }${ENTRY_COMMAND}"
 
 echo "🌐 Visit http://localhost:5000 in your browser; pick a profile, start profiling, and watch the FPS overlay plus debug metrics without tailing logs."
 

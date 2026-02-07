@@ -1,4 +1,5 @@
 import cv2
+import json
 import sys
 import screeninfo
 import time
@@ -659,6 +660,8 @@ class CameraAppPipeline:
                     detection_payload = None
                     if self.yolo_counter and hasattr(self.yolo_counter, 'get_detection_payload'):
                         detection_payload = self.yolo_counter.get_detection_payload()
+                    yolo_profiler_ms = getattr(self.yolo_counter, 'last_cuda_profiler_ms', None)
+                    density_profiler_ms = getattr(self.processor, 'last_cuda_profiler_ms', None)
                     metrics = {
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                         "yolo_count": int(yolo_count),
@@ -682,6 +685,7 @@ class CameraAppPipeline:
                         "yolo_pre_ms": float(yp.get('preprocess', 0) * 1000),
                         "yolo_gpu_ms": float(yp.get('infer', 0) * 1000),
                         "yolo_post_ms": float(yp.get('postprocess', 0) * 1000),
+                        "yolo_cuda_profiler_ms": float(yolo_profiler_ms) if yolo_profiler_ms is not None else None,
                         "yolo_pipeline_mode": self.yolo_pipeline_mode,
                         "yolo_pipeline_mode_effective": getattr(self.yolo_counter, 'active_pipeline_mode', self.yolo_pipeline_mode),
                         "yolo_preproc_mode": getattr(self.yolo_counter, 'preprocessor_mode', 'cpu'),
@@ -703,6 +707,7 @@ class CameraAppPipeline:
                         "density_pre_ms": float(dp.get('preprocess', 0) * 1000),
                         "density_gpu_ms": float(dp.get('infer', 0) * 1000),
                         "density_post_ms": float(dp.get('postprocess', 0) * 1000),
+                        "density_cuda_profiler_ms": float(density_profiler_ms) if density_profiler_ms is not None else None,
                         "history": history_snapshot,
                         "yolo_pipeline_report": pipeline_report
                     }
@@ -743,9 +748,24 @@ class CameraAppPipeline:
                             print(f"[WARN] Metrics callback failed: {exc}")
                     
                     if self.extreme_debug:
-                        print(f"Metrics: YOLO={yolo_count} ({yolo_time:.3f}s on {yolo_dev}) | "
-                            f"Density={density_count:.1f} ({density_time:.3f}s on {dens_dev}) | "
-                            f"CPU: {cpu_usage}% | Total: {total_time:.3f}s | FPS: {fps:.2f}")
+                        summary = {
+                            "fps": round(fps, 2),
+                            "cpu_usage": round(cpu_usage, 1),
+                            "capture_ms": round(capture_time * 1000, 1),
+                            "pipeline_pre_ms": round(preprocess_duration * 1000, 1),
+                            "pipeline_post_ms": round(postprocess_duration * 1000, 1),
+                            "yolo_time_ms": round(yolo_time * 1000, 1),
+                            "density_time_ms": round(density_time * 1000, 1),
+                            "mask_latency_ms": metrics.get("yolo_mask_payload_latency_ms"),
+                            "mask_created_at": metrics.get("yolo_mask_payload_created_at"),
+                            "mask_sent_at": metrics.get("yolo_mask_payload_sent_at"),
+                            "preprocessor_mode": metrics.get("yolo_preproc_mode"),
+                            "renderer_mode": metrics.get("yolo_renderer_mode"),
+                            "yolo_pipeline_mode": metrics.get("yolo_pipeline_mode"),
+                            "yolo_cuda_profiler_ms": metrics.get("yolo_cuda_profiler_ms"),
+                            "density_cuda_profiler_ms": metrics.get("density_cuda_profiler_ms"),
+                        }
+                        print(f"[DEBUG] AGGREGATED METRICS {json.dumps(summary)}")
 
                     if self.use_gui:
                         cv2.imshow("People Count", preview_frame)

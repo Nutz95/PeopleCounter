@@ -51,6 +51,7 @@ import torch
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from cuda_profiler import cuda_profiler_enabled, cuda_profiler_start, cuda_profiler_stop
 
 class PeopleCounterProcessor:
     def __init__(self, model_name="CSRNet", model_weights="SHA", backend="torch", openvino_device="GPU", density_threshold=15):
@@ -82,6 +83,8 @@ class PeopleCounterProcessor:
         self.last_perf = {'preprocess': 0, 'h2d': 0, 'infer': 0, 'd2h': 0, 'postprocess': 0}
         max_workers = min(32, (os.cpu_count() or 4) * 2)
         self.pool = ThreadPoolExecutor(max_workers=max_workers)
+        self._cuda_profiler_enabled = cuda_profiler_enabled() and torch.cuda.is_available()
+        self.last_cuda_profiler_ms = None
 
         if self.backend == "tensorrt":
             engine_path = os.environ.get("LWCC_TRT_ENGINE", "dm_count.engine")
@@ -275,6 +278,26 @@ class PeopleCounterProcessor:
             # Pour torch, on va juste retourner un masque vide ou simulé
             return frame, np.zeros_like(frame), int(count), np.zeros(frame.shape[:2], dtype=np.uint8)
 
+    def _should_profile_cuda(self):
+        return bool(self._cuda_profiler_enabled and torch.cuda.is_available() and self.backend == "tensorrt" and self.trt_context is not None)
+
+    def _maybe_start_cuda_profiler(self):
+        if not self._should_profile_cuda():
+            return None
+        started = cuda_profiler_start()
+        if not started:
+            return None
+        return time.monotonic()
+
+    def _maybe_stop_cuda_profiler(self, start_ts):
+        if start_ts is None:
+            return None
+        stopped = cuda_profiler_stop()
+        if not stopped:
+            return None
+        elapsed_ms = (time.monotonic() - start_ts) * 1000.0
+        return max(0.0, elapsed_ms)
+
     def process_batch(self, frames):
         """
         Traite un lot (batch) d'images en une seule passe GPU si possible.
@@ -282,6 +305,8 @@ class PeopleCounterProcessor:
         num_frames = len(frames)
         if num_frames == 0:
             return [], [], [], []
+
+        self.last_cuda_profiler_ms = None
 
         if self.backend == "tensorrt" and self.trt_context is not None:
             # Récupération des dimensions attendues (Batch, C, H, W)
@@ -293,58 +318,65 @@ class PeopleCounterProcessor:
             all_masks = []
             self.last_perf = {'preprocess': 0, 'h2d': 0, 'infer': 0, 'd2h': 0, 'postprocess': 0}
 
-            with self.lock:
-                def process_quad_local(f, target_h, target_w):
-                    if f.shape[0] != target_h or f.shape[1] != target_w:
-                        f = cv2.resize(f, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-                    img_rgb = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
-                    img_floated = img_rgb.astype(np.float32) / 255.0
-                    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-                    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-                    img_floated = (img_floated - mean) / std
-                    return np.transpose(img_floated, (2, 0, 1))
+            def _run_trt_batches():
+                with self.lock:
+                    def process_quad_local(f, target_h, target_w):
+                        if f.shape[0] != target_h or f.shape[1] != target_w:
+                            f = cv2.resize(f, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+                        img_rgb = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+                        img_floated = img_rgb.astype(np.float32) / 255.0
+                        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+                        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+                        img_floated = (img_floated - mean) / std
+                        return np.transpose(img_floated, (2, 0, 1))
 
-                for i in range(0, num_frames, max_batch):
-                    batch_chunk = frames[i:i+max_batch]
-                    actual_b = len(batch_chunk)
-                    
-                    t0 = time.time()
-                    batch_imgs = np.zeros((actual_b, c, target_h, target_w), dtype=np.float32)
-                    processed = [process_quad_local(f, target_h, target_w) for f in batch_chunk]
-                    for j, img in enumerate(processed): batch_imgs[j] = img
-                    input_data = np.ascontiguousarray(batch_imgs)
-                    self.last_perf['preprocess'] += time.time() - t0
-                    
-                    # Copy to device
-                    required_size = input_data.nbytes
-                    t1 = time.time()
-                    self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, required_size, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
-                    self.last_perf['h2d'] += time.time() - t1
+                    for i in range(0, num_frames, max_batch):
+                        batch_chunk = frames[i:i+max_batch]
+                        actual_b = len(batch_chunk)
+                        
+                        t0 = time.time()
+                        batch_imgs = np.zeros((actual_b, c, target_h, target_w), dtype=np.float32)
+                        processed = [process_quad_local(f, target_h, target_w) for f in batch_chunk]
+                        for j, img in enumerate(processed): batch_imgs[j] = img
+                        input_data = np.ascontiguousarray(batch_imgs)
+                        self.last_perf['preprocess'] += time.time() - t0
+                        
+                        # Copy to device
+                        required_size = input_data.nbytes
+                        t1 = time.time()
+                        self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, required_size, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
+                        self.last_perf['h2d'] += time.time() - t1
 
-                    t2 = time.time()
-                    self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
-                    self.trt_context.execute_async_v3(self.trt_stream)
-                    self.cudart.cudaStreamSynchronize(self.trt_stream)
-                    self.last_perf['infer'] += time.time() - t2
-                    
-                    t3 = time.time()
-                    for output in self.trt_outputs:
-                        self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
-                    self.cudart.cudaStreamSynchronize(self.trt_stream)
-                    self.last_perf['d2h'] += time.time() - t3
-                    
-                    t4 = time.time()
-                    res = self.trt_outputs[0]['host'] # Buffer d'allocation
-                    out_name = self.trt_outputs[0]['name']
-                    out_shape = self.trt_context.get_tensor_shape(out_name)
-                    real_h, real_w = out_shape[2], out_shape[3]
-                    
-                    for j in range(actual_b):
-                        # On ne prend que la zone réellement générée par le modèle
-                        density_map = res[j, 0, :real_h, :real_w]
-                        all_counts.append(float(np.sum(density_map)))
-                        all_colors.append(density_map.copy())
-                    self.last_perf['postprocess'] += time.time() - t4
+                        t2 = time.time()
+                        self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
+                        self.trt_context.execute_async_v3(self.trt_stream)
+                        self.cudart.cudaStreamSynchronize(self.trt_stream)
+                        self.last_perf['infer'] += time.time() - t2
+                        
+                        t3 = time.time()
+                        for output in self.trt_outputs:
+                            self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
+                        self.cudart.cudaStreamSynchronize(self.trt_stream)
+                        self.last_perf['d2h'] += time.time() - t3
+                        
+                        t4 = time.time()
+                        res = self.trt_outputs[0]['host'] # Buffer d'allocation
+                        out_name = self.trt_outputs[0]['name']
+                        out_shape = self.trt_context.get_tensor_shape(out_name)
+                        real_h, real_w = out_shape[2], out_shape[3]
+                        
+                        for j in range(actual_b):
+                            # On ne prend que la zone réellement générée par le modèle
+                            density_map = res[j, 0, :real_h, :real_w]
+                            all_counts.append(float(np.sum(density_map)))
+                            all_colors.append(density_map.copy())
+                        self.last_perf['postprocess'] += time.time() - t4
+
+            profiler_start_ts = self._maybe_start_cuda_profiler()
+            try:
+                _run_trt_batches()
+            finally:
+                self.last_cuda_profiler_ms = self._maybe_stop_cuda_profiler(profiler_start_ts)
 
             # Post-processing commun
             t_final_start = time.time()
