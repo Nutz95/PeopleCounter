@@ -46,6 +46,8 @@ const maskOverlay = document.getElementById('maskOverlay');
 const maskToggle = document.getElementById('maskToggle');
 const videoStream = document.getElementById('videoStream');
 const maskCtx = maskOverlay ? maskOverlay.getContext('2d') : null;
+const maskLatencyChart = document.getElementById('maskLatencyChart');
+const maskLatencyCtx = maskLatencyChart ? maskLatencyChart.getContext('2d') : null;
 const metricsInterval = 1100;
 const METRICS_MIN_INTERVAL = 100;
 let metricsTimer = null;
@@ -56,6 +58,10 @@ let maskRenderToken = 0;
 let lastMaskTiming = { created: null, sent: null, latency: null };
 let maskReceivedIso = null;
 let maskDisplayedIso = null;
+const maskLatencyHistory = [];
+const MAX_MASK_LATENCY_SAMPLES = 36;
+const FPS_TARGET_HIGH_MS = 1000 / 30;
+const FPS_TARGET_LOW_MS = 1000 / 25;
 
 function updateMaskButton(enabled) {
   if (!maskToggle) {
@@ -128,6 +134,130 @@ function computeDisplayLatency() {
     return null;
   }
   return displayedTs - createdTs;
+}
+
+function recordMaskLatencySample() {
+  const createdTs = lastMaskTiming.created ? Date.parse(lastMaskTiming.created) : NaN;
+  const sentTs = lastMaskTiming.sent ? Date.parse(lastMaskTiming.sent) : NaN;
+  const receivedTs = maskReceivedIso ? Date.parse(maskReceivedIso) : NaN;
+  const displayedTs = maskDisplayedIso ? Date.parse(maskDisplayedIso) : NaN;
+  if (!Number.isFinite(createdTs) || !Number.isFinite(sentTs)) {
+    return;
+  }
+  const sendLatency = Math.max(0, sentTs - createdTs);
+  const backendLatency = (typeof lastMaskTiming.latency === 'number' && Number.isFinite(lastMaskTiming.latency))
+    ? lastMaskTiming.latency
+    : sendLatency;
+  const renderLatency = Number.isFinite(displayedTs) && Number.isFinite(receivedTs)
+    ? Math.max(0, displayedTs - receivedTs)
+    : null;
+  const totalLatency = Number.isFinite(displayedTs)
+    ? Math.max(0, displayedTs - createdTs)
+    : null;
+  maskLatencyHistory.push({
+    backend: backendLatency,
+    render: renderLatency,
+    total: totalLatency,
+    payload: sendLatency,
+  });
+  if (maskLatencyHistory.length > MAX_MASK_LATENCY_SAMPLES) {
+    maskLatencyHistory.shift();
+  }
+  drawMaskLatencyGraph();
+}
+
+function drawMaskLatencyGraph() {
+  if (!maskLatencyChart || !maskLatencyCtx) {
+    return;
+  }
+  const bounds = maskLatencyChart.getBoundingClientRect();
+  const width = bounds.width;
+  const height = bounds.height;
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  maskLatencyChart.width = width * dpr;
+  maskLatencyChart.height = height * dpr;
+  maskLatencyCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  maskLatencyCtx.clearRect(0, 0, width, height);
+  if (!maskLatencyHistory.length) {
+    maskLatencyCtx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+    maskLatencyCtx.fillRect(0, 0, width, height);
+    maskLatencyCtx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    maskLatencyCtx.font = '0.8rem "Space Grotesk", "Poppins", sans-serif';
+    maskLatencyCtx.textAlign = 'center';
+    maskLatencyCtx.fillText('Waiting for mask timeline…', width / 2, height / 2 + 4);
+    return;
+  }
+  const accentColor = (getComputedStyle(document.documentElement).getPropertyValue('--accent') || '#2adfa5').trim() || '#2adfa5';
+  const renderColor = 'rgba(6, 189, 255, 0.95)';
+  const flattened = maskLatencyHistory.flatMap((sample) => [
+    Number(sample.backend) || 0,
+    Number(sample.render) || 0,
+    Number(sample.total) || 0,
+  ]);
+  const maxSample = Math.max(...flattened, FPS_TARGET_LOW_MS, FPS_TARGET_HIGH_MS);
+  const scaleMax = Math.max(maxSample * 1.1, FPS_TARGET_LOW_MS + 10, 12);
+  const steps = Math.max(maskLatencyHistory.length - 1, 1);
+  const stepX = width / steps;
+  const clampY = (value) => height - ((value / scaleMax) * (height - 24)) - 12;
+  maskLatencyCtx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+  maskLatencyCtx.lineWidth = 1;
+  for (let idx = 1; idx < 4; idx += 1) {
+    const y = (height / 4) * idx;
+    maskLatencyCtx.beginPath();
+    maskLatencyCtx.moveTo(0, y);
+    maskLatencyCtx.lineTo(width, y);
+    maskLatencyCtx.stroke();
+  }
+  const targetLines = [
+    { value: FPS_TARGET_HIGH_MS, label: '30 fps', color: 'rgba(255, 255, 255, 0.45)' },
+    { value: FPS_TARGET_LOW_MS, label: '25 fps', color: 'rgba(255, 255, 255, 0.25)' },
+  ];
+  maskLatencyCtx.save();
+  maskLatencyCtx.setLineDash([5, 4]);
+  maskLatencyCtx.lineWidth = 1;
+  targetLines.forEach(({ value, label, color }) => {
+    const y = clampY(value);
+    maskLatencyCtx.strokeStyle = color;
+    maskLatencyCtx.beginPath();
+    maskLatencyCtx.moveTo(0, y);
+    maskLatencyCtx.lineTo(width, y);
+    maskLatencyCtx.stroke();
+    maskLatencyCtx.fillStyle = color;
+    maskLatencyCtx.textAlign = 'right';
+    maskLatencyCtx.textBaseline = 'bottom';
+    maskLatencyCtx.font = '0.7rem "Space Grotesk", sans-serif';
+    maskLatencyCtx.fillText(label, width - 6, y - 4);
+  });
+  maskLatencyCtx.restore();
+  const drawSeries = (key, color, lineWidth) => {
+    let started = false;
+    maskLatencyCtx.beginPath();
+    maskLatencyCtx.lineWidth = lineWidth;
+    maskLatencyCtx.strokeStyle = color;
+    maskLatencyHistory.forEach((sample, idx) => {
+      const value = Number(sample[key]);
+      if (!Number.isFinite(value)) {
+        started = false;
+        return;
+      }
+      const x = idx * stepX;
+      const y = clampY(value);
+      if (!started) {
+        maskLatencyCtx.moveTo(x, y);
+        started = true;
+        return;
+      }
+      maskLatencyCtx.lineTo(x, y);
+    });
+    if (started) {
+      maskLatencyCtx.stroke();
+    }
+  };
+  drawSeries('backend', accentColor, 2.4);
+  drawSeries('render', renderColor, 1.6);
 }
 
 function getMaskDisplayGeometry(payload) {
@@ -221,6 +351,7 @@ function renderMaskOverlay() {
     maskCtx.fillRect(0, 0, width, height);
     maskCtx.restore();
     maskDisplayedIso = new Date().toISOString();
+    recordMaskLatencySample();
     updateMaskTimingCard();
   };
   img.onerror = () => {
@@ -396,6 +527,7 @@ if (videoStream) {
 window.addEventListener('resize', () => {
   syncMaskCanvasSize();
   renderMaskOverlay();
+  drawMaskLatencyGraph();
 });
 
 async function refreshMetrics() {
@@ -611,5 +743,6 @@ window.addEventListener('keydown', (event) => {
 document.addEventListener('DOMContentLoaded', () => {
   syncMaskCanvasSize();
   renderMaskOverlay();
+  drawMaskLatencyGraph();
   refreshMetrics();
 });

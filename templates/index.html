@@ -118,6 +118,16 @@
           <div class="metric-footnote" id="maskTimingExtra">received: — · displayed: —</div>
           <div class="metric-footnote" id="maskTimingTotal">total latency: —</div>
         </article>
+        <article class="metric-card wide latency-graph-card">
+          <div class="metric-title">Latency history</div>
+          <div class="metric-footnote">Target window: 25–30 fps (≤33 ms total latency).</div>
+          <canvas id="maskLatencyChart" width="540" height="170"></canvas>
+          <div class="latency-legend">
+            <span><span class="legend-dot backend"></span>Backend encode + send</span>
+            <span><span class="legend-dot render"></span>Render/composite</span>
+          </div>
+          <div class="metric-footnote">Graph plots the rolling [MASK TIMING] timeline; console logs record the same datapoints.</div>
+        </article>
       </div>
       <div class="control-group">
         <label class="toggle">

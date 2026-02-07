@@ -113,4 +113,4 @@ export DENSITY_THRESHOLD=15
    - [plans/documentation-refresh-plan.md](plans/documentation-refresh-plan.md)
    - [plans/mask_overlay_roadmap.md](plans/mask_overlay_roadmap.md)
    - [plans/mask_timing-plan.md](plans/mask_timing-plan.md)
-- A dedicated performance/latency plan will expand the mask/log story in Phase 3 with latency graphs and log cleanup.
+- A dedicated [plans/performance-latency-plan.md](plans/performance-latency-plan.md) now ties the latency graph, log cleanup, and 25–30 fps target into the observable flows so the UI cards reflect measurable goals.

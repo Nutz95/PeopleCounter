@@ -221,6 +221,48 @@ main.page-column {
   grid-column: span 2;
 }
 
+.latency-graph-card {
+  gap: 10px;
+}
+
+.latency-graph-card canvas {
+  width: 100%;
+  height: 170px;
+  border-radius: 14px;
+  background: rgba(6, 255, 203, 0.08);
+  border: 1px solid rgba(6, 255, 203, 0.25);
+  box-shadow: inset 0 0 16px rgba(0, 0, 0, 0.45);
+}
+
+.latency-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.65);
+  flex-wrap: wrap;
+}
+
+.latency-legend span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.legend-dot.backend {
+  background: var(--accent);
+}
+
+.legend-dot.render {
+  background: rgba(6, 189, 255, 0.9);
+}
+
 .overlay-timing-card .metric-value--overlay {
   font-size: 1.35rem;
   font-weight: 600;
@@ -535,6 +577,10 @@ a {
   }
 
   .video-graph canvas {
+    height: 140px;
+  }
+
+  .latency-graph-card canvas {
     height: 140px;
   }
 }

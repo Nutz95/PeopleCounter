@@ -623,7 +623,7 @@ class CameraAppPipeline:
                     threshold_ms = float(os.environ.get('GPU_OVERLAY_WARN_MS', '18.0'))
                     compose_breach = compose_ms is not None and compose_ms > threshold_ms
                     draw_breach = renderer_draw_total is not None and renderer_draw_total > threshold_ms
-                    if compose_breach or draw_breach:
+                    if self.extreme_debug and (compose_breach or draw_breach):
                         compose_label = f"{compose_ms:.1f}" if compose_ms is not None else '—'
                         draw_label = f"{renderer_draw_total:.1f}" if renderer_draw_total is not None else '—'
                         print(f"[GPU PERF] Overlay compose={compose_label}ms draw={draw_label}ms")
@@ -742,22 +742,15 @@ class CameraAppPipeline:
                         except Exception as exc:
                             print(f"[WARN] Metrics callback failed: {exc}")
                     
-                    # Console logs plus détaillés avec devices
-                    print(f"Metrics: YOLO={yolo_count} ({yolo_time:.3f}s on {yolo_dev}) | "
-                        f"Density={density_count:.1f} ({density_time:.3f}s on {dens_dev}) | "
-                        f"CPU: {cpu_usage}% | Total: {total_time:.3f}s | FPS: {fps:.2f}")
+                    if self.extreme_debug:
+                        print(f"Metrics: YOLO={yolo_count} ({yolo_time:.3f}s on {yolo_dev}) | "
+                            f"Density={density_count:.1f} ({density_time:.3f}s on {dens_dev}) | "
+                            f"CPU: {cpu_usage}% | Total: {total_time:.3f}s | FPS: {fps:.2f}")
 
-                    
                     if self.use_gui:
                         cv2.imshow("People Count", preview_frame)
 
                     postprocess_duration = time.monotonic() - postprocess_start
-                    
-                    # Console logs propres
-                    capture_time = getattr(self.capture, 'last_capture_time', 0.0)
-                    print(f"Metrics: YOLO={yolo_count} ({yolo_time:.3f}s) | Density={density_count:.1f} ({density_time:.3f}s) | "
-                          f"Capture={capture_time:.3f}s | CPU: {cpu_usage}% | Total: {total_process_time:.3f}s | FPS: {fps:.2f}")
-                    
                     # Update mini-graph history at every frame for live feedback (YOLO, Density, Average)
                     self.history_data.append((yolo_count, density_count, avg_instant))
                     if len(self.history_data) > self.history_len:
@@ -773,10 +766,11 @@ class CameraAppPipeline:
                             avg_combined = (avg_yolo + avg_density) / 2.0
                             max_count = max(avg_yolo, avg_density)
                             now_dt = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                            print(f"Average YOLO ({yolo_label}) People (last {AVERAGING_PERIOD_SECONDS} sec): {avg_yolo:.2f}")
-                            print(f"Average Density People (last {AVERAGING_PERIOD_SECONDS} sec): {avg_density:.2f}")
-                            print(f"Average Combined (last {AVERAGING_PERIOD_SECONDS} sec): {avg_combined:.2f}")
-                            print(f"Max People Count (last {AVERAGING_PERIOD_SECONDS} sec): {max_count:.2f}")
+                            if self.extreme_debug:
+                                print(f"Average YOLO ({yolo_label}) People (last {AVERAGING_PERIOD_SECONDS} sec): {avg_yolo:.2f}")
+                                print(f"Average Density People (last {AVERAGING_PERIOD_SECONDS} sec): {avg_density:.2f}")
+                                print(f"Average Combined (last {AVERAGING_PERIOD_SECONDS} sec): {avg_combined:.2f}")
+                                print(f"Max People Count (last {AVERAGING_PERIOD_SECONDS} sec): {max_count:.2f}")
                             writer.writerow([now_dt, f"{avg_yolo:.2f}", f"{avg_density:.2f}", f"{avg_combined:.2f}", f"{max_count:.2f}"])
                             csvfile.flush()
                             log_data.append((now_dt, avg_yolo, avg_density, avg_combined, max_count))

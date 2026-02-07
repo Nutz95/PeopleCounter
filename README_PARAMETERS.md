@@ -38,10 +38,12 @@ This reference explains the purpose of each environment variable or `.env` flag 
 
 | Variable | Description | Effect |
 | --- | --- | --- |
-| `EXTREME_DEBUG` | Enables verbose logging (`1`) | Dumps pipeline timings, mask coverage, and backend decisions into the console.
+| `EXTREME_DEBUG` | Enables verbose logging (`1`) | Dumps pipeline timings, mask coverage, and backend decisions into the console; leave it unset to limit output to the `[MASK TIMING]` lines that feed the latency graph described in [plans/performance-latency-plan.md].
 | `MQTT_HOST`, `MQTT_PORT` | MQTT broker connection details | Used when broadcasting frames or receiving control events from other services.
 | `SENTRY_DSN` | Optional Sentry configuration | Sends errors/metrics to Sentry when provided.
 | `RUN_INFERENCE_ONLY` | Skips UI composition when truthy | Ideal for headless benchmarking/external dashboards.
 | `FORCE_MASK_ENCODING` | Forces mask encoding path to run (`1`) | Useful during testing to isolate `_encode_mask_blob` changes.
+
+When tracing performance, consult [plans/performance-latency-plan.md](plans/performance-latency-plan.md) for the latency graph, the 25–30 fps goal, and how the `[MASK TIMING]` lines surface the same insights in both the UI and the console.
 
 Each profile in `scripts/configs` bundles a curated combination of these keys. When debugging performance, tweak only one variable at a time and restart `run_app.sh --profile <profile>` to isolate the impact.

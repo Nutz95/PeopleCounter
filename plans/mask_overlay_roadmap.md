@@ -6,6 +6,7 @@
 - The browser resizes the mask canvas using the geometry metadata, ensuring the red tint follows the video frame without leaking into letterboxing.
 - The mask overlay uses `globalAlpha`/`source-in` so it relies only on the binary mask and the `Hide mask overlay` toggle continues to function.
 - Latest telemetry, mask timing instrumentation, and the new `README_PARAMETERS.md` are documented across the docs/plan set, keeping the mask story traceable.
+- The performance/latency plan now describes the latency graph, log cleanup, and 25–30 fps target so the overlay timing story stays measurable.
 
 ## Diagram (current flow)
 ```mermaid

@@ -2,6 +2,10 @@
 
 TL;DR: visualize the mask/YOLO latency budget, consolidate log output, and document the performance goals so the telemetry cards match the 25–30 fps target once the pipeline stabilizes.
 
+## Status
+- Phase 1 (latency graph + target bands) now ships in the UI and draws from the `[MASK TIMING]` payloads.
+- Phase 2 (log cleanup via `EXTREME_DEBUG`, README/parameter updates, and plan alignment) is complete, so this document now tracks the 25–30 fps narrative.
+
 **Phases**
 1. **Phase 1: Surface latency breakdowns**
     - **Objective:** Add a latency graph or timeline so operators can spot which stage (creation, send, display) is taking the longest.

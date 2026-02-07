@@ -91,6 +91,7 @@ logs/
 build.log
 setup_run*.log
 people_count_*.csv
+people_count_*.png
 
 # -- config Copilot files --
 code-review-subagent.plan.md

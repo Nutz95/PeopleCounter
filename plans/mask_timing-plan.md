@@ -8,6 +8,5 @@ TL;DR mask payloads now carry creation/network timestamps and the UI consumes th
 3. The web UI (`static/js/app.js`) now shows creation/send/display latencies and adapts polling based on the reported YOLO FPS, so overlay timing issues are visible to users.
 
 **Next steps**
-1. Implement the performance/latency plan (see `plans/performance-latency-plan.md`) to render a graph of total mask/YOLO latency per frame and highlight regressions.
-2. Clean up console logging so only `[MASK TIMING]` lines remain, centralize verbose diagnostics via `EXTREME_DEBUG`, and document the remaining observation points in `README_PARAMETERS.md`.
-3. Provide a `mask_timing-plan` update that references the new performance plan and explains how the metrics now tie into the mask overlay behavior.
+1. Hand off the latency graph, console log cleanup, and 25–30 fps target narrative to [plans/performance-latency-plan.md], which now guides the telemetry story for the mask timing card.
+2. Continue recording any future mask timing observations in the performance plan so this document can serve as the historical record of the instrumentation rollout.
