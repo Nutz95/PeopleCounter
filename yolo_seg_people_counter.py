@@ -5,6 +5,7 @@ import math
 import numpy as np
 import os
 import time
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from tiling_manager import TilingManager
 from engines.yolo.tensorrt_engine import YoloTensorRTEngine
@@ -250,6 +251,8 @@ class YoloSegPeopleCounter:
             total = alpha.size
             coverage = nonzero * 100.0 / total if total else 0.0
             print(f"[DEBUG] mask_small {mask_small.shape} nonzero {nonzero}/{total} ({coverage:.1f}%)")
+        created_ts = time.time()
+        created_iso = datetime.utcfromtimestamp(created_ts).isoformat() + "Z"
         encoded = self._encode_mask_blob(mask_small)
         if encoded is None:
             return None
@@ -261,6 +264,8 @@ class YoloSegPeopleCounter:
             'scale_x': frame_shape[1] / mask_small.shape[1] if mask_small.shape[1] else 1.0,
             'scale_y': frame_shape[0] / mask_small.shape[0] if mask_small.shape[0] else 1.0,
             'downscale': self.mask_downscale,
+            'created_at': created_iso,
+            'created_at_ts': created_ts,
         }
         return payload
 

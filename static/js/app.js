@@ -38,15 +38,24 @@ const overlayDrawConvertValue = document.getElementById('overlayDrawConvertValue
 const overlayDrawReturnedValue = document.getElementById('overlayDrawReturnedValue');
 const overlayRendererFallbackValue = document.getElementById('overlayRendererFallbackValue');
 const graphEmpty = document.getElementById('graphEmpty');
+const maskLatencyValue = document.getElementById('maskLatencyValue');
+const maskTimingNote = document.getElementById('maskTimingNote');
+const maskTimingExtra = document.getElementById('maskTimingExtra');
+const maskTimingTotal = document.getElementById('maskTimingTotal');
 const maskOverlay = document.getElementById('maskOverlay');
 const maskToggle = document.getElementById('maskToggle');
 const videoStream = document.getElementById('videoStream');
 const maskCtx = maskOverlay ? maskOverlay.getContext('2d') : null;
 const metricsInterval = 1100;
+const METRICS_MIN_INTERVAL = 100;
+let metricsTimer = null;
 const MAX_LOGS = 6;
 let maskVisible = true;
 let lastMaskPayload = null;
 let maskRenderToken = 0;
+let lastMaskTiming = { created: null, sent: null, latency: null };
+let maskReceivedIso = null;
+let maskDisplayedIso = null;
 
 function updateMaskButton(enabled) {
   if (!maskToggle) {
@@ -55,6 +64,70 @@ function updateMaskButton(enabled) {
   const text = enabled ? 'Hide mask overlay' : 'Show mask overlay';
   maskToggle.textContent = text;
   maskToggle.dataset.state = enabled ? 'on' : 'off';
+}
+
+function computeMetricsInterval(fps) {
+  if (typeof fps !== 'number' || !Number.isFinite(fps) || fps <= 0) {
+    return metricsInterval;
+  }
+  const interval = 1000 / fps;
+  return Math.max(METRICS_MIN_INTERVAL, Math.min(metricsInterval, interval));
+}
+
+function scheduleMetricsRefresh(interval) {
+  if (metricsTimer) {
+    clearTimeout(metricsTimer);
+  }
+  metricsTimer = window.setTimeout(refreshMetrics, interval);
+}
+
+function formatTimestamp(value) {
+  if (!value) {
+    return '—';
+  }
+  try {
+    const parsed = Date.parse(value);
+    if (Number.isNaN(parsed)) {
+      return value;
+    }
+    const date = new Date(parsed);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch (error) {
+    return value;
+  }
+}
+
+function formatLatencyValue(value) {
+  return (typeof value === 'number' && Number.isFinite(value)) ? `${value.toFixed(1)}ms` : '—';
+}
+
+function updateMaskTimingCard() {
+  if (maskLatencyValue) {
+    maskLatencyValue.textContent = formatLatencyValue(lastMaskTiming.latency);
+  }
+  if (maskTimingNote) {
+    const created = formatTimestamp(lastMaskTiming.created);
+    const sent = formatTimestamp(lastMaskTiming.sent);
+    maskTimingNote.textContent = `created: ${created} · sent: ${sent}`;
+  }
+  if (maskTimingExtra) {
+    const received = formatTimestamp(maskReceivedIso);
+    const displayed = formatTimestamp(maskDisplayedIso);
+    maskTimingExtra.textContent = `received: ${received} · displayed: ${displayed}`;
+  }
+  if (maskTimingTotal) {
+    const totalMs = computeDisplayLatency();
+    maskTimingTotal.textContent = `total latency: ${formatLatencyValue(totalMs)}`;
+  }
+}
+
+function computeDisplayLatency() {
+  const createdTs = lastMaskTiming.created ? Date.parse(lastMaskTiming.created) : NaN;
+  const displayedTs = maskDisplayedIso ? Date.parse(maskDisplayedIso) : NaN;
+  if (!Number.isFinite(createdTs) || !Number.isFinite(displayedTs)) {
+    return null;
+  }
+  return displayedTs - createdTs;
 }
 
 function getMaskDisplayGeometry(payload) {
@@ -147,6 +220,8 @@ function renderMaskOverlay() {
     maskCtx.fillStyle = 'rgba(255, 95, 66, 0.85)';
     maskCtx.fillRect(0, 0, width, height);
     maskCtx.restore();
+    maskDisplayedIso = new Date().toISOString();
+    updateMaskTimingCard();
   };
   img.onerror = () => {
     if (token === maskRenderToken) {
@@ -466,10 +541,25 @@ async function refreshMetrics() {
     }
     updateProfileLog(data.profile_log || []);
     lastMaskPayload = data.yolo_mask_payload || null;
+    lastMaskTiming = {
+      created: data.yolo_mask_payload_created_at || null,
+      sent: data.yolo_mask_payload_sent_at || null,
+      latency: typeof data.yolo_mask_payload_latency_ms === 'number' ? data.yolo_mask_payload_latency_ms : null,
+    };
+    maskReceivedIso = new Date().toISOString();
+    maskDisplayedIso = null;
     renderMaskOverlay();
+    const maskLatency = lastMaskTiming.latency;
+    if (typeof maskLatency === 'number') {
+      console.debug(`[MASK TIMING] created=${lastMaskTiming.created || '—'} sent=${lastMaskTiming.sent || '—'} latency=${maskLatency.toFixed(1)}ms`);
+    }
+    updateMaskTimingCard();
+    const nextInterval = computeMetricsInterval(data.fps);
+    scheduleMetricsRefresh(nextInterval);
   } catch (error) {
     fpsStatus.textContent = 'Waiting for metrics...';
     console.warn('Metrics fetch failed', error);
+    scheduleMetricsRefresh(metricsInterval);
   }
 }
 
@@ -522,5 +612,4 @@ document.addEventListener('DOMContentLoaded', () => {
   syncMaskCanvasSize();
   renderMaskOverlay();
   refreshMetrics();
-  setInterval(refreshMetrics, metricsInterval);
 });

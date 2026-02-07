@@ -711,9 +711,26 @@ class CameraAppPipeline:
                     else:
                         metrics["yolo_detection_payload"] = {"clusters": [], "detections": []}
                     mask_payload = None
+                    mask_payload_created_ts = None
+                    mask_payload_created_iso = None
                     if self.yolo_counter and hasattr(self.yolo_counter, 'get_mask_payload'):
                         mask_payload = self.yolo_counter.get_mask_payload()
+                        if mask_payload is not None:
+                            mask_payload_created_ts = mask_payload.get('created_at_ts')
+                            mask_payload_created_iso = mask_payload.get('created_at')
                     metrics["yolo_mask_payload"] = mask_payload
+                    metrics["yolo_mask_payload_created_at"] = mask_payload_created_iso
+                    metrics["yolo_mask_payload_created_ts"] = mask_payload_created_ts
+                    mask_sent_ts = time.time()
+                    mask_sent_iso = datetime.utcnow().isoformat() + "Z"
+                    metrics["yolo_mask_payload_sent_at"] = mask_sent_iso
+                    if mask_payload_created_ts is not None:
+                        metrics["yolo_mask_payload_latency_ms"] = (mask_sent_ts - mask_payload_created_ts) * 1000.0
+                    else:
+                        metrics["yolo_mask_payload_latency_ms"] = None
+                    if mask_payload_created_ts is not None:
+                        latency_ms = metrics["yolo_mask_payload_latency_ms"]
+                        print(f"[MASK TIMING] created={mask_payload_created_iso} sent={mask_sent_iso} latency={latency_ms:.1f}ms")
                     self.latest_metrics = metrics
                     if self.profile_active:
                         self.profile_log.append(metrics.copy())
