@@ -32,26 +32,26 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-   frame[Frame reçue]
-   preprocess[Pré-processing 4K/1080p]
-   yolo[YOLO segmentation / densité]
-   mask[Masque RGBA downscalé]
-   encode[Encode mask (base64, metadata)]
-   push[Payload MQTT/HTTP]
-   metrics[Metrics card & logs]
-   ui[Web client (canvas)]
+   frame["Frame received"]
+   preprocess["Pre-processing 4K / 1080p"]
+   yolo["YOLO segmentation / density (TensorRT)"]
+   mask["Downscaled mask (RGBA)"]
+   encode["Encode mask (base64 + metadata)"]
+   push["Payload HTTP / MQTT"]
+   metrics["Metrics card & logs"]
+   ui["Web client (canvas)"]
 
    frame --> preprocess --> yolo --> mask --> encode --> push --> ui
    push --> metrics
    metrics --> ui
 ```
 
-- `YoloSegPeopleCounter` génère `created_at` + `created_at_ts` pour chaque masque, puis `_encode_mask_blob` ajoute la taille/offset nécessaire pour que le client aligne correctement le rendu.
-- `camera_app_pipeline.py` agrège les métriques (`yolo_mask_payload_*`) et affiche `[MASK TIMING]` avec les durées création/envoi.
-- `static/js/app.js` recalcule l’intervalle de polling en fonction du FPS YOLO et affiche la carte « mask timings » (création/envoi/affichage/total).
-- La fusion des masques se fait côté client : le serveur fournit une image MJPEG (sans masque) et un POST séparé pour le masque – le navigateur applique un canvas alpha-only pour colorer uniquement les zones détectées.
+- `YoloSegPeopleCounter` stamps `created_at`/`created_at_ts` for each mask and `_encode_mask_blob` inserts the geometry/offset data so the client aligns the overlay.
+- `camera_app_pipeline.py` collects the `yolo_mask_payload_*` fields, publishes `[MASK TIMING]` logs, and ships the payload to the web server.
+- `static/js.app.js` adapts its polling interval to the YOLO FPS reports and renders the “mask timings” card (creation, send, display) for instant feedback.
+- The browser pulls the MJPEG video stream separately from the mask POST, so masks are composited with an `alpha` canvas without touching the base feed.
 
-## 3. Séquence des masques et télémétrie
+## 3. Mask & telemetry sequence
 
 ```mermaid
 sequenceDiagram
@@ -61,36 +61,37 @@ sequenceDiagram
    participant Web
    participant Client
 
-   Frame->>Yolo: tiles + inference
-   Yolo->>Pipeline: mask RGBA + metadata
-   Pipeline->>Web: POST mask payload (created, sent)
+   Frame->>Yolo: tiles + inference (TensorRT GPU)
+   Yolo->>Pipeline: mask RGBA + metadata (GPU)
+   Pipeline->>Web: POST mask payload (CPU)
    Web->>Client: /masks endpoint + MJPEG stream
    Client->>Client: composite + update metrics card
 ```
 
-- Chaque POST contient `created_at`, `created_at_ts`, et `payload_sent_at`. Le client montre ces timestamps côté UI et déclenche un rafraîchissement adaptatif via `setTimeout(adaptiveInterval)`.
-- Cette séquence découple la fréquence du MJPEG (quasi-fixe) de celle des masques (adaptative), d’où la perception d’un overlay à ~1 Hz même quand YOLO tourne plus vite.
+- Each POST contains `created_at`, `created_at_ts`, and `payload_sent_at`. The client formats these timestamps on the UI and triggers an adaptive refresh via `setTimeout(adaptiveInterval)`.
+- GPU vs CPU: TensorRT (YOLO) draws the masks while the CPU encodes the payload, publishes the metrics/logs, and the browser composites the canvas.
+- This sequence separates the MJPEG frequency (steady) from the adaptive mask updates, highlighting why the overlay used to appear locked to the slower mask cycle until adaptive polling arrived.
 
 ## 4. Tunnel de densité
 
 ```mermaid
 flowchart LR
-   sensor[Capture 4K]
-   tile[Tiling CPU (global + 2x2)]
-   processor[PeopleCounterProcessor]
-   lwcc[LWCC / Density model]
-   integration[Fusion & drawing]
+   sensor["Capture 4K"]
+   tile["CPU tiling (global + 2×2)"]
+   processor["PeopleCounterProcessor"]
+   lwcc["LWCC / density model"]
+   integration["Fusion & drawing"]
 
    sensor --> tile --> processor --> lwcc --> integration
 ```
 
-- `PeopleCounterProcessor` envoie des tiles 640×640 (global + locaux) vers TensorRT/OpenVINO, puis recompose une carte dense 540p pour la fréquence de mise à jour.
-- Les flags `YOLO_USE_GPU_PREPROC` et `YOLO_USE_GPU_POST` déplacent la mise à l’échelle and la fusion d’un CPU `cv2.resize` vers des kernels CUDA ou du rendu GPU, ce qui réduit les 195 ms courants sur les pipelines CP intense.
-- `DENSITY_THRESHOLD`, `DENSITY_TILING`, et `YOLO_TILING` se pilotent depuis les `.env`, permettant de choisir l’équilibre entre précision et débit.
+- `PeopleCounterProcessor` sends `640×640` tiles (global + locals) to TensorRT/OpenVINO and reassembles a 540p density map.
+- `YOLO_USE_GPU_PREPROC` / `YOLO_USE_GPU_POST` shift resizing and mask fusion from CPU `cv2` calls to CUDA kernels, trimming the ~195 ms batches off the slow path.
+- `DENSITY_THRESHOLD`, `DENSITY_TILING`, and `YOLO_TILING` remain `.env`-driven knobs for balancing precision and throughput.
 
-## 5. `.env`, profils et variables clés
+## 5. `.env` profiles and key variables
 
-- Chaque profil `.env` (stocké dans `scripts/configs`) exporte les variables nécessaires avant de lancer l’application. Exemple :
+- Each profile `.env` file under `scripts/configs` exports the variables that the entry script needs. Example:
 
 ```bash
 export YOLO_BACKEND=tensorrt_native
@@ -103,14 +104,13 @@ export DENSITY_TILING=1
 export DENSITY_THRESHOLD=15
 ```
 
-- `run_app.sh --profile <profil>` remplace les anciens arguments positionnels et automatise le sourcing du `.env` suivi de `camera_app_pipeline.py`. Vous pouvez aussi définir `CAMERA_URL` ou `MQTT_*` avant d’exécuter le script.
+- `run_app.sh --profile <profile>` replaces the old positional arguments by sourcing the `.env` file before executing `camera_app_pipeline.py`. You can still override `CAMERA_URL` or `MQTT_*` variables before starting the script.
 
-## 6. Documentation & plans associés
+## 6. Documentation & associated plans
 
-- Ce guide complète [README.md](README.md) pour le quick start et [README_DOCKER.md](README_DOCKER.md) pour l’image containerisée.
-- Les plans suivants tracent l’évolution de la superposition, des métriques et de la documentation :
-  - [plans/documentation-refresh-plan.md](plans/documentation-refresh-plan.md)
-  - [plans/mask_overlay_roadmap.md](plans/mask_overlay_roadmap.md)
-  - [plans/mask_timing-plan.md](plans/mask_timing-plan.md)
-
-- La pile masques/logs sera enrichie d’un plan de performance dédié pendant la Phase 3 pour les graphes de latence et le nettoyage des logs.
+- This guide complements [README.md](README.md) for the quick start path and [README_DOCKER.md](README_DOCKER.md) for the container image.
+- Track the masking/metrics/documentation updates via:
+   - [plans/documentation-refresh-plan.md](plans/documentation-refresh-plan.md)
+   - [plans/mask_overlay_roadmap.md](plans/mask_overlay_roadmap.md)
+   - [plans/mask_timing-plan.md](plans/mask_timing-plan.md)
+- A dedicated performance/latency plan will expand the mask/log story in Phase 3 with latency graphs and log cleanup.

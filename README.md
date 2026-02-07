@@ -65,11 +65,12 @@ docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
   - `YOLO_SEG` to toggle segmentation models
   - `DEBUG_TILING` to log tiles and `YOLO_CONF` to adjust thresholds
 - The `.env` files can also include overrides for `EXTREME_DEBUG`, `CAMERA_URL`, and the MQTT broker when running in distributed mode.
+- When you need granular guidance on each flag, consult [README_PARAMETERS.md](README_PARAMETERS.md) for a parameter-by-parameter breakdown.
 
-## Observability & métriques
+## Observability & metrics
 
 - The web UI surface now exposes a “mask timings” card (created/sent/received/displayed times) plus the “YOLO internal (ms)” chart so you can correlate backend FPS to frontend update cadence. It relies on `camera_app_pipeline.py` propagating `created_at`/`created_at_ts` metadata from `yolo_seg_people_counter.py` and on the adaptive polling in `static/js/app.js`.
-- A `[MASK TIMING]` log line records backend creation and send latencies, which explains why overlays refresh around 1 Hz even if YOLO emits more frames; the UI divides those timings into creation, send, and total latency segments.
+- A `[MASK TIMING]` log line records backend creation and send latencies, breaking the delay into creation, send, and total segments so you can trace any regressions in the pipeline.
 - Masks are downscaled and aligned to the client canvas before compositing, so overlays only tint the detected zones rather than the entire feed. More architecture detail is in the dedicated doc below.
 
 ## Important model notes
@@ -78,15 +79,12 @@ docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
 - PyTorch exports target Opset 18 so that Ultralytics stays compatible with TensorRT conversion and the automatic converter doesn’t downgrade the model.
 - OpenVINO IR artifacts are stored under `models/openvino/`; the conversion pipeline has moved to `convert_pth_to_openvino.py` in case you want to re-export from different backends.
 
-## Voir aussi
+## See also
 
 - [README_DOCKER.md](README_DOCKER.md) : Docker build, runtime, and profiling documentation (includes the latest architecture diagrams for the containerized pipeline).
 - [README_ARCHITECTURE.md](README_ARCHITECTURE.md) : In-depth architecture, masking/metrics/tiling flows, mermaid diagrams, density model layout, and `.env` reference.
 - [plans/documentation-refresh-plan.md](plans/documentation-refresh-plan.md), [plans/mask_overlay_roadmap.md](plans/mask_overlay_roadmap.md), [plans/mask_timing-plan.md](plans/mask_timing-plan.md) : Track the doc refresh, mask overlay fixes, and timing instrumentation work.
+- [plans/documentation-refresh-plan.md](plans/documentation-refresh-plan.md), [plans/mask_overlay_roadmap.md](plans/mask_overlay_roadmap.md), [plans/mask_timing-plan.md](plans/mask_timing-plan.md), [plans/performance-latency-plan.md](plans/performance-latency-plan.md) : Track the doc refresh, mask overlay fixes, timing telemetry, and upcoming latency graph/log cleanup.
 - [windows/setup_and_run.bat](windows/setup_and_run.bat) : Windows helper to spin up the camera bridge that exports the MJPEG stream consumed by WSL.
 
-Le README principal reste le point d’entrée : il doit donner envie d’essayer le projet, pointer vers la doc Docker pour les profils, vers l’architecture pour les détails techniques, et renvoyer vers les plans qui doivent toujours être mis à jour en parallèle.
-
-## Support
-
-Ouvrez une issue si vous rencontrez des problèmes, en précisant OS, GPU, driver, et commande utilisée.
+The main README remains the entry point: it should invite contributors to try the project, link to the Docker guide for profiles, the architecture doc for the deep dive, and reference the plans that must be kept synchronized.
