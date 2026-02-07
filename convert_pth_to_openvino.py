@@ -61,8 +61,7 @@ def convert_pth_to_onnx(model_name, model_weights, pth_path, onnx_path):
             opset_version=18, 
             input_names=['input'], 
             output_names=['output'],
-            # On retire dynamic_axes pour SFANet si nécessaire, ou on tente un export plus "safe"
-            dynamic_axes={'input':{0:'batch'}, 'output':{0:'batch'}} if model_name != "SFANet" else None
+            dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}}
         )
     except Exception as e:
         print(f"[WARN] Standard export failed, trying fixed shape export for {model_name}: {e}")

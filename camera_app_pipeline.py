@@ -1,3 +1,4 @@
+import base64
 import cv2
 import json
 import sys
@@ -326,14 +327,71 @@ class CameraAppPipeline:
             self._overlay_stats["cpu_preview_ms"] = None
 
     def _get_density_count(self, density_result):
-        if density_result is None:
+        if not density_result:
             return 0.0
-        if self.density_tiling and len(density_result) >= 4:
-            quad_counts = density_result[2] or []
-            return sum(float(c) for c in quad_counts)
-        if len(density_result) >= 3 and density_result[2] is not None:
-            return float(density_result[2])
-        return 0.0
+        total = density_result.get('total_count')
+        if total is not None:
+            return float(total)
+        tiles = density_result.get('tiles', [])
+        return sum(float(tile.get('count', 0.0)) for tile in tiles)
+
+    def _encode_density_mask(self, mask):
+        if mask is None:
+            return None
+        mask_arr = np.asarray(mask, dtype=np.uint8)
+        if mask_arr.size == 0:
+            return None
+        success, encoded = cv2.imencode('.png', mask_arr, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        if not success:
+            return None
+        return base64.b64encode(encoded.tobytes()).decode('ascii')
+
+    def _build_density_heatmap_payload(self, density_result, frame_shape):
+        if not density_result:
+            return None
+        tiles = density_result.get('tiles') or []
+        if not tiles:
+            return None
+        frame_h, frame_w = frame_shape
+        quad_coords = getattr(self, 'density_quads_coords', []) or []
+        created_ts = time.time()
+        created_iso = datetime.utcfromtimestamp(created_ts).isoformat() + "Z"
+        payload_tiles = []
+        for idx, tile in enumerate(tiles):
+            mask = tile.get('mask')
+            if mask is None:
+                continue
+            mask_arr = np.asarray(mask, dtype=np.uint8)
+            if mask_arr.size == 0:
+                continue
+            blob = self._encode_density_mask(mask_arr)
+            if not blob:
+                continue
+            coords = quad_coords[idx] if idx < len(quad_coords) else (0, 0, frame_w, frame_h)
+            x0, y0, x1, y1 = coords
+            mask_h, mask_w = mask_arr.shape[:2]
+            payload_tiles.append({
+                'blob': blob,
+                'format': 'png',
+                'coords': [int(x0), int(y0), int(x1), int(y1)],
+                'mask_width': int(tile.get('mask_width', mask_w)),
+                'mask_height': int(tile.get('mask_height', mask_h)),
+                'tile_width': int(tile.get('tile_width', x1 - x0)),
+                'tile_height': int(tile.get('tile_height', y1 - y0)),
+                'scale_x': float(tile.get('scale_x', 1.0)),
+                'scale_y': float(tile.get('scale_y', 1.0)),
+                'count': float(tile.get('count', 0.0)),
+            })
+        if not payload_tiles:
+            return None
+        return {
+            'created_at': created_iso,
+            'created_at_ts': created_ts,
+            'frame_width': frame_w,
+            'frame_height': frame_h,
+            'total_count': float(density_result.get('total_count', 0.0)),
+            'tiles': payload_tiles,
+        }
 
     def _cpu_preview_render(self, frame_image, density_result, render_size, win_size):
         self._log_cpu_fallback("CPU preview rendering (CUDA overlay unavailable).")
@@ -580,6 +638,7 @@ class CameraAppPipeline:
 
                     density_result = thr_density.result if thr_density else None
                     density_count = self._get_density_count(density_result)
+                    density_heatmap_payload = self._build_density_heatmap_payload(density_result, frame.shape[:2])
 
                     self._overlay_stats = {
                         "compose_ms": None,
@@ -733,6 +792,18 @@ class CameraAppPipeline:
                         metrics["yolo_mask_payload_latency_ms"] = (mask_sent_ts - mask_payload_created_ts) * 1000.0
                     else:
                         metrics["yolo_mask_payload_latency_ms"] = None
+                    metrics["density_heatmap_payload"] = density_heatmap_payload
+                    heatmap_payload_created_iso = density_heatmap_payload.get('created_at') if density_heatmap_payload else None
+                    heatmap_payload_created_ts = density_heatmap_payload.get('created_at_ts') if density_heatmap_payload else None
+                    heatmap_payload_sent_ts = time.time()
+                    heatmap_payload_sent_iso = datetime.utcnow().isoformat() + "Z"
+                    metrics["density_heatmap_payload_created_at"] = heatmap_payload_created_iso
+                    metrics["density_heatmap_payload_created_ts"] = heatmap_payload_created_ts
+                    metrics["density_heatmap_payload_sent_at"] = heatmap_payload_sent_iso
+                    if heatmap_payload_created_ts is not None:
+                        metrics["density_heatmap_payload_latency_ms"] = (heatmap_payload_sent_ts - heatmap_payload_created_ts) * 1000.0
+                    else:
+                        metrics["density_heatmap_payload_latency_ms"] = None
                     if mask_payload_created_ts is not None:
                         latency_ms = metrics["yolo_mask_payload_latency_ms"]
                         print(f"[MASK TIMING] created={mask_payload_created_iso} sent={mask_sent_iso} latency={latency_ms:.1f}ms")
@@ -759,6 +830,9 @@ class CameraAppPipeline:
                             "mask_latency_ms": metrics.get("yolo_mask_payload_latency_ms"),
                             "mask_created_at": metrics.get("yolo_mask_payload_created_at"),
                             "mask_sent_at": metrics.get("yolo_mask_payload_sent_at"),
+                            "density_heatmap_payload_latency_ms": metrics.get("density_heatmap_payload_latency_ms"),
+                            "density_heatmap_payload_created_at": metrics.get("density_heatmap_payload_created_at"),
+                            "density_heatmap_payload_sent_at": metrics.get("density_heatmap_payload_sent_at"),
                             "preprocessor_mode": metrics.get("yolo_preproc_mode"),
                             "renderer_mode": metrics.get("yolo_renderer_mode"),
                             "yolo_pipeline_mode": metrics.get("yolo_pipeline_mode"),

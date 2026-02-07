@@ -71,6 +71,7 @@ docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
 
 - The web UI surface now exposes a “mask timings” card (created/sent/received/displayed times) plus a latency history graph that paints the 25–30 fps target band. The chart and console use the same `[MASK TIMING]` payload stream, which is detailed in [plans/performance-latency-plan.md] so regressions appear in both places.
 - A `[MASK TIMING]` log line records backend creation and send latencies, breaking the delay into creation, send, and total segments so you can trace any regressions in the pipeline.
+- The metrics payload now carries `density_heatmap_payload` alongside the YOLO mask metadata. This tile-centric structure hands raw base64 PNG masks plus coordinates/counts to the browser so it can draw density overlays without rewiring the server.
 - Masks are downscaled and aligned to the client canvas before compositing, so overlays only tint the detected zones rather than the entire feed. More architecture detail is in the dedicated doc below.
 
 ## Important model notes
