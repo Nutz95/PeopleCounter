@@ -1,228 +1,92 @@
 # PeopleCounter
 
-Outil de comptage de personnes depuis une caméra (4K) utilisant YOLO et LWCC.
+PeopleCounter counts people on a live camera stream (up to 4K) by combining YOLO and LWCC/density models with sparse mask overlays and latency-aware metrics.
 
-## Prérequis
+## Quick start
 
-- Python 3.11
+### 1. Clone & install Python dependencies
 
-## Installation rapide
-
-1. Créer l'environnement virtuel :
+- Clone the repository on your host (Windows or Linux) and navigate inside the source tree.
+- Create and activate a Python 3.11 virtual environment:
 
 ```bash
 python -m venv .venv
+source .venv/Scripts/activate  # Linux/WSL/macOS
 ```
-
-2. Activer l'environnement :
-
-- **PowerShell** :
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-- **Git Bash / WSL / Linux / macOS** :
-
-```bash
-source .venv/Scripts/activate
-```
-
-3. Installer les dépendances (depuis `requirements.txt`) :
-
-**PowerShell** :
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-**Git Bash / WSL** :
+- Install the runtime requirements:
 
 ```bash
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 ```
 
-> Remarque: `setup.sh` exécute la même commande et gère aussi le téléchargement / conversion des modèles.
+### 2. Prepare the AI models
 
-## Préparer les modèles (optionnel / long)
+- Run `./setup.sh` (WSL/Git Bash recommended). It downloads Ultralytics weights and converts them to ONNX/TensorRT `.engine` files inside `models/`.
+- CUDA/TensorRT is required to generate `.engine` files locally; if drivers are missing, the script still produces ONNX copies.
 
-Exécuter `setup.sh` (Git Bash / WSL recommandé) pour télécharger les modèles et générer des moteurs TensorRT :
+### 3. Set up the Windows → WSL bridge
 
-```bash
-./setup.sh
-```
-
-Les fichiers `.engine` et `.onnx` générés sont placés dans le dossier `models/` (modifiable via `MODELS_DIR`).
-
-Remarques importantes:
-
-- Pour construire des moteurs TensorRT (`.engine`) localement, une installation CUDA + TensorRT fonctionnelle est requise (tests ici effectués avec CUDA 13.1 et TensorRT 10.14). Installez CUDA 13.1 si vous prévoyez d'utiliser `setup.sh` pour générer des `.engine`.
-- L'export PyTorch (`.pt -> .onnx`) peut afficher des warnings concernant la conversion d'opset (p.ex. le convertisseur essaie de rester compatible et peut ré-assigner l'opset à 18). Ces warnings sont normaux; si l'export aboutit et qu'un fichier `.onnx` est créé, la conversion vers TensorRT peut tout à fait réussir malgré les messages.
-- Pour réduire ces warnings, les exports YOLO utilisent désormais l'opset 18 (plus récent) — cela évite la conversion automatique et les messages liés au version_converter.
-- Les fichiers OpenVINO IR (`.xml`) sont maintenant générés dans `models/openvino/` (par défaut). Chaque modèle y est sauvegardé en tant que `<modelname>_<weights>.xml`.
-- Si CUDA/TensorRT n'est pas disponible sur l'hôte, `setup.sh` exportera les `.onnx` mais sautera la conversion `.onnx -> .engine` (le script détecte l'absence de CUDA via `nvidia-smi`).
-- Après export, les fichiers `.pt` téléchargés sont déplacés dans le dossier `models/` pour garder tous les artefacts au même endroit.
-
-## Lancer l'application (exemple)
-
-Usage:
+- Clone the repository on your Windows host as well.
+- Run the helper in `windows/setup_and_run.bat`; it
+  1. creates `venv_bridge`,
+  2. installs Flask/OpenCV, and
+  3. launches `camera_bridge.py` that exposes the MJPEG stream (e.g. `http://192.168.1.62:5002/video_feed`).
+- Once the bridge is running, open WSL, `cd` into the repo, and launch:
 
 ```bash
-./run_people_counter_rtx.sh [RESOLUTION] [MODEL] [CONF] [YOLO_TILING] [DENSITY_TILING] [DENSITY_THRESHOLD] [DENOISE] [YOLO_SEG]
+./run_app.sh --profile rtx_extreme http://<windows-ip>:5002/video_feed
 ```
 
-Arguments:
+This pulls the correct Docker image, generates any missing models inside the container, and connects to the bridge stream.
 
-- `RESOLUTION`: `4k` (défaut) ou `1080p`
-- `MODEL`: fichier modèle (`.engine`, `.onnx`, ou `.pt`) — ex: `yolo11s-seg.engine`
-- `CONF`: seuil YOLO (ex: `0.50`)
-- `YOLO_TILING`: `1` active le tiling YOLO, `0` désactive
-- `DENSITY_TILING`: `1` active tiling density (2x2), `0` global
-- `DEBUG_TILING`: `1` affiche les rectangles de tiling (Bleu=YOLO, Magenta=Densité), `0` par défaut
-- `DENSITY_THRESHOLD`: seuil LWCC/density (ex: `15`, plus bas = plus sensible)
-- `DENOISE`: 0 = off, 1-3 = niveaux de denoise (Gaussian blur)
-- `YOLO_SEG`: `1` active le mode segmentation (requiert modèle `-seg`), `0` désactivé
+### 4. Run PeopleCounter
 
-Exemples (optimisés):
+- `run_app.sh` wraps the entire pipeline and sources `scripts/configs/<profile>.env` before starting the app. Pass any additional camera URL or resolution arguments after the profile.
+- The script accepts the same signature as the old `run_people_counter_*` helpers (`[RESOLUTION] [MODEL] ...`), but the recommended way to change backends is via `.env` profiles (see below).
 
-### Démo principale (segmentation + tiling)
+### 5. Build the Docker image (optional)
+
+- Regenerate the Docker runtime with `./build_image.sh` from inside WSL.
+- Prerequisites: install Docker Desktop or Engine inside WSL, install the NVIDIA Container Toolkit (`nvidia-container-toolkit`), and ensure `nvidia-smi` works in WSL (requires NVIDIA drivers that expose CUDA inside the subsystem).
+- Verifying GPUs inside the container can be done with:
 
 ```bash
-./run_people_counter_rtx.sh 4k yolo26s-seg.engine 0.5 1 0 50 1 1
+docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
 ```
 
-### Standard 4K avec détection (YOLOv26)
+## Configuration via `.env`
 
-```bash
-./run_people_counter_rtx.sh 4k yolo26s.engine
-```
+- Each profile lives under `scripts/configs/<profile>.env` (examples: `rtx_extreme.env`, `cpu_fallback.env`, `balanced_tri_chip.env`). `run_app.sh --profile rtx_extreme` sources the file before launching the pipeline.
+- Common variables you can override:
+  - `YOLO_BACKEND`, `YOLO_MODEL`, `YOLO_DEVICE`
+  - `LWCC_BACKEND`, `OPENVINO_DEVICE`, `LWCC_THRESHOLD`
+  - `YOLO_TILING`, `DENSITY_TILING`, `DENSITY_THRESHOLD`
+  - `YOLO_USE_GPU_PREPROC`, `YOLO_USE_GPU_POST`, `YOLO_PIPELINE_MODE`
+  - `YOLO_SEG` to toggle segmentation models
+  - `DEBUG_TILING` to log tiles and `YOLO_CONF` to adjust thresholds
+- The `.env` files can also include overrides for `EXTREME_DEBUG`, `CAMERA_URL`, and the MQTT broker when running in distributed mode.
 
-### 4K avec réduction de bruit (niveau 1)
+## Observability & métriques
 
-```bash
-./run_people_counter_rtx.sh 4k yolo26m.engine 0.70 1 1 15 1
-```
+- The web UI surface now exposes a “mask timings” card (created/sent/received/displayed times) plus the “YOLO internal (ms)” chart so you can correlate backend FPS to frontend update cadence. It relies on `camera_app_pipeline.py` propagating `created_at`/`created_at_ts` metadata from `yolo_seg_people_counter.py` and on the adaptive polling in `static/js/app.js`.
+- A `[MASK TIMING]` log line records backend creation and send latencies, which explains why overlays refresh around 1 Hz even if YOLO emits more frames; the UI divides those timings into creation, send, and total latency segments.
+- Masks are downscaled and aligned to the client canvas before compositing, so overlays only tint the detected zones rather than the entire feed. More architecture detail is in the dedicated doc below.
 
-Paramètres courts:
+## Important model notes
 
-- Résolution: `4k` ou `1080p`
-- Modèle: nom du fichier `.engine` / `.onnx` / `.pt`
-- `YOLO_SEG`: active la fusion par segmentation (nécessite un modèle `-seg`)
-
-## Menu de lancement (Interactif)
-
-Pour faciliter le choix, utilisez le lanceur interactif :
-
-```bash
-./launcher.sh
-```
-
-Il propose des préréglages optimisés pour votre matériel (RTX 5060 Ti + Intel Core Ultra).
-
-Aperçu du menu :
-```text
-====================================================
-    PEOPLE COUNTER - LANCEUR MULTI-DEVICE
-====================================================
-Choisissez un profil d'exécution :
-1) [EXTREME] Full RTX (YOLO Seg: RTX (26x) | Densité: RTX)
-2) [HYBRID]  Zéro RTX (YOLO Seg: NPU (26s) | Densité: iGPU Arc)
-3) [TRIPLE]  Triple-Play (YOLO Seg: iGPU Arc (26m) | Densité: RTX)
-4) [CPU]     CPU Only (Tout sur le CPU)
-5) [EXIT]    Quitter
-----------------------------------------------------
-Votre choix [1-5]:
-```
-
-- **EXTREME** : Utilise la puissance brute de la RTX 5060 Ti avec YOLOv26x-seg et TensorRT. Idéal pour une précision maximale en 4K.
-- **HYBRID** : Libère totalement le GPU NVIDIA pour d'autres tâches (streaming/rendu) en utilisant le NPU Intel pour YOLO et l'iGPU pour la densité via OpenVINO.
-- **TRIPLE** : Répartition équilibrée utilisant les trois moteurs de calcul (RTX, iGPU, NPU) pour maximiser le débit d'images.
-
-## Optimisation de la Densité (Batching)
-
-Le processeur de densité (`PeopleCounterProcessor`) a été optimisé pour le tiling 4K :
-- **Batch Processing** : Les tuiles de l'image (tiling 2x2) sont envoyées en une seule passe au GPU via TensorRT ou OpenVINO.
-- **Adaptive Resolution** : Les modèles de densité fonctionnent désormais sur une matrice optimisée (ex: 540p), offrant un gain de performance de x4 sans perte significative de précision pour le comptage de foule.
-- **Multi-Streaming** : Utilisation de `ThreadPoolExecutor` pour le pré-processing parallèle des frames.
-
-## Exemples multi-backend (env vars)
-
-**TensorRT (NVIDIA - Par défaut) :**
-
-```bash
-export YOLO_BACKEND=tensorrt_native
-export YOLO_MODEL=yolo26s-seg.engine
-./run_people_counter_rtx.sh 4k $YOLO_MODEL 0.5 1 0 50 1 1
-```
-
-**OpenVINO (Intel NPU / Arc) :**
-
-```bash
-# Note: YOLO_MODEL doit correspondre au nom du dossier dans models/openvino/
-export YOLO_BACKEND=openvino_native
-export YOLO_OPENVINO_DIR=models/openvino/yolo26s_seg_openvino_model
-./run_people_counter_rtx.sh 4k yolo26s-seg 0.5 1 0 50 1 1
-```
-
-**CPU (PyTorch / Ultralytics) :**
-
-```bash
-export YOLO_BACKEND=torch
-export YOLO_MODEL=yolo26s-seg.pt
-./run_people_counter_rtx.sh 4k yolo26s-seg.pt 0.5 1 0 50 1 1
-```
-
-## Configuration Hétérogène (Multi-GPU/NPU)
-
-L'application permet de répartir la charge de calcul sur les différentes puces de votre machine.
-
-### Paramétrage manuel (Variables d'environnement) :
-
-| Variable | Usage | Valeurs possibles |
-| :--- | :--- | :--- |
-| `YOLO_BACKEND` | Moteur YOLO | `tensorrt_native`, `openvino_native`, `torch` |
-| `YOLO_DEVICE` | Puce pour YOLO | `cuda` (RTX), `GPU` (Arc), `NPU` (AI Boost), `CPU` |
-| `LWCC_BACKEND` | Moteur Densité | `tensorrt`, `openvino`, `torch` |
-| `OPENVINO_DEVICE` | Puce pour Densité OV | `GPU`, `NPU`, `CPU` |
-
-### Pipeline CPU / CUDA
-
-Les classes `YoloTensorRTEngine` et `YoloSegPeopleCounter` utilisent désormais `engines/yolo/preprocessors.py` pour séparer clairement le prétraitement CPU (`cv2`) de la variante CUDA (`torch` + `F.interpolate`). Activer `YOLO_USE_GPU_PREPROC=1` dans vos profils (par exemple `scripts/configs/rtx_extreme.env`) bascule sur le pipeline GPU et déporte la mise à l’échelle/copiage dans un kernel `interpolate` qui tourne directement sur la RTX. Le flag `YOLO_USE_GPU_POST=1` reste responsable de la génération des masques via `torch` ou `cupy` afin de ne pas repasser sur le CPU.
-
-Vous pouvez vérifier quel chemin est emprunté en relançant `./run_app.sh --profile <profil> --verbose` et en surveillant le log `[DEBUG] PERF BREAKDOWN` : `preprocess` devrait chuter vers la dizaine de millisecondes quand `YOLO_USE_GPU_PREPROC` est actif et que `torch.cuda.is_available()` retourne `True`.
-
-Le nouveau sélecteur **YOLO pipeline** dans l’interface Web expose les modes `auto`, `gpu`, `gpu_full` et `cpu` afin de basculer immédiatement entre les pipelines. `YOLO_USE_GPU_RENDER=1` force le choix GPU par défaut et active la classe `GpuMaskRenderer`, qui fusionne les masques sur la RTX avant de repartir sur l’image. L’option **Full GPU pipeline** conserve toute la chaîne (tiling, redimensionnement, inférence et rendu des masques) sur CUDA, évitant les copies intercalaires vers le CPU. Lorsqu’`EXTREME_DEBUG=1`, un log `[DEBUG] YOLO pipeline` indique à la fois le prétraitement et le renderer sélectionnés et les métriques retournent `yolo_pipeline_mode_effective` pour confirmer le chemin réellement emprunté.
-
-Vous pouvez également pré-configurer ce mode en exportant `YOLO_PIPELINE_MODE=gpu_full` dans vos profils (par exemple `scripts/configs/rtx_extreme.env`).
-
-### Exemples de profils :
-
-**1. Mode Full RTX (NVIDIA uniquement) :**
-```bash
-export YOLO_BACKEND=tensorrt_native && export LWCC_BACKEND=tensorrt
-./run_people_counter_rtx.sh 4k yolo26s-seg.engine
-```
-
-**2. Mode Hybrid Intel (Zéro charge RTX) :**
-```bash
-export YOLO_BACKEND=openvino_native && export YOLO_DEVICE=NPU
-export LWCC_BACKEND=openvino && export OPENVINO_DEVICE=GPU
-./run_people_counter_rtx.sh 4k yolo26s-seg
-```
-
-## Observabilité et métriques
-
-La vue web expose désormais un résumé des latences : la carte « mask timings » affiche les temps de création/envoi/affichage des masques, la carte « YOLO internal (ms) » regroupe les durées GPU/CPU et la console log `[MASK TIMING]` détaille les délais backend (création, envoi) pour comprendre pourquoi la superposition revient à ~1 Hz malgré un FPS backend plus élevé. Ces métriques s'appuient sur les métadonnées `created_at` enregistrées dans `yolo_seg_people_counter.py` et propagées via `camera_app_pipeline.py`/`static/js/app.js`.
-
-Les masques envoyés par le serveur sont mis à l'échelle pour correspondre à la taille du canevas client, et l'intervalle de polling s'adapte à la cadence YOLO ; ces comportements sont décrits dans le guide d'architecture (voir ci-dessous) et suivis par `plans/mask_overlay_roadmap.md` + `plans/mask_timing-plan.md`.
+- TensorRT engines are built with CUDA 13.1 + TensorRT 10.14 on a RTX 5060 Ti. A working CUDA/TensorRT stack is required to reproduce `.engine` files locally.
+- PyTorch exports target Opset 18 so that Ultralytics stays compatible with TensorRT conversion and the automatic converter doesn’t downgrade the model.
+- OpenVINO IR artifacts are stored under `models/openvino/`; the conversion pipeline has moved to `convert_pth_to_openvino.py` in case you want to re-export from different backends.
 
 ## Voir aussi
 
-- [README_DOCKER.md](README_DOCKER.md) : instructions spécifiques aux conteneurs et aux profils Docker/CUDA.
-- [README_ARCHITECTURE.md](README_ARCHITECTURE.md) : architecture complète (flux CUDA/CPU, masques, polling adaptatif) avec diagrammes mermaid.
-- Toute modification qui touche l'architecture, les masques ou la télémétrie doit aussi être reflétée dans `plans/documentation-refresh-plan.md`, `plans/mask_overlay_roadmap.md` et `plans/mask_timing-plan.md` pour garder la documentation et les feuilles de route alignées.
+- [README_DOCKER.md](README_DOCKER.md) : Docker build, runtime, and profiling documentation (includes the latest architecture diagrams for the containerized pipeline).
+- [README_ARCHITECTURE.md](README_ARCHITECTURE.md) : In-depth architecture, masking/metrics/tiling flows, mermaid diagrams, density model layout, and `.env` reference.
+- [plans/documentation-refresh-plan.md](plans/documentation-refresh-plan.md), [plans/mask_overlay_roadmap.md](plans/mask_overlay_roadmap.md), [plans/mask_timing-plan.md](plans/mask_timing-plan.md) : Track the doc refresh, mask overlay fixes, and timing instrumentation work.
+- [windows/setup_and_run.bat](windows/setup_and_run.bat) : Windows helper to spin up the camera bridge that exports the MJPEG stream consumed by WSL.
+
+Le README principal reste le point d’entrée : il doit donner envie d’essayer le projet, pointer vers la doc Docker pour les profils, vers l’architecture pour les détails techniques, et renvoyer vers les plans qui doivent toujours être mis à jour en parallèle.
 
 ## Support
 
-Ouvrez une issue si vous rencontrez des problèmes en précisant OS, GPU et commande utilisée.
-
+Ouvrez une issue si vous rencontrez des problèmes, en précisant OS, GPU, driver, et commande utilisée.
