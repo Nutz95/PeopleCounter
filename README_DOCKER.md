@@ -18,6 +18,7 @@ docker run --rm --gpus all people-counter:gpu-final python3 -c "import cv2; impo
 ```
 
 ## 🧱 Architecture CPU / GPU
+La section complète de l'architecture (flux CUDA/CPU, masques, métriques, polling adaptatif) sera transférée dans README_ARCHITECTURE.md avec des diagrammes mermaid détaillés ; ce fichier reste centré sur l'environnement Docker et ses profils.
 ```mermaid
 flowchart LR
    subgraph Host[Hôte Docker]
@@ -105,6 +106,11 @@ export YOLO_DEVICE=cuda
 Le script supprime les commentaires, source le fichier, puis lance `docker run` avec les variables exportées ; il n’est donc pas nécessaire de déclarer ces exports ailleurs. Après modification, relancez `./run_app.sh --profile rtx_extreme` pour voir les changements. Vous pouvez vérifier les paramètres appliqués en démarrant un shell dans le conteneur (`./run_app.sh --profile rtx_extreme bash`) et en tapant `printenv | grep YOLO`.
 
 Les variables `YOLO_USE_GPU_PREPROC` et `YOLO_USE_GPU_POST` respectent la même logique que les autres : toute valeur non vide active la version CUDA, et elles sont héritées par `camera_app_pipeline.py` à travers les modules `yolo_seg_people_counter.py` / `yolo_people_counter.py`. La carte « YOLO internal (ms) » dans l’interface Web affichera alors les temps d’inférence réels, y compris les gains éventuels si les kernels CUDA sont chargés.
+
+## Documentation et alignement
+
+- Architecture, masques et métriques : voir [README_ARCHITECTURE.md](README_ARCHITECTURE.md) pour les diagrammes mermaid et la vue de bout en bout, y compris le polling adaptatif et la carte de latence.
+- Toute évolution de l’architecture ou des temps de masque doit aussi être reflétée dans `plans/documentation-refresh-plan.md`, `plans/mask_overlay_roadmap.md` et `plans/mask_timing-plan.md` afin de garder les READMEs et les feuilles de route synchronisés.
 
 ## 🚀 Exécution de l'application
 

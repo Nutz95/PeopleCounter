@@ -90,9 +90,9 @@ logs/
 *.log
 build.log
 setup_run*.log
+people_count_*.csv
 
-# -- Plans
-plans/
+# -- config Copilot files --
 code-review-subagent.plan.md
 Conductor.plan.md
 implementation-subagent.plan.md
@@ -221,4 +221,5 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 models/
-planning-subagent.agent.md
+
+

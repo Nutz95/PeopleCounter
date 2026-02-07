@@ -210,6 +210,18 @@ export LWCC_BACKEND=openvino && export OPENVINO_DEVICE=GPU
 ./run_people_counter_rtx.sh 4k yolo26s-seg
 ```
 
+## Observabilité et métriques
+
+La vue web expose désormais un résumé des latences : la carte « mask timings » affiche les temps de création/envoi/affichage des masques, la carte « YOLO internal (ms) » regroupe les durées GPU/CPU et la console log `[MASK TIMING]` détaille les délais backend (création, envoi) pour comprendre pourquoi la superposition revient à ~1 Hz malgré un FPS backend plus élevé. Ces métriques s'appuient sur les métadonnées `created_at` enregistrées dans `yolo_seg_people_counter.py` et propagées via `camera_app_pipeline.py`/`static/js/app.js`.
+
+Les masques envoyés par le serveur sont mis à l'échelle pour correspondre à la taille du canevas client, et l'intervalle de polling s'adapte à la cadence YOLO ; ces comportements sont décrits dans le guide d'architecture (voir ci-dessous) et suivis par `plans/mask_overlay_roadmap.md` + `plans/mask_timing-plan.md`.
+
+## Voir aussi
+
+- [README_DOCKER.md](README_DOCKER.md) : instructions spécifiques aux conteneurs et aux profils Docker/CUDA.
+- [README_ARCHITECTURE.md](README_ARCHITECTURE.md) : architecture complète (flux CUDA/CPU, masques, polling adaptatif) avec diagrammes mermaid.
+- Toute modification qui touche l'architecture, les masques ou la télémétrie doit aussi être reflétée dans `plans/documentation-refresh-plan.md`, `plans/mask_overlay_roadmap.md` et `plans/mask_timing-plan.md` pour garder la documentation et les feuilles de route alignées.
+
 ## Support
 
 Ouvrez une issue si vous rencontrez des problèmes en précisant OS, GPU et commande utilisée.
