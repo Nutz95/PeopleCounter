@@ -1,6 +1,7 @@
 import os
 from enum import Enum, auto
 
+from env_utils import parse_bool_env
 
 class LogChannel(Enum):
     GLOBAL = "GLOBAL"
@@ -17,9 +18,9 @@ class LogLevel(Enum):
 
 class FilteredLogger:
     def __init__(self):
-        self.extreme_debug = os.environ.get('EXTREME_DEBUG', '0') == '1'
-        self.yolo_debug = os.environ.get('YOLO_DEBUG_LOGS', '0') == '1'
-        self.density_debug = os.environ.get('DENSITY_DEBUG_LOGS', '0') == '1'
+        self.extreme_debug = parse_bool_env('EXTREME_DEBUG', '0')
+        self.yolo_debug = parse_bool_env('YOLO_DEBUG_LOGS', '0')
+        self.density_debug = parse_bool_env('DENSITY_DEBUG_LOGS', '0')
 
     def configure(self, *, extreme_debug=None, yolo_debug=None, density_debug=None):
         if extreme_debug is not None:

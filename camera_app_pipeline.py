@@ -15,6 +15,7 @@ from camera_capture import CameraCapture
 from rtsp_capture import RTSPCapture
 from mqtt_capture import MqttCapture
 from pipeline_components import MetricsCollector, ModelLoader, ProfileManager
+from env_utils import parse_bool_env
 from logger.filtered_logger import (
     LogChannel,
     configure_logger,
@@ -62,8 +63,8 @@ class CameraAppPipeline:
         self.metrics_callback = metrics_callback
         self._cuda_preview_composer = None
         self._cuda_preview_enabled = bool(CudaPreviewComposer is not None and torch is not None and torch.cuda.is_available())
-        self.use_gui = os.environ.get('USE_GUI', '0') == '1'
-        self.graph_overlay_enabled = os.environ.get('GRAPH_OVERLAY', '1') == '1'
+        self.use_gui = parse_bool_env('USE_GUI', '0')
+        self.graph_overlay_enabled = parse_bool_env('GRAPH_OVERLAY', '1')
 
         cam_index = int(os.environ.get('CAMERA_INDEX', '0'))
         cam_width = int(os.environ.get('CAMERA_WIDTH', '1920'))
@@ -76,13 +77,13 @@ class CameraAppPipeline:
         self.denoise_strength = int(os.environ.get('DENOISE_STRENGTH', '0'))
         self.yolo_tiling = os.environ.get('YOLO_TILING', '1') == '1'
         self.density_tiling = os.environ.get('DENSITY_TILING', '1') == '1'
-        self.debug_tiling = os.environ.get('DEBUG_TILING', '0') == '1'
-        self.extreme_debug = os.environ.get('EXTREME_DEBUG', '0') == '1'
-        self.yolo_global_tile_only = os.environ.get('YOLO_GLOBAL_TILE_ONLY', '0') == '1'
-        self.density_enabled = os.environ.get('DISABLE_DENSITY_INFERENCE', '0') != '1'
-        self.density_heatmap_enabled = os.environ.get('DENSITY_HEATMAP_ENABLED', '0') == '1'
-        self.yolo_debug_logs = os.environ.get('YOLO_DEBUG_LOGS', '0') == '1'
-        self.density_debug_logs = os.environ.get('DENSITY_DEBUG_LOGS', '0') == '1'
+        self.debug_tiling = parse_bool_env('DEBUG_TILING', '0')
+        self.extreme_debug = parse_bool_env('EXTREME_DEBUG', '0')
+        self.yolo_global_tile_only = parse_bool_env('YOLO_GLOBAL_TILE_ONLY', '0')
+        self.density_enabled = not parse_bool_env('DISABLE_DENSITY_INFERENCE', '0')
+        self.density_heatmap_enabled = parse_bool_env('DENSITY_HEATMAP_ENABLED', '0')
+        self.yolo_debug_logs = parse_bool_env('YOLO_DEBUG_LOGS', '0')
+        self.density_debug_logs = parse_bool_env('DENSITY_DEBUG_LOGS', '0')
 
         if cmode == 'mqtt':
             log_info(LogChannel.GLOBAL, "Using MqttCapture (Maixcam/MQTT)")
