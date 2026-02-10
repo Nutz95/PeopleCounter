@@ -1,9 +1,9 @@
 # Action Plan: Multi-Frame Inference Flow (EPIC)
 
 ## TL;DR
-1. Keep `camera_app_pipeline.py` lean by offloading frame/task bookkeeping to scoped helpers.
-2. Create separate worker groups (YOLO vs. density) with bounded queues, saturation tracking, and ordered dispatch.
-3. Surface queue-depth metrics and warnings, ensuring UI/logs stay consistent while GPU stays busy.
+1. Keep `camera_app_pipeline.py` lean by offloading frame bookkeeping to the new `frame_tasks` helpers and the split `pipeline_components` modules (`ProfileManager`, `ModelLoader`, `MetricsCollector`).
+2. The runtime still threads through the `ModelThread` join loop; the plan is to evolve toward YOLO/density worker pools with bounded queues and ordered dispatch.
+3. Surface queue-depth metrics and warnings so the UI and logs stay consistent while the GPU runs at capacity.
 
 ## Architecture Overview
 
@@ -43,20 +43,23 @@ flowchart TD
     style DWorkers fill:#9ff,stroke:#333,stroke-width:2px
 ```
 
+Current runtime still drives YOLO/density via the existing `ModelThread` join loop in `camera_app_pipeline.py`; the diagram above is the eventual goal once the worker pools and queue helpers from `frame_tasks` are wired in.
+
 ## Milestones
 
 ### Milestone 1 — Frame/Result Task Abstractions
 - [x] Document responsibilities and expected flow (current plan serves as reference).
-- [x] Create `frame_tasks.py` defining `FrameTask`, `ResultTask`, and helpers for tagging frames with IDs/timestamps.
-- [x] Ensure tasks carry metadata for logging and queue-depth tracking.
+- [x] Build the `frame_tasks` package (`FrameTask`, `ResultTask`, `QueueDepth`) to carry IDs/timestamps, metadata, and logging helpers.
+- [x] Split `pipeline_components.py` into `ProfileManager`, `ModelLoader`, and `MetricsCollector` modules used by `camera_app_pipeline.py` to keep orchestration lean.
+- [x] Confirm `logger.filtered_logger` gating respects the per-task metadata when debugging YOLO/density outputs.
 
 ### Milestone 2 — Worker Pool Infrastructure
-- [ ] Introduce `worker_pool.py` to spawn thread pools per group, manage stop events, and emit saturation warnings when a queue hits capacity.
-- [ ] Provide APIs to enqueue frames, dequeue results, and expose queue depths for metrics/logging.
-- [ ] Validate that workers respect `configure_logger` settings and log through `logger.filtered_logger`.
+- [ ] Introduce `worker_pool.py` that consumes `frame_tasks.FrameTask`/`ResultTask`, manages stop events, and emits saturation warnings when queues hit capacity.
+- [ ] Surface APIs to enqueue frames, dequeue ordered results, and expose queue depths via `MetricsCollector` and logs.
+- [ ] Validate worker logging through `configure_logger` so filtered logs stay channel-aware while worker pools run.
 
 ### Milestone 3 — Capture Loop Overhaul in CameraAppPipeline
-- [ ] Replace the `ModelThread` join-based loop with queue-backed capture/enqueue semantics using the new helpers.
+- [ ] Replace the `ModelThread` join-based loop with queue-backed capture/enqueue semantics that tag `FrameTask`s with IDs and depth metadata.
 - [ ] Start YOLO/density worker groups before entering `run()`, tag frames with incrementing IDs, and enqueue them per group.
 - [ ] Drain the result queue each iteration, apply ordered dispatch (skip stale results), and keep the existing metrics/callback/log logic intact.
 - [ ] Expose `yolo_queue_depth`/`density_queue_depth` in the metrics payload and log warnings when groups drop frames due to saturation.
