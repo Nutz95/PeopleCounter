@@ -425,6 +425,19 @@ class PeopleCounterProcessor:
 
             return {'total_count': total_count, 'tiles': tiles}
 
+        if self.backend == "torch":
+            tiles = []
+            total_count = 0.0
+            for frame in frames:
+                _, _, count, mask = self.process(frame)
+                density_map = mask.astype(np.float32) if mask is not None else np.zeros((1, 1), dtype=np.float32)
+                tile_entry = self._create_tile_entry(density_map, frame.shape[:2])
+                if mask is not None:
+                    tile_entry['mask'] = mask
+                tile_entry['count'] = float(count)
+                tiles.append(tile_entry)
+                total_count += float(count)
+            return {'total_count': total_count, 'tiles': tiles}
         tiles = [self._build_empty_tile_entry(f.shape[:2]) for f in frames]
         return {'total_count': 0.0, 'tiles': tiles}
 

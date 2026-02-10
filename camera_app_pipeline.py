@@ -135,6 +135,7 @@ class CameraAppPipeline:
             cv2.moveWindow("People Count", (self.screen_width - init_w) // 2, (self.screen_height - init_h) // 2)
 
         self.use_yolo = True
+        self._density_payload_empty_logged = False
 
     def _apply_profile_settings(self, settings):
         self.yolo_tiling = settings.get('YOLO_TILING', '1') == '1'
@@ -454,6 +455,8 @@ class CameraAppPipeline:
             return False
         if yolo_counter is None or processor is None:
             print("[WARN] Model loader returned empty handles, keeping previous engines.")
+            if self.density_enabled and processor is None:
+                print("[WARN] Density processor unavailable after refresh; density output will stay muted until next reload.")
             return False
         self.yolo_counter = yolo_counter
         self.processor = processor
@@ -639,6 +642,14 @@ class CameraAppPipeline:
                     density_result = thr_density.result if thr_density else None
                     density_count = self._get_density_count(density_result)
                     density_heatmap_payload = self._build_density_heatmap_payload(density_result, frame.shape[:2])
+                    density_tile_count = len(density_heatmap_payload.get('tiles', [])) if density_heatmap_payload else 0
+                    density_ready = bool(density_heatmap_payload and density_tile_count)
+                    if self.density_enabled:
+                        if density_ready:
+                            self._density_payload_empty_logged = False
+                        elif not self._density_payload_empty_logged:
+                            print("[WARN] Density enabled but heatmap payload produced no tiles; overlay will stay empty until the model returns data.")
+                            self._density_payload_empty_logged = True
 
                     self._overlay_stats = {
                         "compose_ms": None,
@@ -732,6 +743,8 @@ class CameraAppPipeline:
                         "total_time": float(total_process_time),
                         "yolo_time": float(yolo_time),
                         "density_time": float(density_time),
+                        "density_ready": bool(density_ready),
+                        "density_tile_count": int(density_tile_count),
                         "yolo_device": self.yolo_device,
                         "density_device": self.density_device,
                         "debug_mode": bool(self.extreme_debug),
@@ -833,6 +846,8 @@ class CameraAppPipeline:
                             "density_heatmap_payload_latency_ms": metrics.get("density_heatmap_payload_latency_ms"),
                             "density_heatmap_payload_created_at": metrics.get("density_heatmap_payload_created_at"),
                             "density_heatmap_payload_sent_at": metrics.get("density_heatmap_payload_sent_at"),
+                            "density_ready": metrics.get("density_ready"),
+                            "density_tile_count": metrics.get("density_tile_count"),
                             "preprocessor_mode": metrics.get("yolo_preproc_mode"),
                             "renderer_mode": metrics.get("yolo_renderer_mode"),
                             "yolo_pipeline_mode": metrics.get("yolo_pipeline_mode"),

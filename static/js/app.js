@@ -20,6 +20,7 @@ const pipelineModeEffective = document.getElementById('pipelineModeEffective');
 const pipelineReportStatus = document.getElementById('pipelineReportStatus');
 const pipelineHelperStatus = document.getElementById('pipelineHelperStatus');
 const densityStatusValue = document.getElementById('densityStatusValue');
+const densityHeatmapStatus = document.getElementById('densityHeatmapStatus');
 const videoHistoryList = document.getElementById('videoHistoryList');
 const historyChartShell = document.getElementById('historyChartShell');
 const historyChart = document.getElementById('historyChart');
@@ -45,6 +46,7 @@ const maskTimingTotal = document.getElementById('maskTimingTotal');
 const maskOverlay = document.getElementById('maskOverlay');
 const maskToggle = document.getElementById('maskToggle');
 const densityToggle = document.getElementById('densityToggle');
+const densityTileCountValue = document.getElementById('densityTileCount');
 const videoStream = document.getElementById('videoStream');
 const maskCtx = maskOverlay ? maskOverlay.getContext('2d') : null;
 const maskLatencyChart = document.getElementById('maskLatencyChart');
@@ -710,6 +712,13 @@ async function refreshMetrics() {
         ? (data.density_enabled ? 'enabled' : 'disabled')
         : '—';
       densityStatusValue.textContent = statusText;
+    }
+    if (densityHeatmapStatus) {
+      densityHeatmapStatus.textContent = data.density_ready ? 'ready' : 'inactive';
+    }
+    if (densityTileCountValue) {
+      const tileCount = Number.isFinite(data.density_tile_count) ? data.density_tile_count : null;
+      densityTileCountValue.textContent = tileCount !== null ? tileCount : '—';
     }
     fpsBadge.textContent = 'FPS ' + (data.fps !== undefined ? data.fps.toFixed(1) : '--');
     fpsStatus.textContent = `FPS ${data.fps !== undefined ? data.fps.toFixed(1) : '--'} · ${data.profile_active ? 'Profiling' : 'Live'}`;
