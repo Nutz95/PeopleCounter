@@ -12,6 +12,7 @@ from engines.yolo.tensorrt_engine import YoloTensorRTEngine
 from engines.yolo.openvino_engine import YoloOpenVINOEngine
 from engines.yolo.ultralytics_engine import YoloUltralyticsEngine
 from cuda_profiler import cuda_profiler_enabled, cuda_profiler_start, cuda_profiler_stop
+from logger.filtered_logger import LogChannel, debug as log_debug, warning as log_warning
 
 try:
     import torch
@@ -129,7 +130,7 @@ class YoloSegPeopleCounter:
 
         # --- Draw (optimized combined mask) ---
         if self.debug_mode:
-            print(f"[DEBUG] YOLO pipeline tiles={len(tiles)} preproc={self.preprocessor_mode}")
+            log_debug(LogChannel.YOLO, f"YOLO pipeline tiles={len(tiles)} preproc={self.preprocessor_mode}")
         t_draw_start = time.time()
         image_out = image.copy()
         if draw_tiles:
@@ -153,7 +154,7 @@ class YoloSegPeopleCounter:
             'total_internal': total_internal,
             't_profile': None,
         }
-        print(f"  [YOLO DETAILED] Crop={t_crop*1000:.1f}ms | Infer={t_inf*1000:.1f}ms | Fuse={t_fuse*1000:.1f}ms | Draw={t_draw*1000:.1f}ms | Total={total_internal*1000:.1f}ms")
+        log_debug(LogChannel.YOLO, f"YOLO DETAILED: Crop={t_crop*1000:.1f}ms | Infer={t_inf*1000:.1f}ms | Fuse={t_fuse*1000:.1f}ms | Draw={t_draw*1000:.1f}ms | Total={total_internal*1000:.1f}ms")
 
         return int(total_count), image_out
 
@@ -205,7 +206,7 @@ class YoloSegPeopleCounter:
             self._cuda_tiler = CudaTiler(tile_size=self.tiler.tile_size)
         except EnvironmentError as exc:
             if self.debug_mode:
-                print(f"[WARN] CUDA helpers unavailable: {exc}")
+                log_warning(LogChannel.YOLO, f"CUDA helpers unavailable: {exc}")
             return False
         self._cuda_helpers_initialized = True
         return True
@@ -219,7 +220,7 @@ class YoloSegPeopleCounter:
         started = cuda_profiler_start()
         if not started:
             if self.debug_mode:
-                print("[DEBUG] CUDA profiler start failed")
+                log_debug(LogChannel.YOLO, "CUDA profiler start failed")
             return None
         return time.monotonic()
 
@@ -294,7 +295,7 @@ class YoloSegPeopleCounter:
             nonzero = int(np.count_nonzero(alpha))
             total = alpha.size
             coverage = nonzero * 100.0 / total if total else 0.0
-            print(f"[DEBUG] mask_small {mask_small.shape} nonzero {nonzero}/{total} ({coverage:.1f}%)")
+            log_debug(LogChannel.YOLO, f"mask_small {mask_small.shape} nonzero {nonzero}/{total} ({coverage:.1f}%)")
         created_ts = time.time()
         created_iso = datetime.utcfromtimestamp(created_ts).isoformat() + "Z"
         encode_future = self._mask_encoder.submit(self._encode_mask_blob, mask_small)
@@ -410,7 +411,7 @@ class YoloSegPeopleCounter:
                 return self._prepare_tiles_gpu(image_rgb, use_tiling, global_tile_only)
             except Exception as exc:
                 if self.debug_mode:
-                    print(f"[WARN] Full GPU tiling failed, falling back to CPU tiles: {exc}")
+                    log_warning(LogChannel.YOLO, f"Full GPU tiling failed, falling back to CPU tiles: {exc}")
                 self.last_pipeline_report = self._build_pipeline_report(last_gpu_full_success=False, last_gpu_full_error=str(exc))
         return self._prepare_tiles_cpu(image_rgb, use_tiling, global_tile_only)
 

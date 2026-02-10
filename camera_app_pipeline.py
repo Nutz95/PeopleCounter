@@ -15,6 +15,14 @@ from camera_capture import CameraCapture
 from rtsp_capture import RTSPCapture
 from mqtt_capture import MqttCapture
 from pipeline_components import MetricsCollector, ModelLoader, ProfileManager
+from logger.filtered_logger import (
+    LogChannel,
+    configure_logger,
+    debug as log_debug,
+    info as log_info,
+    warning as log_warning,
+    error as log_error,
+)
 
 try:
     import torch
@@ -72,16 +80,19 @@ class CameraAppPipeline:
         self.extreme_debug = os.environ.get('EXTREME_DEBUG', '0') == '1'
         self.yolo_global_tile_only = os.environ.get('YOLO_GLOBAL_TILE_ONLY', '0') == '1'
         self.density_enabled = os.environ.get('DISABLE_DENSITY_INFERENCE', '0') != '1'
+        self.density_heatmap_enabled = os.environ.get('DENSITY_HEATMAP_ENABLED', '0') == '1'
+        self.yolo_debug_logs = os.environ.get('YOLO_DEBUG_LOGS', '0') == '1'
+        self.density_debug_logs = os.environ.get('DENSITY_DEBUG_LOGS', '0') == '1'
 
         if cmode == 'mqtt':
-            print("Using MqttCapture (Maixcam/MQTT)")
+            log_info(LogChannel.GLOBAL, "Using MqttCapture (Maixcam/MQTT)")
             self.capture = MqttCapture(broker_address=broker_addr, broker_port=broker_port, exposure=mqtt_exposure, width=cam_width, height=cam_height)
         elif cmode == 'rtsp':
             rtsp_url = os.environ.get('RTSP_URL', 'rtsp://192.168.1.95:8554/live')
-            print(f"Using RTSPCapture ({rtsp_url})")
+            log_info(LogChannel.GLOBAL, f"Using RTSPCapture ({rtsp_url})")
             self.capture = RTSPCapture(rtsp_url, width=cam_width, height=cam_height)
         else:
-            print(f"Using CameraCapture (index={cam_index}, {cam_width}x{cam_height})")
+            log_info(LogChannel.GLOBAL, f"Using CameraCapture (index={cam_index}, {cam_width}x{cam_height})")
             self.capture = CameraCapture(camera_index=cam_index, width=cam_width, height=cam_height, auto_exposure=1)
 
         self.profile_manager = ProfileManager()
@@ -135,6 +146,7 @@ class CameraAppPipeline:
             cv2.moveWindow("People Count", (self.screen_width - init_w) // 2, (self.screen_height - init_h) // 2)
 
         self.use_yolo = True
+        configure_logger(extreme_debug=self.extreme_debug, yolo_debug=self.yolo_debug_logs, density_debug=self.density_debug_logs)
         self._density_payload_empty_logged = False
 
     def _apply_profile_settings(self, settings):
@@ -165,8 +177,7 @@ class CameraAppPipeline:
             self._cuda_preview_composer = CudaPreviewComposer(jpeg_quality=quality)
         except EnvironmentError as exc:
             self._cuda_preview_enabled = False
-            if self.extreme_debug:
-                print(f"[WARN] CUDA preview composer unavailable: {exc}")
+            log_warning(LogChannel.GLOBAL, f"CUDA preview composer unavailable: {exc}")
             return None
         return self._cuda_preview_composer
 
@@ -178,8 +189,7 @@ class CameraAppPipeline:
         try:
             return composer.compose(overlay_tensor, target_size=(win_h, win_w))
         except Exception as exc:
-            if self.extreme_debug:
-                print(f"[WARN] CUDA preview compose failed: {exc}")
+            log_warning(LogChannel.GLOBAL, f"CUDA preview compose failed: {exc}")
             return None
         finally:
             self._overlay_stats["preview_ms"] = (time.perf_counter() - start) * 1000
@@ -190,7 +200,7 @@ class CameraAppPipeline:
         if reason in self._cpu_fallback_reasons:
             return
         self._cpu_fallback_reasons.add(reason)
-        print(f"[CPU FALLBACK] {reason}")
+        log_warning(LogChannel.GLOBAL, f"CPU FALLBACK {reason}")
 
     def _resize_tensor(self, tensor, size, mode="bilinear"):
         if tensor is None or F is None:
@@ -204,50 +214,81 @@ class CameraAppPipeline:
             **resize_kwargs,
         ).squeeze(0)
 
+    def _colorize_heatmap(self, heatmap):
+        if heatmap is None:
+            return None
+        array = np.asarray(heatmap, dtype=np.uint8)
+        if array.size == 0:
+            return None
+        if array.ndim == 3 and array.shape[2] == 3:
+            return np.ascontiguousarray(array)
+        if array.ndim != 2:
+            return None
+        try:
+            colored = cv2.applyColorMap(array, cv2.COLORMAP_JET)
+        except Exception:
+            colored = cv2.cvtColor(array, cv2.COLOR_GRAY2BGR)
+        return np.ascontiguousarray(colored)
+
     def _build_density_tensors(self, density_result, render_size, device):
         if torch is None or density_result is None:
+            return None, None
+        tiles = density_result.get('tiles') or []
+        if not tiles:
             return None, None
         render_h, render_w = render_size
         target_h = max(1, render_h)
         target_w = max(1, render_w)
+        frame_h = density_result.get('frame_height') or target_h
+        frame_w = density_result.get('frame_width') or target_w
+        if frame_h <= 0:
+            frame_h = target_h
+        if frame_w <= 0:
+            frame_w = target_w
+        width_ratio = float(target_w) / frame_w if frame_w else 1.0
+        height_ratio = float(target_h) / frame_h if frame_h else 1.0
         color_tensor = torch.zeros((3, target_h, target_w), device=device, dtype=torch.float32)
         mask_tensor = torch.zeros((1, target_h, target_w), device=device, dtype=torch.float32)
+        default_color = torch.tensor([0.0, 0.0, 255.0], dtype=torch.float32, device=device).view(3, 1, 1)
+        color_tensor[:] = default_color
+        quad_coords = self.density_quads_coords if self.density_tiling else []
+        default_coords = (0, 0, frame_w, frame_h)
         try:
-            if self.density_tiling and len(density_result) >= 4:
-                _, quad_colors, _, quad_masks = density_result
-                mid_h = target_h // 2
-                mid_w = target_w // 2
-                positions = [
-                    (0, mid_h, 0, mid_w),
-                    (0, mid_h, mid_w, target_w),
-                    (mid_h, target_h, 0, mid_w),
-                    (mid_h, target_h, mid_w, target_w),
-                ]
-                for idx, (color_np, mask_np) in enumerate(zip(quad_colors, quad_masks)):
-                    if color_np is None or mask_np is None:
-                        continue
-                    y0, y1, x0, x1 = positions[idx]
-                    chunk_h = max(1, y1 - y0)
-                    chunk_w = max(1, x1 - x0)
-                    src_color = torch.from_numpy(color_np).permute(2, 0, 1).to(device=device, dtype=torch.float32)
-                    src_mask = torch.from_numpy(mask_np).unsqueeze(0).to(device=device, dtype=torch.float32)
-                    resized_color = self._resize_tensor(src_color, (chunk_h, chunk_w))
-                    resized_mask = self._resize_tensor(src_mask, (chunk_h, chunk_w), mode="nearest")
-                    color_tensor[:, y0:y1, x0:x1] = resized_color
-                    mask_tensor[:, y0:y1, x0:x1] = resized_mask
-            elif len(density_result) >= 4:
-                _, dens_raw, _, dens_mask = density_result
-                if dens_raw is None or dens_mask is None:
-                    return None, None
-                src_color = torch.from_numpy(dens_raw).permute(2, 0, 1).to(device=device, dtype=torch.float32)
-                src_mask = torch.from_numpy(dens_mask).unsqueeze(0).to(device=device, dtype=torch.float32)
-                color_tensor = self._resize_tensor(src_color, (target_h, target_w))
-                mask_tensor = self._resize_tensor(src_mask, (target_h, target_w), mode="nearest")
-            else:
-                return None, None
+            for idx, tile in enumerate(tiles):
+                mask = tile.get('mask')
+                if mask is None or not getattr(mask, 'size', 0):
+                    continue
+                coords = quad_coords[idx] if idx < len(quad_coords) else default_coords
+                x0, y0, x1, y1 = coords
+                x0 = max(0, min(frame_w, x0))
+                y0 = max(0, min(frame_h, y0))
+                x1 = max(x0 + 1, min(frame_w, x1))
+                y1 = max(y0 + 1, min(frame_h, y1))
+                dest_x = int(round(x0 * width_ratio))
+                dest_y = int(round(y0 * height_ratio))
+                dest_right = int(round(x1 * width_ratio))
+                dest_bottom = int(round(y1 * height_ratio))
+                dest_x = max(0, min(target_w - 1, dest_x))
+                dest_y = max(0, min(target_h - 1, dest_y))
+                dest_right = max(dest_x + 1, min(target_w, dest_right))
+                dest_bottom = max(dest_y + 1, min(target_h, dest_bottom))
+                dest_w = dest_right - dest_x
+                dest_h = dest_bottom - dest_y
+                if dest_w <= 0 or dest_h <= 0:
+                    continue
+                mask_arr = np.ascontiguousarray(np.asarray(mask, dtype=np.uint8))
+                src_mask = torch.from_numpy(mask_arr).unsqueeze(0).to(device=device, dtype=torch.float32)
+                resized_mask = self._resize_tensor(src_mask, (dest_h, dest_w), mode="nearest")
+                mask_tensor[:, dest_y:dest_bottom, dest_x:dest_right] = resized_mask
+                if self.density_heatmap_enabled:
+                    heatmap = tile.get('heatmap')
+                    color_np = self._colorize_heatmap(heatmap)
+                    if color_np is not None and getattr(color_np, 'size', 0):
+                        src_color = torch.from_numpy(np.ascontiguousarray(color_np)).permute(2, 0, 1).to(device=device, dtype=torch.float32)
+                        resized_color = self._resize_tensor(src_color, (dest_h, dest_w))
+                        color_tensor[:, dest_y:dest_bottom, dest_x:dest_right] = resized_color
         except Exception as exc:
-            if self.extreme_debug:
-                print(f"[WARN] Failed to build density tensors on CUDA: {exc}")
+            log_warning(LogChannel.DENSITY, f"Failed to build density tensors on CUDA: {exc}")
             return None, None
         return color_tensor, mask_tensor
 
@@ -336,13 +377,13 @@ class CameraAppPipeline:
         tiles = density_result.get('tiles', [])
         return sum(float(tile.get('count', 0.0)) for tile in tiles)
 
-    def _encode_density_mask(self, mask):
-        if mask is None:
+    def _encode_density_image(self, image):
+        if image is None:
             return None
-        mask_arr = np.asarray(mask, dtype=np.uint8)
-        if mask_arr.size == 0:
+        image_arr = np.asarray(image, dtype=np.uint8)
+        if image_arr.size == 0:
             return None
-        success, encoded = cv2.imencode('.png', mask_arr, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        success, encoded = cv2.imencode('.png', image_arr, [cv2.IMWRITE_PNG_COMPRESSION, 3])
         if not success:
             return None
         return base64.b64encode(encoded.tobytes()).decode('ascii')
@@ -358,6 +399,7 @@ class CameraAppPipeline:
         created_ts = time.time()
         created_iso = datetime.utcfromtimestamp(created_ts).isoformat() + "Z"
         payload_tiles = []
+        kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         for idx, tile in enumerate(tiles):
             mask = tile.get('mask')
             if mask is None:
@@ -365,11 +407,31 @@ class CameraAppPipeline:
             mask_arr = np.asarray(mask, dtype=np.uint8)
             if mask_arr.size == 0:
                 continue
-            blob = self._encode_density_mask(mask_arr)
-            if not blob:
-                continue
             coords = quad_coords[idx] if idx < len(quad_coords) else (0, 0, frame_w, frame_h)
             x0, y0, x1, y1 = coords
+            hotspots = []
+            if mask_arr.size:
+                mask_dilated = cv2.dilate(mask_arr, kernel_dilate, iterations=1)
+                contours, _ = cv2.findContours(mask_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                tile_scale_x = tile.get('scale_x', 1.0)
+                tile_scale_y = tile.get('scale_y', 1.0)
+                for contour in contours:
+                    if cv2.contourArea(contour) <= 30:
+                        continue
+                    (cx, cy), radius = cv2.minEnclosingCircle(contour)
+                    global_x = x0 + cx * tile_scale_x
+                    global_y = y0 + cy * tile_scale_y
+                    hotspot_radius = max(2.0, radius * max(tile_scale_x, tile_scale_y))
+                    hotspots.append({
+                        'x': float(max(0, min(frame_w, global_x))),
+                        'y': float(max(0, min(frame_h, global_y))),
+                        'radius': float(hotspot_radius),
+                    })
+            blob = None
+            if self.density_heatmap_enabled:
+                color_img = self._colorize_heatmap(tile.get('heatmap'))
+                if color_img is not None:
+                    blob = self._encode_density_image(color_img)
             mask_h, mask_w = mask_arr.shape[:2]
             payload_tiles.append({
                 'blob': blob,
@@ -382,6 +444,7 @@ class CameraAppPipeline:
                 'scale_x': float(tile.get('scale_x', 1.0)),
                 'scale_y': float(tile.get('scale_y', 1.0)),
                 'count': float(tile.get('count', 0.0)),
+                'hotspots': hotspots,
             })
         if not payload_tiles:
             return None
@@ -391,6 +454,7 @@ class CameraAppPipeline:
             'frame_width': frame_w,
             'frame_height': frame_h,
             'total_count': float(density_result.get('total_count', 0.0)),
+            'heatmap_enabled': bool(self.density_heatmap_enabled),
             'tiles': payload_tiles,
         }
 
@@ -402,25 +466,46 @@ class CameraAppPipeline:
         frame_render = cv2.resize(frame_image, (render_w, render_h))
         density_raw_small = np.zeros((render_h, render_w, 3), dtype=np.uint8)
         density_mask_small = np.zeros((render_h, render_w), dtype=np.uint8)
-        mid_h, mid_w = render_h // 2, render_w // 2
-
-        if self.density_tiling and density_result and len(density_result) >= 4:
-            _, quad_res_color, _, quad_res_masks = density_result
-            density_raw_small[0:mid_h, 0:mid_w] = cv2.resize(quad_res_color[0], (mid_w, mid_h))
-            density_raw_small[0:mid_h, mid_w:render_w] = cv2.resize(quad_res_color[1], (render_w-mid_w, mid_h))
-            density_raw_small[mid_h:render_h, 0:mid_w] = cv2.resize(quad_res_color[2], (mid_w, render_h-mid_h))
-            density_raw_small[mid_h:render_h, mid_w:render_w] = cv2.resize(quad_res_color[3], (render_w-mid_w, render_h-mid_h))
-
-            density_mask_small[0:mid_h, 0:mid_w] = cv2.resize(quad_res_masks[0], (mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
-            density_mask_small[0:mid_h, mid_w:render_w] = cv2.resize(quad_res_masks[1], (render_w-mid_w, mid_h), interpolation=cv2.INTER_NEAREST)
-            density_mask_small[mid_h:render_h, 0:mid_w] = cv2.resize(quad_res_masks[2], (mid_w, render_h-mid_h), interpolation=cv2.INTER_NEAREST)
-            density_mask_small[mid_h:render_h, mid_w:render_w] = cv2.resize(quad_res_masks[3], (render_w-mid_w, render_h-mid_h), interpolation=cv2.INTER_NEAREST)
-        elif density_result and len(density_result) >= 4:
-            _, dens_raw, _, dens_mask = density_result
-            if dens_raw is not None:
-                density_raw_small = cv2.resize(dens_raw, (render_w, render_h))
-            if dens_mask is not None:
-                density_mask_small = cv2.resize(dens_mask, (render_w, render_h), interpolation=cv2.INTER_NEAREST)
+        frame_w = density_result.get('frame_width') if density_result else render_w
+        frame_h = density_result.get('frame_height') if density_result else render_h
+        tiles = density_result.get('tiles') if density_result else []
+        if frame_w <= 0:
+            frame_w = render_w
+        if frame_h <= 0:
+            frame_h = render_h
+        scale_x = render_w / frame_w if frame_w else 1.0
+        scale_y = render_h / frame_h if frame_h else 1.0
+        quad_coords = self.density_quads_coords if self.density_tiling else []
+        for idx, tile in enumerate(tiles or []):
+            coords = quad_coords[idx] if idx < len(quad_coords) else (0, 0, frame_w, frame_h)
+            left, top, right, bottom = coords
+            left = max(0, min(frame_w, left))
+            top = max(0, min(frame_h, top))
+            right = max(left + 1, min(frame_w, right))
+            bottom = max(top + 1, min(frame_h, bottom))
+            draw_x = int(round(left * scale_x))
+            draw_y = int(round(top * scale_y))
+            draw_right = int(round(right * scale_x))
+            draw_bottom = int(round(bottom * scale_y))
+            draw_x = max(0, min(render_w - 1, draw_x))
+            draw_y = max(0, min(render_h - 1, draw_y))
+            draw_right = max(draw_x + 1, min(render_w, draw_right))
+            draw_bottom = max(draw_y + 1, min(render_h, draw_bottom))
+            tile_w = draw_right - draw_x
+            tile_h = draw_bottom - draw_y
+            if tile_w <= 0 or tile_h <= 0:
+                continue
+            heatmap = tile.get('heatmap')
+            color_img = self._colorize_heatmap(heatmap)
+            if color_img is not None:
+                resized_color = cv2.resize(color_img, (tile_w, tile_h), interpolation=cv2.INTER_LINEAR)
+                density_raw_small[draw_y:draw_bottom, draw_x:draw_right] = resized_color[:tile_h, :tile_w]
+            mask = tile.get('mask')
+            if mask is not None:
+                mask_arr = np.asarray(mask, dtype=np.uint8)
+                if mask_arr.size:
+                    resized_mask = cv2.resize(mask_arr, (tile_w, tile_h), interpolation=cv2.INTER_NEAREST)
+                    density_mask_small[draw_y:draw_bottom, draw_x:draw_right] = resized_mask[:tile_h, :tile_w]
 
         mask_3ch = cv2.cvtColor(density_mask_small, cv2.COLOR_GRAY2BGR)
         heatmap_on_black = cv2.bitwise_and(density_raw_small, mask_3ch)
@@ -451,12 +536,12 @@ class CameraAppPipeline:
         try:
             yolo_counter, processor, metadata = self.model_loader.load(settings)
         except Exception as exc:
-            print(f"[WARN] Failed to reload models: {exc}")
+            log_warning(LogChannel.GLOBAL, f"Failed to reload models: {exc}")
             return False
         if yolo_counter is None or processor is None:
-            print("[WARN] Model loader returned empty handles, keeping previous engines.")
+            log_warning(LogChannel.GLOBAL, "Model loader returned empty handles, keeping previous engines.")
             if self.density_enabled and processor is None:
-                print("[WARN] Density processor unavailable after refresh; density output will stay muted until next reload.")
+                log_warning(LogChannel.DENSITY, "Density processor unavailable after refresh; density output will stay muted until next reload.")
             return False
         self.yolo_counter = yolo_counter
         self.processor = processor
@@ -466,7 +551,8 @@ class CameraAppPipeline:
         self._models_loaded = True
         self.set_yolo_pipeline_mode(self.yolo_pipeline_mode)
         if self.yolo_counter and hasattr(self.yolo_counter, 'set_debug_mode'):
-            self.yolo_counter.set_debug_mode(self.extreme_debug)
+            should_debug = self.extreme_debug or self.yolo_debug_logs
+            self.yolo_counter.set_debug_mode(should_debug)
         return True
 
     def apply_profile(self, profile_name):
@@ -477,13 +563,23 @@ class CameraAppPipeline:
     def set_graph_overlay(self, enabled):
         self.graph_overlay_enabled = bool(enabled)
 
+    def set_density_heatmap_enabled(self, enabled):
+        new_state = bool(enabled)
+        if new_state != self.density_heatmap_enabled:
+            if self.extreme_debug or self.density_debug_logs:
+                log_info(LogChannel.DENSITY, f"Density heatmap generation {'enabled' if new_state else 'disabled'}")
+        self.density_heatmap_enabled = new_state
+        return self.density_heatmap_enabled
+
     def attach_metrics_callback(self, callback):
         self.metrics_callback = callback
 
     def set_debug_mode(self, enabled):
         self.extreme_debug = bool(enabled)
         if self.yolo_counter and hasattr(self.yolo_counter, 'set_debug_mode'):
-            self.yolo_counter.set_debug_mode(self.extreme_debug)
+            should_debug = self.extreme_debug or self.yolo_debug_logs
+            self.yolo_counter.set_debug_mode(should_debug)
+        configure_logger(extreme_debug=self.extreme_debug, yolo_debug=self.yolo_debug_logs, density_debug=self.density_debug_logs)
 
     def set_yolo_pipeline_mode(self, mode):
         normalized = (mode or 'auto').lower()
@@ -525,13 +621,13 @@ class CameraAppPipeline:
                     retry_count = 0
                     frame = self.capture.get_frame()
                     while frame is None and retry_count < max_retries:
-                        print(f"[WARNING] Frame is None. Tentative {retry_count+1}/{max_retries}...")
+                        log_warning(LogChannel.GLOBAL, f"Frame is None. Tentative {retry_count+1}/{max_retries}...")
                         time.sleep(1)
                         frame = self.capture.get_frame()
                         retry_count += 1
                     if frame is None:
-                        print("[ERROR] Frame is None. Vérifiez la connexion de la caméra et ses paramètres.")
-                        print(f"Camera opened: {self.capture.is_opened}")
+                        log_error(LogChannel.GLOBAL, "Frame is None. Vérifiez la connexion de la caméra et ses paramètres.")
+                        log_info(LogChannel.GLOBAL, f"Camera opened: {self.capture.is_opened}")
                         break
                     # print(f"Frame shape: {frame.shape}")
                     if self.profile_manager.pending_profile_reload:
@@ -539,7 +635,7 @@ class CameraAppPipeline:
                         if forced:
                             self._apply_profile_settings(self.profile_manager.profile_settings)
                             if not self._refresh_models(force=True):
-                                print("[ERROR] Impossible de recharger les modèles YOLO/Density, arrêt.")
+                                log_error(LogChannel.GLOBAL, "Impossible de recharger les modèles YOLO/Density, arrêt.")
                                 break
                     self.active_profile_name = self.profile_manager.active_profile_name or 'Live Metrics'
                     preprocess_duration = 0.0
@@ -556,10 +652,10 @@ class CameraAppPipeline:
                     t_loop_start = time.time()
 
                     if not self.yolo_counter:
-                        print("[ERROR] Le compteur YOLO n'est pas initialisé, arrêt du pipeline.")
+                        log_error(LogChannel.YOLO, "Le compteur YOLO n'est pas initialisé, arrêt du pipeline.")
                         break
                     if self.density_enabled and not self.processor:
-                        print("[ERROR] Le processeur density n'est pas initialisé, arrêt du pipeline.")
+                        log_error(LogChannel.DENSITY, "Le processeur density n'est pas initialisé, arrêt du pipeline.")
                         break
                     
                     # 1. YOLO INFERENCE (Tiling optionale)
@@ -614,15 +710,15 @@ class CameraAppPipeline:
                     if thr_yolo.result is not None:
                         yolo_count, frame_with_bbox = thr_yolo.result
                     else:
-                        print("[ERROR] YOLO thread returned None.")
+                        log_error(LogChannel.YOLO, "YOLO thread returned None.")
                         yolo_count, frame_with_bbox = 0, frame.copy()
                     pipeline_report = {}
                     if self.yolo_counter and hasattr(self.yolo_counter, 'get_pipeline_report'):
                         pipeline_report = self.yolo_counter.get_pipeline_report() or {}
                         self.latest_pipeline_report = pipeline_report
                         self.latest_metrics['yolo_pipeline_mode'] = pipeline_report.get('active_mode', 'unknown')
-                        if self.extreme_debug and pipeline_report:
-                            print(f"[DEBUG] YOLO pipeline report: {pipeline_report}")
+                        if pipeline_report:
+                            log_debug(LogChannel.YOLO, f"YOLO pipeline report: {pipeline_report}")
                     
                     # Attente Density
                     if thr_density:
@@ -639,16 +735,20 @@ class CameraAppPipeline:
                     else:
                         win_w, win_h = 1280, 720
 
-                    density_result = thr_density.result if thr_density else None
-                    density_count = self._get_density_count(density_result)
-                    density_heatmap_payload = self._build_density_heatmap_payload(density_result, frame.shape[:2])
+                    raw_density_result = thr_density.result if thr_density else None
+                    density_result = raw_density_result if isinstance(raw_density_result, dict) else None
+                    if density_result is not None:
+                        density_count = self._get_density_count(density_result)
+                    else:
+                        density_count = float(raw_density_result[2]) if (isinstance(raw_density_result, tuple) and len(raw_density_result) >= 3) else 0.0
+                    density_heatmap_payload = self._build_density_heatmap_payload(density_result, frame.shape[:2]) if density_result else None
                     density_tile_count = len(density_heatmap_payload.get('tiles', [])) if density_heatmap_payload else 0
                     density_ready = bool(density_heatmap_payload and density_tile_count)
                     if self.density_enabled:
                         if density_ready:
                             self._density_payload_empty_logged = False
                         elif not self._density_payload_empty_logged:
-                            print("[WARN] Density enabled but heatmap payload produced no tiles; overlay will stay empty until the model returns data.")
+                            log_warning(LogChannel.DENSITY, "Density enabled but heatmap payload produced no tiles; overlay will stay empty until the model returns data.")
                             self._density_payload_empty_logged = True
 
                     self._overlay_stats = {
@@ -697,7 +797,7 @@ class CameraAppPipeline:
                     if self.extreme_debug and (compose_breach or draw_breach):
                         compose_label = f"{compose_ms:.1f}" if compose_ms is not None else '—'
                         draw_label = f"{renderer_draw_total:.1f}" if renderer_draw_total is not None else '—'
-                        print(f"[GPU PERF] Overlay compose={compose_label}ms draw={draw_label}ms")
+                        log_debug(LogChannel.GLOBAL, f"GPU PERF Overlay compose={compose_label}ms draw={draw_label}ms")
 
                     cpu_usage = psutil.cpu_percent()
 
@@ -706,10 +806,10 @@ class CameraAppPipeline:
                         yp_engine = getattr(self.yolo_counter, 'engine', None)
                         yp_debug = getattr(yp_engine, 'last_perf', {}) if yp_engine else yp
                         dp_debug = getattr(self.processor, 'last_perf', {})
-                        print(f"[DEBUG] PERF BREAKDOWN (ms):")
-                        print(f"  Capture: {capture_time*1000:.1f}ms")
-                        print(f"  YOLO {self.yolo_counter.model_name}: Pre={yp_debug.get('preprocess',0)*1000:.1f} | GPU={yp_debug.get('infer',0)*1000:.1f} | Post={yp_debug.get('postprocess',0)*1000:.1f}")
-                        print(f"  DENS {self.processor.model_name}: Pre={dp_debug.get('preprocess',0)*1000:.1f} | GPU={dp_debug.get('infer',0)*1000:.1f} | Post={dp_debug.get('postprocess',0)*1000:.1f}")
+                        log_debug(LogChannel.GLOBAL, "PERF BREAKDOWN (ms):")
+                        log_debug(LogChannel.GLOBAL, f"  Capture: {capture_time*1000:.1f}ms")
+                        log_debug(LogChannel.YOLO, f"  YOLO {self.yolo_counter.model_name}: Pre={yp_debug.get('preprocess',0)*1000:.1f} | GPU={yp_debug.get('infer',0)*1000:.1f} | Post={yp_debug.get('postprocess',0)*1000:.1f}")
+                        log_debug(LogChannel.DENSITY, f"  DENS {self.processor.model_name}: Pre={dp_debug.get('preprocess',0)*1000:.1f} | GPU={dp_debug.get('infer',0)*1000:.1f} | Post={dp_debug.get('postprocess',0)*1000:.1f}")
 
                     total_process_time = time.time() - t_loop_start
 
@@ -819,7 +919,7 @@ class CameraAppPipeline:
                         metrics["density_heatmap_payload_latency_ms"] = None
                     if mask_payload_created_ts is not None:
                         latency_ms = metrics["yolo_mask_payload_latency_ms"]
-                        print(f"[MASK TIMING] created={mask_payload_created_iso} sent={mask_sent_iso} latency={latency_ms:.1f}ms")
+                        log_debug(LogChannel.YOLO, f"MASK TIMING created={mask_payload_created_iso} sent={mask_sent_iso} latency={latency_ms:.1f}ms")
                     self.latest_metrics = metrics
                     if self.profile_active:
                         self.profile_log.append(metrics.copy())
@@ -829,32 +929,31 @@ class CameraAppPipeline:
                         try:
                             self.metrics_callback(metrics)
                         except Exception as exc:
-                            print(f"[WARN] Metrics callback failed: {exc}")
+                            log_warning(LogChannel.GLOBAL, f"Metrics callback failed: {exc}")
                     
-                    if self.extreme_debug:
-                        summary = {
-                            "fps": round(fps, 2),
-                            "cpu_usage": round(cpu_usage, 1),
-                            "capture_ms": round(capture_time * 1000, 1),
-                            "pipeline_pre_ms": round(preprocess_duration * 1000, 1),
-                            "pipeline_post_ms": round(postprocess_duration * 1000, 1),
-                            "yolo_time_ms": round(yolo_time * 1000, 1),
-                            "density_time_ms": round(density_time * 1000, 1),
-                            "mask_latency_ms": metrics.get("yolo_mask_payload_latency_ms"),
-                            "mask_created_at": metrics.get("yolo_mask_payload_created_at"),
-                            "mask_sent_at": metrics.get("yolo_mask_payload_sent_at"),
-                            "density_heatmap_payload_latency_ms": metrics.get("density_heatmap_payload_latency_ms"),
-                            "density_heatmap_payload_created_at": metrics.get("density_heatmap_payload_created_at"),
-                            "density_heatmap_payload_sent_at": metrics.get("density_heatmap_payload_sent_at"),
-                            "density_ready": metrics.get("density_ready"),
-                            "density_tile_count": metrics.get("density_tile_count"),
-                            "preprocessor_mode": metrics.get("yolo_preproc_mode"),
-                            "renderer_mode": metrics.get("yolo_renderer_mode"),
-                            "yolo_pipeline_mode": metrics.get("yolo_pipeline_mode"),
-                            "yolo_cuda_profiler_ms": metrics.get("yolo_cuda_profiler_ms"),
-                            "density_cuda_profiler_ms": metrics.get("density_cuda_profiler_ms"),
-                        }
-                        print(f"[DEBUG] AGGREGATED METRICS {json.dumps(summary)}")
+                    summary = {
+                        "fps": round(fps, 2),
+                        "cpu_usage": round(cpu_usage, 1),
+                        "capture_ms": round(capture_time * 1000, 1),
+                        "pipeline_pre_ms": round(preprocess_duration * 1000, 1),
+                        "pipeline_post_ms": round(postprocess_duration * 1000, 1),
+                        "yolo_time_ms": round(yolo_time * 1000, 1),
+                        "density_time_ms": round(density_time * 1000, 1),
+                        "mask_latency_ms": metrics.get("yolo_mask_payload_latency_ms"),
+                        "mask_created_at": metrics.get("yolo_mask_payload_created_at"),
+                        "mask_sent_at": metrics.get("yolo_mask_payload_sent_at"),
+                        "density_heatmap_payload_latency_ms": metrics.get("density_heatmap_payload_latency_ms"),
+                        "density_heatmap_payload_created_at": metrics.get("density_heatmap_payload_created_at"),
+                        "density_heatmap_payload_sent_at": metrics.get("density_heatmap_payload_sent_at"),
+                        "density_ready": metrics.get("density_ready"),
+                        "density_tile_count": metrics.get("density_tile_count"),
+                        "preprocessor_mode": metrics.get("yolo_preproc_mode"),
+                        "renderer_mode": metrics.get("yolo_renderer_mode"),
+                        "yolo_pipeline_mode": metrics.get("yolo_pipeline_mode"),
+                        "yolo_cuda_profiler_ms": metrics.get("yolo_cuda_profiler_ms"),
+                        "density_cuda_profiler_ms": metrics.get("density_cuda_profiler_ms"),
+                    }
+                    log_debug(LogChannel.GLOBAL, f"AGGREGATED METRICS {json.dumps(summary)}")
 
                     if self.use_gui:
                         cv2.imshow("People Count", preview_frame)
@@ -876,10 +975,10 @@ class CameraAppPipeline:
                             max_count = max(avg_yolo, avg_density)
                             now_dt = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             if self.extreme_debug:
-                                print(f"Average YOLO ({yolo_label}) People (last {AVERAGING_PERIOD_SECONDS} sec): {avg_yolo:.2f}")
-                                print(f"Average Density People (last {AVERAGING_PERIOD_SECONDS} sec): {avg_density:.2f}")
-                                print(f"Average Combined (last {AVERAGING_PERIOD_SECONDS} sec): {avg_combined:.2f}")
-                                print(f"Max People Count (last {AVERAGING_PERIOD_SECONDS} sec): {max_count:.2f}")
+                                log_debug(LogChannel.YOLO, f"Average YOLO ({yolo_label}) People (last {AVERAGING_PERIOD_SECONDS} sec): {avg_yolo:.2f}")
+                                log_debug(LogChannel.DENSITY, f"Average Density People (last {AVERAGING_PERIOD_SECONDS} sec): {avg_density:.2f}")
+                                log_debug(LogChannel.GLOBAL, f"Average Combined (last {AVERAGING_PERIOD_SECONDS} sec): {avg_combined:.2f}")
+                                log_debug(LogChannel.GLOBAL, f"Max People Count (last {AVERAGING_PERIOD_SECONDS} sec): {max_count:.2f}")
                             writer.writerow([now_dt, f"{avg_yolo:.2f}", f"{avg_density:.2f}", f"{avg_combined:.2f}", f"{max_count:.2f}"])
                             csvfile.flush()
                             log_data.append((now_dt, avg_yolo, avg_density, avg_combined, max_count))
@@ -899,7 +998,7 @@ class CameraAppPipeline:
                 self.capture.release()
                 if self.use_gui:
                     cv2.destroyAllWindows()
-                print("Camera released and application closed.")
+                log_info(LogChannel.GLOBAL, "Camera released and application closed.")
                 # Génère la courbe à partir du CSV
                 if log_data:
                     times = [dt for dt, _, _, _, _ in log_data]
@@ -922,7 +1021,7 @@ class CameraAppPipeline:
                     plt.grid(True, linestyle='--', alpha=0.5)
                     plt.tight_layout()
                     plt.savefig(img_path)
-                    print(f"Saved plot to {img_path}")
+                    log_info(LogChannel.GLOBAL, f"Saved plot to {img_path}")
 
 if __name__ == "__main__":
     sys.path.append(r"E:\AI\lwcc")

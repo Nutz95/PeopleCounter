@@ -1,0 +1,82 @@
+import os
+from enum import Enum, auto
+
+
+class LogChannel(Enum):
+    GLOBAL = "GLOBAL"
+    YOLO = "YOLO"
+    DENSITY = "DENSITY"
+
+
+class LogLevel(Enum):
+    INFO = "INFO"
+    WARNING = "WARN"
+    ERROR = "ERROR"
+    DEBUG = "DEBUG"
+
+
+class FilteredLogger:
+    def __init__(self):
+        self.extreme_debug = os.environ.get('EXTREME_DEBUG', '0') == '1'
+        self.yolo_debug = os.environ.get('YOLO_DEBUG_LOGS', '0') == '1'
+        self.density_debug = os.environ.get('DENSITY_DEBUG_LOGS', '0') == '1'
+
+    def configure(self, *, extreme_debug=None, yolo_debug=None, density_debug=None):
+        if extreme_debug is not None:
+            self.extreme_debug = extreme_debug
+        if yolo_debug is not None:
+            self.yolo_debug = yolo_debug
+        if density_debug is not None:
+            self.density_debug = density_debug
+
+    def should_log_debug(self, channel):
+        if channel == LogChannel.GLOBAL:
+            return self.extreme_debug or self.yolo_debug or self.density_debug
+        if channel == LogChannel.YOLO:
+            return self.yolo_debug
+        if channel == LogChannel.DENSITY:
+            return self.density_debug
+        return False
+
+    def _print(self, level, channel, message):
+        prefix = f"[{level.value}]"
+        channel_tag = f"[{channel.value}]"
+        for line in str(message).splitlines():
+            print(f"{prefix} {channel_tag} {line}")
+
+    def info(self, channel, message):
+        self._print(LogLevel.INFO, channel, message)
+
+    def warning(self, channel, message):
+        self._print(LogLevel.WARNING, channel, message)
+
+    def error(self, channel, message):
+        self._print(LogLevel.ERROR, channel, message)
+
+    def debug(self, channel, message):
+        if not self.should_log_debug(channel):
+            return
+        self._print(LogLevel.DEBUG, channel, message)
+
+
+_shared_logger = FilteredLogger()
+
+
+def configure_logger(**kwargs):
+    _shared_logger.configure(**kwargs)
+
+
+def info(channel, message):
+    _shared_logger.info(channel, message)
+
+
+def warning(channel, message):
+    _shared_logger.warning(channel, message)
+
+
+def error(channel, message):
+    _shared_logger.error(channel, message)
+
+
+def debug(channel, message):
+    _shared_logger.debug(channel, message)

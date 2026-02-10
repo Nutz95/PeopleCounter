@@ -430,7 +430,7 @@ function renderYoloOverlay(payload) {
 }
 
 function renderDensityOverlay(payload) {
-  if (!payload || !Array.isArray(payload.tiles) || !payload.tiles.length || !maskOverlay) {
+  if (!payload || !Array.isArray(payload.tiles) || !maskOverlay) {
     return;
   }
   const width = maskOverlay.width;
@@ -460,10 +460,22 @@ function renderDensityOverlay(payload) {
       finalize();
     }
   };
+  const drawHotspots = (tile) => {
+    drawDensityHotspots(tile, scaleX, scaleY);
+  };
   maskCtx.clearRect(0, 0, width, height);
+  const heatmapEnabled = Boolean(payload.heatmap_enabled);
+  if (!heatmapEnabled) {
+    tiles.forEach((tile) => {
+      drawHotspots(tile);
+    });
+    finalize();
+    return;
+  }
   tiles.forEach((tile) => {
     const blob = tile.blob;
     if (!blob) {
+      drawHotspots(tile);
       handleTileComplete();
       return;
     }
@@ -489,23 +501,44 @@ function renderDensityOverlay(payload) {
       maskCtx.imageSmoothingEnabled = false;
       maskCtx.webkitImageSmoothingEnabled = false;
       maskCtx.mozImageSmoothingEnabled = false;
-      maskCtx.globalAlpha = 0.55;
+      maskCtx.globalAlpha = 0.7;
       maskCtx.drawImage(img, drawX, drawY, tileW, tileH);
-      maskCtx.globalCompositeOperation = 'source-in';
-      maskCtx.fillStyle = 'rgba(255, 95, 66, 0.85)';
-      maskCtx.fillRect(drawX, drawY, tileW, tileH);
       maskCtx.restore();
+      drawHotspots(tile);
       handleTileComplete();
     };
     img.onerror = () => {
       if (token !== maskRenderToken) {
         return;
       }
+      drawHotspots(tile);
       handleTileComplete();
     };
     const format = tile.format || 'png';
     img.src = `data:image/${format};base64,${blob}`;
   });
+}
+
+function drawDensityHotspots(tile, scaleX, scaleY) {
+  if (!maskCtx || !tile || !Array.isArray(tile.hotspots) || !tile.hotspots.length) {
+    return;
+  }
+  maskCtx.save();
+  maskCtx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
+  maskCtx.lineWidth = 1.8;
+  const scale = Math.max(scaleX, scaleY, 1);
+  tile.hotspots.forEach((spot) => {
+    const cx = (Number(spot.x) || 0) * scaleX;
+    const cy = (Number(spot.y) || 0) * scaleY;
+    const radius = Math.max(6, (Number(spot.radius) || 4) * scale);
+    if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+      return;
+    }
+    maskCtx.beginPath();
+    maskCtx.arc(cx, cy, radius, 0, Math.PI * 2);
+    maskCtx.stroke();
+  });
+  maskCtx.restore();
 }
 
 function sendControl(payload) {

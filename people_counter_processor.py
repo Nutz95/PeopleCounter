@@ -294,9 +294,10 @@ class PeopleCounterProcessor:
         Traite un lot (batch) d'images en une seule passe GPU si possible.
         """
         if not frames:
-            return {'total_count': 0.0, 'tiles': []}
+            return {'total_count': 0.0, 'tiles': [], 'frame_width': 0, 'frame_height': 0}
 
         self.last_cuda_profiler_ms = None
+        frame_h, frame_w = frames[0].shape[:2]
 
         if self.backend == "tensorrt" and self.trt_context is not None:
             b, c, target_h, target_w = self.trt_input_shape
@@ -376,7 +377,7 @@ class PeopleCounterProcessor:
                 f"  [DENS DETAILED] Pre={self.last_perf['preprocess']*1000:.1f}ms | "
                 f"Infer={self.last_perf['infer']*1000:.1f}ms | Post={self.last_perf['postprocess']*1000:.1f}ms"
             )
-            return {'total_count': total_count, 'tiles': tiles}
+            return {'total_count': total_count, 'tiles': tiles, 'frame_width': frame_w, 'frame_height': frame_h}
 
         elif self.backend == "openvino" and self.ov_compiled_model is not None:
             num_frames = len(frames)
@@ -423,7 +424,7 @@ class PeopleCounterProcessor:
                         tiles.append(tile_entry)
                         total_count += tile_entry['count']
 
-            return {'total_count': total_count, 'tiles': tiles}
+            return {'total_count': total_count, 'tiles': tiles, 'frame_width': frame_w, 'frame_height': frame_h}
 
         if self.backend == "torch":
             tiles = []
@@ -437,11 +438,11 @@ class PeopleCounterProcessor:
                 tile_entry['count'] = float(count)
                 tiles.append(tile_entry)
                 total_count += float(count)
-            return {'total_count': total_count, 'tiles': tiles}
+            return {'total_count': total_count, 'tiles': tiles, 'frame_width': frame_w, 'frame_height': frame_h}
         tiles = [self._build_empty_tile_entry(f.shape[:2]) for f in frames]
-        return {'total_count': 0.0, 'tiles': tiles}
+        return {'total_count': 0.0, 'tiles': tiles, 'frame_width': frame_w, 'frame_height': frame_h}
 
-    def _normalize_density_mask(self, density_map: np.ndarray) -> np.ndarray:
+    def _normalize_density_mask(self, density_map: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         array = np.asarray(density_map, dtype=np.float32, order='C').copy()
         array[array < 0.001] = 0
         max_val = array.max()
@@ -450,13 +451,14 @@ class PeopleCounterProcessor:
             normalized = np.clip(array * scale, 0, 255).astype(np.uint8)
         else:
             normalized = np.zeros_like(array, dtype=np.uint8)
-        if self.density_threshold is None:
-            return normalized
-        mask = (normalized >= self.density_threshold).astype(np.uint8) * 255
-        return mask
+        mask = np.zeros_like(normalized, dtype=np.uint8)
+        if self.density_threshold is not None and normalized.size:
+            mask = (normalized >= self.density_threshold).astype(np.uint8) * 255
+        return normalized, mask
 
     def _create_tile_entry(self, density_map: np.ndarray, frame_shape: tuple[int, int]) -> dict:
-        mask = self._normalize_density_mask(density_map)
+        heatmap, mask = self._normalize_density_mask(density_map)
+        heatmap_h, heatmap_w = heatmap.shape
         mask_h, mask_w = mask.shape
         tile_h, tile_w = frame_shape
         scale_x = (tile_w / mask_w) if mask_w else 1.0
@@ -467,6 +469,7 @@ class PeopleCounterProcessor:
         return {
             'count': total,
             'mask': mask,
+            'heatmap': heatmap,
             'mask_width': mask_w,
             'mask_height': mask_h,
             'tile_width': tile_w,
@@ -478,9 +481,11 @@ class PeopleCounterProcessor:
     def _build_empty_tile_entry(self, frame_shape: tuple[int, int]) -> dict:
         tile_h, tile_w = frame_shape
         mask = np.zeros((1, 1), dtype=np.uint8)
+        heatmap = mask.copy()
         return {
             'count': 0.0,
             'mask': mask,
+            'heatmap': heatmap,
             'mask_width': 1,
             'mask_height': 1,
             'tile_width': tile_w,
