@@ -10,6 +10,7 @@ from cuda_stream_manager import CudaStreamManager
 from trt_debug import dump_trt_bindings
 from trt_output_reconstructor import dump_flattened, flatten_trt_output
 from trt_output_reconstructor import flatten_trt_output
+import torch
 
 class YoloPeopleCounter:
     def __init__(self, model_name='yolov26n', device='cpu', confidence_threshold=0.3, backend='torch', tile_size=640, overlap=0.15):
@@ -97,15 +98,13 @@ class YoloPeopleCounter:
                 dtype_np = trt.nptype(dtype)
                 size = trt.volume(shape)
                 nbytes = size * np.dtype(dtype_np).itemsize
-                
-                # Allocate device memory
+
+                # Allocate device memory and host buffer for async transfers
                 err, device_ptr = cudart.cudaMalloc(nbytes)
                 if int(err) != 0:
                     raise RuntimeError(f"CUDA Malloc failed: {err}")
-                
-                # Allocation host memory
                 host_mem = np.empty(shape, dtype=dtype_np)
-                
+
                 binding = {
                     'name': name,
                     'dtype': dtype,
@@ -122,6 +121,7 @@ class YoloPeopleCounter:
                 else:
                     self.trt_outputs.append(binding)
                 
+                # Point the TRT context to the device pointer (PyTorch or raw)
                 self.trt_context.set_tensor_address(name, int(device_ptr))
 
         else:
@@ -188,8 +188,9 @@ class YoloPeopleCounter:
                 total_count = len(keep)
                 image_out = image.copy() if draw_boxes else None
                 if draw_boxes:
-                    for i in keep:
-                        x1, y1, x2, y2 = boxes[i].astype(int)
+                    for cluster in keep:
+                        idx = cluster[0] if isinstance(cluster, (list, tuple, np.ndarray)) else cluster
+                        x1, y1, x2, y2 = boxes[int(idx)].astype(int)
                         cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
             else:
                 results = self.model.predict(image_rgb, verbose=False, imgsz=tile_size)
@@ -309,7 +310,7 @@ class YoloPeopleCounter:
         stream_handle = self._stream_handle()
         if not stream_handle:
             raise RuntimeError("TensorRT CUDA stream unavailable")
-
+        # H2D: async host->device copy
         self.cudart.cudaMemcpyAsync(
             cuda_input['device'],
             input_data.ctypes.data,
@@ -323,6 +324,12 @@ class YoloPeopleCounter:
             return bool(self.stream_mgr and self.stream_mgr.is_capturing())
 
         try:
+            # Debug: log stream capture status and handle before execute
+            try:
+                capturing = bool(self.stream_mgr and self.stream_mgr.is_capturing())
+            except Exception:
+                capturing = False
+            print(f"[DBG] TRT execute_async_v3: stream_handle={int(stream_handle) if stream_handle is not None else None}, capturing={capturing}")
             success = self.trt_context.execute_async_v3(stream_handle)
             if not success:
                 raise RuntimeError("TensorRT execute_async_v3 returned False")
@@ -331,10 +338,17 @@ class YoloPeopleCounter:
             log_warning(LogChannel.YOLO, f"TensorRT stream {reason}; recreating stream ({exc})")
             self._recreate_trt_stream()
             stream_handle = self._stream_handle()
+            # Debug: log stream state when retrying
+            try:
+                capturing = bool(self.stream_mgr and self.stream_mgr.is_capturing())
+            except Exception:
+                capturing = False
+            print(f"[DBG] TRT retry execute_async_v3: stream_handle={int(stream_handle) if stream_handle is not None else None}, capturing={capturing}")
             success = self.trt_context.execute_async_v3(stream_handle)
             if not success:
                 raise RuntimeError("TensorRT execute_async_v3 failed even after recreating stream")
 
+        # D2H: async device->host copies then synchronize
         for output in self.trt_outputs:
             self.cudart.cudaMemcpyAsync(
                 output['host'].ctypes.data,
@@ -427,7 +441,7 @@ class YoloPeopleCounter:
                 stream_handle = self._stream_handle()
                 if not stream_handle:
                     raise RuntimeError("TensorRT CUDA stream unavailable for batch inference")
-
+                # H2D: async host->device copy
                 self.cudart.cudaMemcpyAsync(
                     self.trt_inputs[0]['device'],
                     input_data.ctypes.data,
@@ -441,6 +455,12 @@ class YoloPeopleCounter:
                     return bool(self.stream_mgr and self.stream_mgr.is_capturing())
 
                 try:
+                    # Debug: log stream state before batch execute
+                    try:
+                        capturing = bool(self.stream_mgr and self.stream_mgr.is_capturing())
+                    except Exception:
+                        capturing = False
+                    print(f"[DBG] TRT batch execute_async_v3: stream_handle={int(stream_handle) if stream_handle is not None else None}, capturing={capturing}")
                     success = self.trt_context.execute_async_v3(stream_handle)
                     if not success:
                         raise RuntimeError("TensorRT execute_async_v3 returned False")
@@ -449,10 +469,16 @@ class YoloPeopleCounter:
                     log_warning(LogChannel.YOLO, f"TensorRT stream {reason}; recreating stream ({exc})")
                     self._recreate_trt_stream()
                     stream_handle = self._stream_handle()
+                    try:
+                        capturing = bool(self.stream_mgr and self.stream_mgr.is_capturing())
+                    except Exception:
+                        capturing = False
+                    print(f"[DBG] TRT batch retry execute_async_v3: stream_handle={int(stream_handle) if stream_handle is not None else None}, capturing={capturing}")
                     success = self.trt_context.execute_async_v3(stream_handle)
                     if not success:
                         raise RuntimeError("TensorRT execute_async_v3 failed even after recreating stream")
 
+                # D2H: async device->host copies then synchronize
                 for output in self.trt_outputs:
                     self.cudart.cudaMemcpyAsync(
                         output['host'].ctypes.data,
