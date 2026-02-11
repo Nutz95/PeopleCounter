@@ -1,6 +1,6 @@
 # PeopleCounter
 
-PeopleCounter counts people on a live camera stream (up to 4K) by combining YOLO and LWCC/density models with sparse mask overlays and latency-aware metrics.
+PeopleCounter counts people on a live camera stream (up to 4K) by combining YOLO and LWCC/density models with sparse mask overlays and latency-aware metrics. The legacy pipeline is now housed under `app_v1/`, while `app_v2/` contains the new TensorRT-only, GPU-first orchestrator described in the `app_v2/README.md` family of docs.
 
 ## Quick start
 
@@ -41,8 +41,17 @@ This pulls the correct Docker image, generates any missing models inside the con
 
 ### 4. Run PeopleCounter
 
-- `run_app.sh` wraps the entire pipeline and sources `scripts/configs/<profile>.env` before starting the app. Pass any additional camera URL or resolution arguments after the profile.
-- The script accepts the same signature as the old `run_people_counter_*` helpers (`[RESOLUTION] [MODEL] ...`), but the recommended way to change backends is via `.env` profiles (see below).
+We have split the workflow into four stages:
+
+1. `./0_build_image.sh` performs the heavy Docker image build (`people-counter:gpu-final`), so you only spend that hour once.
+2. `./1_prepare.sh` layers the apt/pip dependencies on top of the already built image.
+3. `./2_prepare_models.sh` runs `prepare_models.py` inside the prepared image so you can rebuild TensorRT/ONNX assets without re-running the installs.
+4. `./3_run_app.sh --app-version v1 <source>` launches the legacy pipeline from `app_v1/` with the existing worker graph. Use `--app-version v2` to start the new GPU-first orchestration in `app_v2/`.
+
+`run_app.sh` is kept as a lightweight wrapper for backwards compatibility; it now forwards all arguments to `./3_run_app.sh`.
+
+Pass any additional camera URL or resolution arguments after the profile (e.g., `./3_run_app.sh --app-version v2 --profile rtx_extreme http://...`).
+The recommended way to change backends remains modifying `.env` profiles as detailed below.
 
 ### 5. Build the Docker image (optional)
 

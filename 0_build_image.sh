@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+shopt -s extglob
+
+BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$BASE_DIR"
+
+IMAGE_NAME="people-counter:gpu-final"
+
+echo "🧱 Building base image ($IMAGE_NAME)..."
+./build_image.sh
+
+echo "✅ Base image built. You can now run ./1_prepare.sh to layer the preparedness steps."

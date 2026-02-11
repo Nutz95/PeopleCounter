@@ -1,0 +1,17 @@
+fusion_strategy: ASYNC_OVERLAY
+
+models:
+  yolo_global:
+    enabled: true
+  yolo_tiles:
+    enabled: true
+  density:
+    enabled: true
+
+density:
+  tiling: 4
+
+streams:
+  transfer: 0
+  yolo: 1
+  density: 2

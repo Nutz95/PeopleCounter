@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple
 
 class ProfileManager:
     def __init__(self, configs_dir: Optional[str] = None) -> None:
-        self.configs_dir = configs_dir or os.path.join(os.getcwd(), 'scripts', 'configs')
+        self.configs_dir = self._resolve_configs_dir(configs_dir)
         self.default_settings = self._gather_base_settings()
         self.profile_settings = dict(self.default_settings)
         self.available_profiles = self._discover_profiles()
@@ -98,6 +98,24 @@ class ProfileManager:
             print(f"[WARN] Unable to read profile '{profile_name}': {exc}")
             return settings, False
         return settings, True
+
+    def _resolve_configs_dir(self, configs_dir: Optional[str]) -> str:
+        if configs_dir:
+            return configs_dir
+        cwd = os.getcwd()
+        candidate = os.path.join(cwd, 'scripts', 'configs')
+        if os.path.isdir(candidate):
+            return candidate
+        path = cwd
+        while True:
+            parent = os.path.dirname(path)
+            if parent == path:
+                break
+            candidate = os.path.join(parent, 'scripts', 'configs')
+            if os.path.isdir(candidate):
+                return candidate
+            path = parent
+        return os.path.join(cwd, 'scripts', 'configs')
 
     def apply_profile(self, profile_name: Optional[str] = None) -> bool:
         if profile_name is not None:
