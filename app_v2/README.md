@@ -19,6 +19,7 @@ PeopleCounter v2 is a GPU-first rewrite that targets TensorRT-only inference wit
 
 1. Run `./1_prepare.sh` at the repo root to build and prepopulate the Docker image (`people-counter:gpu-final`).
 2. Run `./3_run_app.sh --app-version v2 rtsp://<camera-url>` to launch the v2 orchestrator inside the prepared image.
+3. Run `./4_run_tests.sh` (after each implementation pass) so the orchestrator is compiled and the current pytest suite executes inside the same GPU container that powers the production pipeline.
 3. The Flask server exposes the same web UI at http://localhost:5000 once inference logic is implemented.
 
 The skeleton in this folder includes config loaders, interfaces, infrastructure stubs, and orchestration scaffolding; replace the stub methods in each class with real TensorRT execution code to finish the port.

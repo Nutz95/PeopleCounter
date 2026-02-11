@@ -41,12 +41,13 @@ This pulls the correct Docker image, generates any missing models inside the con
 
 ### 4. Run PeopleCounter
 
-We have split the workflow into four stages:
+We have split the workflow into five stages:
 
 1. `./0_build_image.sh` performs the heavy Docker image build (`people-counter:gpu-final`), so you only spend that hour once.
 2. `./1_prepare.sh` layers the apt/pip dependencies on top of the already built image.
 3. `./2_prepare_models.sh` runs `prepare_models.py` inside the prepared image so you can rebuild TensorRT/ONNX assets without re-running the installs.
 4. `./3_run_app.sh --app-version v1 <source>` launches the legacy pipeline from `app_v1/` with the existing worker graph. Use `--app-version v2` to start the new GPU-first orchestration in `app_v2/`.
+5. `./4_run_tests.sh` compiles `app_v2` and runs `pytest app_v2/tests` inside the prepared `people-counter:gpu-final` image so each implementation pass can re-validate the GPU components before deployment.
 
 `run_app.sh` is kept as a lightweight wrapper for backwards compatibility; it now forwards all arguments to `./3_run_app.sh`.
 

@@ -12,8 +12,9 @@
 - [x] Step 2: Move the legacy application, logger, and shared configs into `app_v1/` while keeping `models/`, `logger/`, and `scripts/configs/` at the repo root.
 - [x] Step 3: Inventory current `app_v2/` scaffolding, verify it uses shared logging channels, and extend the config surface (`pipeline.yaml`, `log.yaml`).
 - [ ] Step 4: Implement the core/interface/infrastructure/application skeletons described in the clean‑architecture plan with clear responsibilities and method signatures, covering the NVDEC scheduler, YOLO overlap tracking, density tile batching, and the per-frame performance tracker.
-- [ ] Step 5: Update documentation (`README.md`, `app_v2/README.md`, `app_v2/README_ARCHI.md`) with the new scripts, configs, and fusion diagrams (GPU/CPU annotations). Ensure every development step refreshes the docs.
-- [ ] Step 6: Keep the plan, diagrams, and reference docs synchronized so future contributors can track progress before implementing TensorRT specifics.
+- [ ] Step 5: Build the GPU-first test harness by adding `app_v2/tests`, scripting `4_run_tests.sh`, and ensuring each run compiles `app_v2` before executing `pytest` inside `people-counter:gpu-final` so regressions surface early.
+- [ ] Step 6: Update documentation (`README.md`, `README_DOCKER.md`, `app_v2/README.md`, `app_v2/README_ARCHI.md`) with the new scripts, configs, and fusion diagrams (GPU/CPU annotations). Ensure every development step refreshes the docs.
+- [ ] Step 7: Keep the plan, diagrams, and reference docs synchronized so future contributors can track progress before implementing TensorRT specifics.
 
 ## Supporting tasks
  - Update `export_density_to_onnx.py` so the generated engine expects 640×720 density tiles without overlap and matches the GPU batching logic.
@@ -21,4 +22,4 @@
 
 > Each checkbox also triggers a doc update; the README(s) must stay aligned with the actual scripts/configs mentioned in each step.
 >
-> Current focus: Step 4 (core/infrastructure/application skeletons) while keeping docs synchronized.
+> Current focus: Step 4 (core/infrastructure/application skeletons) and Step 5 (GPU build/test harness) while keeping docs synchronized.
