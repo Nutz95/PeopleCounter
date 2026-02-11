@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from app_v2.config import load_pipeline_config
 from app_v2.core.fusion_strategy import SimpleFusionStrategy
 from app_v2.core.frame_source import FrameSource
@@ -9,6 +7,7 @@ from app_v2.application.frame_scheduler import FrameScheduler
 from app_v2.application.processing_graph import ProcessingGraph
 from app_v2.application.result_aggregator import ResultAggregator
 from app_v2.infrastructure.flask_stream_server import FlaskStreamServer
+from logger.filtered_logger import LogChannel, info as log_info, warning as log_warning
 
 
 class PipelineOrchestrator:
@@ -24,8 +23,13 @@ class PipelineOrchestrator:
         self.aggregator = ResultAggregator(self.fusion_strategy, self.publisher)
 
     def run(self) -> None:
-        logging.info("Starting app_v2 pipeline with config %s", self.config)
-        logging.info("Frame scheduling will track frame IDs until fusion completes.")
-        while False:
-            break
-        logging.info("Pipeline scaffolding is ready. Replace the loop with TensorRT execution code.")
+        log_info(LogChannel.GLOBAL, f"Starting app_v2 pipeline with config {self.config}")
+        log_info(LogChannel.GLOBAL, "Frame scheduling will track frame IDs until fusion completes.")
+        self.frame_source.connect()
+        try:
+            log_info(LogChannel.GLOBAL, "Pipeline scaffolding is ready. Replace the loop with TensorRT execution code.")
+        except Exception as exc:
+            log_warning(LogChannel.GLOBAL, f"Pipeline aborted during scaffolding: {exc}")
+        finally:
+            self.frame_source.disconnect()
+            log_info(LogChannel.GLOBAL, "Frame source disconnected.")

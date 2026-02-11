@@ -73,14 +73,14 @@ docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
   - `YOLO_USE_GPU_PREPROC`, `YOLO_USE_GPU_POST`, `YOLO_PIPELINE_MODE`
   - `YOLO_SEG` to toggle segmentation models
   - `DEBUG_TILING` to log tiles and `YOLO_CONF` to adjust thresholds
-- The `.env` files can also include overrides for `EXTREME_DEBUG`, `CAMERA_URL`, and the MQTT broker when running in distributed mode. Leave `EXTREME_DEBUG` unset to keep the console focused on the `[MASK TIMING]` timeline, or set it to `1` to surface the `[GPU PERF]`/average logs described in [plans/performance-latency-plan.md].
+- The `.env` files can also include overrides for `EXTREME_DEBUG`, `CAMERA_URL`, and the MQTT broker when running in distributed mode. Leave `EXTREME_DEBUG` unset to keep the console focused on the `[MASK TIMING]` timeline, or set it to `1` to surface the `[GPU PERF]`/average logs.
 - When you need granular guidance on each flag, consult [README_PARAMETERS.md](README_PARAMETERS.md) for a parameter-by-parameter breakdown.
 
 ## Observability & metrics
 
-- The web UI surface now exposes a “mask timings” card (created/sent/received/displayed times) plus a latency history graph that paints the 25–30 fps target band. The chart and console use the same `[MASK TIMING]` payload stream, which is detailed in [plans/performance-latency-plan.md] so regressions appear in both places.
+- The web UI surface now exposes a “mask timings” card (created/sent/received/displayed times) plus a latency history graph that paints the 25–30 fps target band. The chart and console use the same `[MASK TIMING]` payload stream so regressions appear in both places.
 - A `[MASK TIMING]` log line records backend creation and send latencies, breaking the delay into creation, send, and total segments so you can trace any regressions in the pipeline.
-- The metrics payload now carries `density_heatmap_payload` alongside the YOLO mask metadata. This tile-centric structure hands raw base64 PNG masks plus coordinates/counts to the browser so it can draw density overlays without rewiring the server.
+- The metrics payload now carries `density_heatmap_payload` alongside the YOLO mask metadata so the browser can draw density overlays without rewiring the server.
 - Masks are downscaled and aligned to the client canvas before compositing, so overlays only tint the detected zones rather than the entire feed. More architecture detail is in the dedicated doc below.
 
 ## Important model notes
@@ -92,8 +92,9 @@ docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
 ## See also
 
 - [README_DOCKER.md](README_DOCKER.md) : Docker build, runtime, and profiling documentation (includes the latest architecture diagrams for the containerized pipeline).
-- [README_ARCHITECTURE.md](README_ARCHITECTURE.md) : In-depth architecture, masking/metrics/tiling flows, mermaid diagrams, density model layout, and `.env` reference.
-- Plans: [plans/documentation-refresh-plan.md](plans/documentation-refresh-plan.md), [plans/mask_overlay_roadmap.md](plans/mask_overlay_roadmap.md), [plans/mask_timing-plan.md](plans/mask_timing-plan.md), [plans/performance-latency-plan.md](plans/performance-latency-plan.md) : Track the documentation refresh, mask overlay work, timing telemetry, and the new latency/performance narrative.
+- [app_v2/README.md](app_v2/README.md) : Clean architecture overview for the v2 orchestrator.
+- [README_ARCHITECTURE.md](README_ARCHITECTURE.md) : In-depth architecture, masking/metrics/tiling flows, mermaid diagrams, and `.env` reference for the legacy stack.
+- [plans/app_v2_migration_plan.md](plans/app_v2_migration_plan.md) : Tracks the remaining v2 scaffolding, configs, and docs updates so the clean rewrite stays on schedule.
 - [windows/setup_and_run.bat](windows/setup_and_run.bat) : Windows helper to spin up the camera bridge that exports the MJPEG stream consumed by WSL.
 
 The main README remains the entry point: it should invite contributors to try the project, link to the Docker guide for profiles, the architecture doc for the deep dive, and reference the plans that must be kept synchronized.

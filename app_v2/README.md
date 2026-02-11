@@ -9,6 +9,12 @@ PeopleCounter v2 is a GPU-first rewrite that targets TensorRT-only inference wit
 - **Fusion strategies**: The architecture supports `STRICT_SYNC`, `ASYNC_OVERLAY`, and `RAW_STREAM_WITH_METADATA` fusion modes driven by the pipeline config.
 - **Modular layers**: Core interfaces (`FrameSource`, `InferenceModel`, `Postprocessor`, etc.) keep the application layer decoupled from infrastructure details.
 
+## Configuration
+
+- `config/pipeline.yaml` defines which models are enabled, the fusion strategy, tiling metadata, and the CUDA stream indices consumed by `CudaStreamPool`.
+- `config/log.yaml` controls the filtered logger channels (`GLOBAL`, `YOLO`, `DENSITY`) so you can mute noisy lanes without touching the code.
+- `plans/app_v2_migration_plan.md` tracks the remaining scaffolding and documentation updates so the rewrite stays in sync.
+
 ## Getting started
 
 1. Run `./1_prepare.sh` at the repo root to build and prepopulate the Docker image (`people-counter:gpu-final`).

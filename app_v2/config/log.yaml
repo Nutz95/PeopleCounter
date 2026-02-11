@@ -1,0 +1,4 @@
+channels:
+  global: true
+  yolo: false
+  density: false
