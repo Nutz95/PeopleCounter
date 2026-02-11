@@ -16,6 +16,8 @@ from rtsp_capture import RTSPCapture
 from mqtt_capture import MqttCapture
 from pipeline_components import MetricsCollector, ModelLoader, ProfileManager
 from env_utils import parse_bool_env
+from frame_tasks import FrameTask, FrameIdGenerator, ResultTask
+from worker_pool import WorkerPool
 from logger.filtered_logger import (
     LogChannel,
     configure_logger,
@@ -24,6 +26,8 @@ from logger.filtered_logger import (
     warning as log_warning,
     error as log_error,
 )
+
+warning = log_warning
 
 try:
     import torch
@@ -36,21 +40,6 @@ try:
     from cuda_pipeline.preview import CudaPreviewComposer
 except Exception:
     CudaPreviewComposer = None
-
-# --- Task for threading models ---
-class ModelThread(threading.Thread):
-    def __init__(self, func, *args, **kwargs):
-        super().__init__()
-        self.func = func
-        self.args = args
-        self.kwargs = kwargs
-        self.result = None
-        self.duration = 0
-    
-    def run(self):
-        start = time.time()
-        self.result = self.func(*self.args, **self.kwargs)
-        self.duration = time.time() - start
 
 # Période de moyennage en secondes
 AVERAGING_PERIOD_SECONDS = 2  # Réduit à 2s pour un graphe plus réactif
@@ -126,6 +115,27 @@ class CameraAppPipeline:
             "renderer_fallback_reason": None,
         }
 
+        self.frame_id_generator = FrameIdGenerator()
+        self.yolo_queue_max = int(os.environ.get('YOLO_QUEUE_MAX', '4'))
+        self.yolo_worker_count = int(os.environ.get('YOLO_WORKER_COUNT', '1'))
+        self.density_queue_max = int(os.environ.get('DENSITY_QUEUE_MAX', '4'))
+        self.density_worker_count = int(os.environ.get('DENSITY_WORKER_COUNT', '1'))
+        self.yolo_worker_pool = WorkerPool(
+            "YOLO",
+            self._yolo_worker,
+            queue_max_size=self.yolo_queue_max,
+            worker_count=self.yolo_worker_count,
+            channel=LogChannel.YOLO,
+        )
+        self.density_worker_pool = WorkerPool(
+            "DENSITY",
+            self._density_worker,
+            queue_max_size=self.density_queue_max,
+            worker_count=self.density_worker_count,
+            channel=LogChannel.DENSITY,
+        )
+        self._worker_pools_started = False
+
         self._apply_profile_settings(self.profile_manager.profile_settings)
         if not self._refresh_models(force=True):
             raise RuntimeError(f"[FATAL] Impossible d'initialiser les moteurs pour "
@@ -164,6 +174,80 @@ class CameraAppPipeline:
         self.denoise_strength = int(settings.get('DENOISE_STRENGTH', self.denoise_strength))
         self.model_loader.yolo_conf = self.yolo_conf
         self.model_loader.density_threshold = self.density_threshold
+
+    def _start_worker_pools(self):
+        if self._worker_pools_started:
+            return
+        self.yolo_worker_pool.start()
+        self.density_worker_pool.start()
+        self._worker_pools_started = True
+
+    def _stop_worker_pools(self):
+        if not self._worker_pools_started:
+            return
+        self.yolo_worker_pool.stop()
+        self.density_worker_pool.stop()
+        self._worker_pools_started = False
+
+    def _await_result(self, pool, frame_id, timeout=2.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for candidate in pool.drain_results():
+                if candidate.frame_id == frame_id:
+                    return candidate
+            time.sleep(0.005)
+        warning(LogChannel.GLOBAL, f"Timed out waiting for {pool.group_name} result for frame {frame_id}.")
+        return None
+
+    def _yolo_worker(self, task):
+        if not self.yolo_counter:
+            return None
+        start = time.time()
+        try:
+            yolo_count, frame_with_bbox = self.yolo_counter.count_people(
+                task.frame,
+                tile_size=640,
+                draw_boxes=True,
+                use_tiling=self.yolo_tiling,
+                draw_tiles=self.debug_tiling,
+                global_tile_only=self.yolo_global_tile_only,
+            )
+        except Exception as exc:
+            warning(LogChannel.YOLO, f"YOLO worker error (frame {task.frame_id}): {exc}")
+            return None
+        result = ResultTask(
+            frame_id=task.frame_id,
+            capture_ts=task.capture_ts,
+            processed_ts=time.time(),
+            yolo_count=yolo_count,
+            frame_with_bbox=frame_with_bbox,
+        )
+        result.add_stat("duration", time.time() - start)
+        return result
+
+    def _density_worker(self, task):
+        if not self.processor or not self.density_enabled:
+            return None
+        start = time.time()
+        try:
+            quads = task.metadata.get('density_quads')
+            if self.density_tiling and quads:
+                density_result = self.processor.process_batch(quads)
+            else:
+                density_result = self.processor.process(task.frame)
+        except Exception as exc:
+            warning(LogChannel.DENSITY, f"Density worker error (frame {task.frame_id}): {exc}")
+            return None
+        result = ResultTask(
+            frame_id=task.frame_id,
+            capture_ts=task.capture_ts,
+            processed_ts=time.time(),
+            yolo_count=None,
+            frame_with_bbox=None,
+            density_result=density_result,
+        )
+        result.add_stat("duration", time.time() - start)
+        return result
 
     def _create_cuda_preview_composer(self):
         if not self._cuda_preview_enabled:
@@ -614,6 +698,7 @@ class CameraAppPipeline:
             counts_density = []
             last_period = int(time.time())
             log_data = []
+            self._start_worker_pools()
             try:
                 while True:
                     start_time = time.time()
@@ -658,28 +743,21 @@ class CameraAppPipeline:
                     if self.density_enabled and not self.processor:
                         log_error(LogChannel.DENSITY, "Le processeur density n'est pas initialisé, arrêt du pipeline.")
                         break
-                    
-                    # 1. YOLO INFERENCE (Tiling optionale)
-                    preprocess_start = time.monotonic()
-                    thr_yolo = ModelThread(
-                        self.yolo_counter.count_people, 
-                        frame, 
-                        tile_size=640, 
-                        draw_boxes=True, 
-                        use_tiling=self.yolo_tiling,
-                        draw_tiles=self.debug_tiling,
-                        global_tile_only=self.yolo_global_tile_only,
-                    )
 
+                    preprocess_start = time.monotonic()
+
+                    frame_id = self.frame_id_generator.next_id()
+                    frame_task = FrameTask(
+                        frame_id=frame_id,
+                        capture_ts=time.time(),
+                        frame=frame,
+                        source=self.capture_mode,
+                    )
                     yolo_label = getattr(self.yolo_counter, 'model_name', 'YOLO')
 
-                    # 2. DENSITY INFERENCE (Tiling 2x2 Batché)
-                    t_loop_start = time.time()
-                    thr_density = None
                     if self.density_enabled:
                         self.density_quads_coords = []
                         if self.density_tiling:
-                            # On prépare les quadrants
                             h, w = frame.shape[:2]
                             mid_h, mid_w = h // 2, w // 2
                             quads = [
@@ -688,42 +766,28 @@ class CameraAppPipeline:
                                 frame[mid_h:h, 0:mid_w],
                                 frame[mid_h:h, mid_w:w]
                             ]
-                            self.density_quads_coords = [
+                            coords = [
                                 (0, 0, mid_w, mid_h),
                                 (mid_w, 0, w, mid_h),
                                 (0, mid_h, mid_w, h),
                                 (mid_w, mid_h, w, h)
                             ]
-                            thr_density = ModelThread(self.processor.process_batch, quads)
+                            self.density_quads_coords = coords
+                            frame_task.with_metadata(density_quads=quads)
                         else:
-                            # Mode standard (Inférence globale redimensionnée)
-                            thr_density = ModelThread(self.processor.process, frame)
+                            self.density_quads_coords = []
 
                     preprocess_duration = time.monotonic() - preprocess_start
-                    # On lance les deux threads
-                    t_cycle_start = time.time()
-                    thr_yolo.start()
-                    if thr_density:
-                        thr_density.start()
-                    
-                    # Attente YOLO
-                    thr_yolo.join()
-                    if thr_yolo.result is not None:
-                        yolo_count, frame_with_bbox = thr_yolo.result
-                    else:
-                        log_error(LogChannel.YOLO, "YOLO thread returned None.")
-                        yolo_count, frame_with_bbox = 0, frame.copy()
-                    pipeline_report = {}
-                    if self.yolo_counter and hasattr(self.yolo_counter, 'get_pipeline_report'):
-                        pipeline_report = self.yolo_counter.get_pipeline_report() or {}
-                        self.latest_pipeline_report = pipeline_report
-                        self.latest_metrics['yolo_pipeline_mode'] = pipeline_report.get('active_mode', 'unknown')
-                        if pipeline_report:
-                            log_debug(LogChannel.YOLO, f"YOLO pipeline report: {pipeline_report}")
-                    
-                    # Attente Density
-                    if thr_density:
-                        thr_density.join()
+
+                    if not self.yolo_worker_pool.enqueue(frame_task):
+                        continue
+                    if self.density_enabled:
+                        self.density_worker_pool.enqueue(frame_task)
+
+                    yolo_result = self._await_result(self.yolo_worker_pool, frame_id)
+                    density_result_task = None
+                    if self.density_enabled:
+                        density_result_task = self._await_result(self.density_worker_pool, frame_id)
 
                     postprocess_start = time.monotonic()
 
@@ -736,15 +800,36 @@ class CameraAppPipeline:
                     else:
                         win_w, win_h = 1280, 720
 
-                    raw_density_result = thr_density.result if thr_density else None
-                    density_result = raw_density_result if isinstance(raw_density_result, dict) else None
-                    if density_result is not None:
-                        density_count = self._get_density_count(density_result)
+                    if yolo_result is not None:
+                        yolo_count = int(yolo_result.yolo_count or 0)
+                        frame_with_bbox = yolo_result.frame_with_bbox if yolo_result.frame_with_bbox is not None else frame.copy()
                     else:
-                        density_count = float(raw_density_result[2]) if (isinstance(raw_density_result, tuple) and len(raw_density_result) >= 3) else 0.0
-                    density_heatmap_payload = self._build_density_heatmap_payload(density_result, frame.shape[:2]) if density_result else None
-                    density_tile_count = len(density_heatmap_payload.get('tiles', [])) if density_heatmap_payload else 0
-                    density_ready = bool(density_heatmap_payload and density_tile_count)
+                        log_error(LogChannel.YOLO, "YOLO worker returned no result.")
+                        yolo_count = 0
+                        frame_with_bbox = frame.copy()
+                    pipeline_report = {}
+                    if self.yolo_counter and hasattr(self.yolo_counter, 'get_pipeline_report'):
+                        pipeline_report = self.yolo_counter.get_pipeline_report() or {}
+                        self.latest_pipeline_report = pipeline_report
+                        self.latest_metrics['yolo_pipeline_mode'] = pipeline_report.get('active_mode', 'unknown')
+                        if pipeline_report:
+                            log_debug(LogChannel.YOLO, f"YOLO pipeline report: {pipeline_report}")
+
+                    density_result = None
+                    density_count = 0.0
+                    density_heatmap_payload = None
+                    density_tile_count = 0
+                    density_ready = False
+                    if self.density_enabled and density_result_task:
+                        raw_density_result = density_result_task.density_result
+                        density_result = raw_density_result if isinstance(raw_density_result, dict) else None
+                        if density_result is not None:
+                            density_count = self._get_density_count(density_result)
+                            density_heatmap_payload = self._build_density_heatmap_payload(density_result, frame.shape[:2])
+                        else:
+                            density_count = float(raw_density_result[2]) if (isinstance(raw_density_result, tuple) and len(raw_density_result) >= 3) else 0.0
+                        density_tile_count = len(density_heatmap_payload.get('tiles', [])) if density_heatmap_payload else 0
+                        density_ready = bool(density_heatmap_payload and density_tile_count)
                     if self.density_enabled:
                         if density_ready:
                             self._density_payload_empty_logged = False
@@ -768,8 +853,8 @@ class CameraAppPipeline:
                     if torch is not None and torch.is_tensor(preview_frame):
                         preview_frame = preview_frame.detach().permute(1, 2, 0).cpu().numpy()
 
-                    yolo_time = thr_yolo.duration
-                    density_time = thr_density.duration if thr_density else 0.0
+                    yolo_time = float(yolo_result.stats.get('duration', 0.0)) if yolo_result else 0.0
+                    density_time = float(density_result_task.stats.get('duration', 0.0)) if density_result_task else 0.0
 
                     yolo_dev = getattr(self.yolo_counter, 'last_device', 'GPU')
                     dens_dev = 'disabled' if not self.density_enabled else getattr(self.processor, 'last_device', 'GPU')
@@ -831,8 +916,8 @@ class CameraAppPipeline:
                     detection_payload = None
                     if self.yolo_counter and hasattr(self.yolo_counter, 'get_detection_payload'):
                         detection_payload = self.yolo_counter.get_detection_payload()
-                    yolo_profiler_ms = getattr(self.yolo_counter, 'last_cuda_profiler_ms', None)
-                    density_profiler_ms = getattr(self.processor, 'last_cuda_profiler_ms', None)
+                    yolo_queue_depth = self.yolo_worker_pool.queue_depth()
+                    density_queue_depth = self.density_worker_pool.queue_depth() if self.density_worker_pool else None
                     metrics = {
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                         "yolo_count": int(yolo_count),
@@ -858,7 +943,6 @@ class CameraAppPipeline:
                         "yolo_pre_ms": float(yp.get('preprocess', 0) * 1000),
                         "yolo_gpu_ms": float(yp.get('infer', 0) * 1000),
                         "yolo_post_ms": float(yp.get('postprocess', 0) * 1000),
-                        "yolo_cuda_profiler_ms": float(yolo_profiler_ms) if yolo_profiler_ms is not None else None,
                         "yolo_pipeline_mode": self.yolo_pipeline_mode,
                         "yolo_pipeline_mode_effective": getattr(self.yolo_counter, 'active_pipeline_mode', self.yolo_pipeline_mode),
                         "yolo_preproc_mode": getattr(self.yolo_counter, 'preprocessor_mode', 'cpu'),
@@ -880,7 +964,12 @@ class CameraAppPipeline:
                         "density_pre_ms": float(dp.get('preprocess', 0) * 1000),
                         "density_gpu_ms": float(dp.get('infer', 0) * 1000),
                         "density_post_ms": float(dp.get('postprocess', 0) * 1000),
-                        "density_cuda_profiler_ms": float(density_profiler_ms) if density_profiler_ms is not None else None,
+                        "yolo_queue_depth": int(yolo_queue_depth.size),
+                        "yolo_queue_max_depth": int(yolo_queue_depth.max_size),
+                        "yolo_queue_saturated": bool(yolo_queue_depth.is_saturated),
+                        "density_queue_depth": int(density_queue_depth.size) if density_queue_depth else None,
+                        "density_queue_max_depth": int(density_queue_depth.max_size) if density_queue_depth else None,
+                        "density_queue_saturated": bool(density_queue_depth.is_saturated) if density_queue_depth else False,
                         "history": history_snapshot,
                         "yolo_pipeline_report": pipeline_report
                     }
@@ -951,8 +1040,6 @@ class CameraAppPipeline:
                         "preprocessor_mode": metrics.get("yolo_preproc_mode"),
                         "renderer_mode": metrics.get("yolo_renderer_mode"),
                         "yolo_pipeline_mode": metrics.get("yolo_pipeline_mode"),
-                        "yolo_cuda_profiler_ms": metrics.get("yolo_cuda_profiler_ms"),
-                        "density_cuda_profiler_ms": metrics.get("density_cuda_profiler_ms"),
                     }
                     log_debug(LogChannel.GLOBAL, f"AGGREGATED METRICS {json.dumps(summary)}")
 
@@ -996,6 +1083,7 @@ class CameraAppPipeline:
                         # En mode headless, on ajoute un petit sleep pour ne pas saturer le CPU si FPS > 100
                         time.sleep(0.01)
             finally:
+                self._stop_worker_pools()
                 self.capture.release()
                 if self.use_gui:
                     cv2.destroyAllWindows()

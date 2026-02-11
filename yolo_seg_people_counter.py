@@ -11,7 +11,6 @@ from tiling_manager import TilingManager
 from engines.yolo.tensorrt_engine import YoloTensorRTEngine
 from engines.yolo.openvino_engine import YoloOpenVINOEngine
 from engines.yolo.ultralytics_engine import YoloUltralyticsEngine
-from cuda_profiler import cuda_profiler_enabled, cuda_profiler_start, cuda_profiler_stop
 from logger.filtered_logger import LogChannel, debug as log_debug, warning as log_warning
 
 try:
@@ -48,8 +47,6 @@ class YoloSegPeopleCounter:
         self.pipeline_mode = os.environ.get('YOLO_PIPELINE_MODE', 'auto').lower()
         self._gpu_render_flag = os.environ.get('YOLO_USE_GPU_RENDER', '0') == '1'
         self._gpu_available = bool(torch is not None and torch.cuda.is_available())
-        self._cuda_profiler_enabled = cuda_profiler_enabled() and self._gpu_available
-        self.last_cuda_profiler_ms = None
         self.preprocessor_mode = 'cpu'
         self.renderer_mode = 'cpu'
         self.active_pipeline_mode = 'cpu'
@@ -78,21 +75,14 @@ class YoloSegPeopleCounter:
         self.configure_pipeline(self.pipeline_mode)
 
     def count_people(self, image, tile_size=640, draw_boxes=True, use_tiling=True, draw_tiles=False, global_tile_only=False):
-        profiler_start_ts = self._maybe_start_cuda_profiler()
-        try:
-            return self._count_people_impl(
-                image,
-                tile_size=tile_size,
-                draw_boxes=draw_boxes,
-                use_tiling=use_tiling,
-                draw_tiles=draw_tiles,
-                global_tile_only=global_tile_only,
-            )
-        finally:
-            profiler_ms = self._maybe_stop_cuda_profiler(profiler_start_ts)
-            self.last_cuda_profiler_ms = profiler_ms
-            if isinstance(self.last_internal, dict):
-                self.last_internal['t_profile'] = profiler_ms
+        return self._count_people_impl(
+            image,
+            tile_size=tile_size,
+            draw_boxes=draw_boxes,
+            use_tiling=use_tiling,
+            draw_tiles=draw_tiles,
+            global_tile_only=global_tile_only,
+        )
 
     def _count_people_impl(self, image, tile_size=640, draw_boxes=True, use_tiling=True, draw_tiles=False, global_tile_only=False):
         t0_total = time.time()
@@ -210,28 +200,6 @@ class YoloSegPeopleCounter:
             return False
         self._cuda_helpers_initialized = True
         return True
-
-    def _should_profile_cuda(self):
-        return bool(self._cuda_profiler_enabled and self._gpu_available and self._is_full_gpu_pipeline())
-
-    def _maybe_start_cuda_profiler(self):
-        if not self._should_profile_cuda():
-            return None
-        started = cuda_profiler_start()
-        if not started:
-            if self.debug_mode:
-                log_debug(LogChannel.YOLO, "CUDA profiler start failed")
-            return None
-        return time.monotonic()
-
-    def _maybe_stop_cuda_profiler(self, start_ts):
-        if start_ts is None:
-            return None
-        stopped = cuda_profiler_stop()
-        if not stopped:
-            return None
-        elapsed_ms = (time.monotonic() - start_ts) * 1000.0
-        return max(0.0, elapsed_ms)
 
 
     def get_detection_payload(self):

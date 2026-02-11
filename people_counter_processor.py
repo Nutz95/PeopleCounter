@@ -1,7 +1,5 @@
-import sys
 import os
 # Use local vendors folder for lwcc if present; do not hardcode Windows paths
-from pathlib import Path
 # Remove hardcoded Windows path and import lwcc robustly
 try:
     # Normal import (preferred)
@@ -51,8 +49,10 @@ import torch
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from cuda_profiler import cuda_profiler_enabled, cuda_profiler_start, cuda_profiler_stop
+from logger.filtered_logger import LogChannel, warning as log_warning
 
+from cuda_stream_manager import CudaStreamManager
+from trt_debug import dump_trt_bindings
 class PeopleCounterProcessor:
     def __init__(self, model_name="CSRNet", model_weights="SHA", backend="torch", openvino_device="GPU", density_threshold=15):
         """_summary_
@@ -66,11 +66,6 @@ class PeopleCounterProcessor:
         self.model_weights = model_weights
         self.model = None
         self.backend = (backend or "torch").lower()
-        self.openvino_device = openvino_device
-        self.ov_compiled_model = None
-        self.ov_input = None
-        self.ov_output = None
-        self.ov_input_shape = None
         self.density_threshold = density_threshold
         self.trt_context = None
         self.trt_engine = None
@@ -78,13 +73,12 @@ class PeopleCounterProcessor:
         self.trt_outputs = []
         self.trt_bindings = []
         self.cudart = None
+        self.stream_mgr = None
         self.lock = threading.Lock() # Lock pour éviter les accès concurrents au contexte TRT/OpenVINO
         self.last_device = "Unknown"
         self.last_perf = {'preprocess': 0, 'h2d': 0, 'infer': 0, 'd2h': 0, 'postprocess': 0}
         max_workers = min(32, (os.cpu_count() or 4) * 2)
         self.pool = ThreadPoolExecutor(max_workers=max_workers)
-        self._cuda_profiler_enabled = cuda_profiler_enabled() and torch.cuda.is_available()
-        self.last_cuda_profiler_ms = None
 
         if self.backend == "tensorrt":
             engine_path = os.environ.get("LWCC_TRT_ENGINE", "dm_count.engine")
@@ -97,12 +91,14 @@ class PeopleCounterProcessor:
                     logger = trt.Logger(trt.Logger.INFO)
                     with open(engine_path, "rb") as f, trt.Runtime(logger) as runtime:
                         self.trt_engine = runtime.deserialize_cuda_engine(f.read())
+                    _maybe_dump_binding_shapes(self.trt_engine, "Density")
                     print(f"LWCC backend loaded into TensorRT: {engine_path}")
-                    
-                    err, self.trt_stream = cudart.cudaStreamCreate()
-                    if int(err) != 0:
-                        raise RuntimeError(f"CUDA Stream Creation failed: {err}")
-                        
+
+                    self.stream_mgr = CudaStreamManager(name="density_trt")
+                    self.stream_mgr.ensure_valid()
+                    if not self.stream_mgr.handle():
+                        raise RuntimeError("CUDA Stream unavailable via CudaStreamManager")
+
                     self.trt_context = self.trt_engine.create_execution_context()
                     
                     for i in range(self.trt_engine.num_io_tensors):
@@ -176,52 +172,21 @@ class PeopleCounterProcessor:
                         self.trt_context.set_tensor_address(name, int(device_ptr))
                     print(f"PeopleCounterProcessor using TensorRT on RTX: {engine_path}")
                 except Exception as exc:
-                    print(f"[WARN] TensorRT init failed ({exc}), falling back to openvino.")
-                    self.backend = "openvino"
-            else:
-                self.backend = "openvino"
-
-        if self.backend == "openvino":
-            # On cherche d'abord dans models/openvino, puis dans le home
-            xml_name = f"{model_name.lower().replace('-', '_')}_{model_weights.lower()}.xml"
-            candidates = [
-                os.path.join("models", "openvino", xml_name),
-                os.path.join(str(Path.home()), ".lwcc", "openvino", xml_name)
-            ]
-            
-            xml_path = None
-            for c in candidates:
-                if os.path.isfile(c):
-                    xml_path = c
-                    break
-
-            if xml_path:
-                try:
-                    import openvino as ov
-                    core = ov.Core()
-                    ov_model = core.read_model(xml_path)
-                    self.ov_compiled_model = core.compile_model(ov_model, self.openvino_device)
-                    try:
-                        self.last_device = self.ov_compiled_model.get_property("FULL_DEVICE_NAME")
-                    except:
-                        self.last_device = f"OpenVINO ({self.openvino_device})"
-                    self.ov_input = self.ov_compiled_model.inputs[0]
-                    self.ov_output = self.ov_compiled_model.outputs[0]
-                    try:
-                        self.ov_input_shape = list(self.ov_input.get_shape())
-                    except Exception:
-                        self.ov_input_shape = None
-                    print(f"PeopleCounterProcessor using OpenVINO on {self.openvino_device}: {xml_path}")
-                except Exception as exc:
-                    print(f"[WARN] OpenVINO init failed ({exc}), falling back to torch.")
+                    print(f"[WARN] TensorRT init failed ({exc}), falling back to torch.")
                     self.backend = "torch"
-            else:
-                print(f"[WARN] OpenVINO IR not found at {xml_path}, falling back to torch.")
-                self.backend = "torch"
+        else:
+            self.backend = "torch"
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"PeopleCounterProcessor running on device: {device_str}")
 
-        if self.backend == "torch":
-            device_str = "cuda" if torch.cuda.is_available() else "cpu"
-            print(f"PeopleCounterProcessor running on device: {device_str}")
+    def _recreate_trt_stream(self):
+        if not self.stream_mgr:
+            return
+        try:
+            self.stream_mgr.reset()
+        except Exception as exc:
+            log_warning(LogChannel.DENSITY, f"Failed to recreate CUDA stream: {exc}")
+            raise
 
     def process(self, frame):
         """
@@ -245,31 +210,6 @@ class PeopleCounterProcessor:
              color_resized = cv2.resize(color_small, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR)
              return frame, color_resized, tile.get('count', 0.0), mask_resized
         
-        elif self.backend == "openvino" and self.ov_compiled_model is not None:
-            # Code OpenVINO optimisé pour une seule frame
-            with self.lock:
-                # Preprocess
-                h, c, target_h, target_w = self.ov_input_shape or (1, 3, 1080, 1920)
-                blob = cv2.resize(frame, (target_w, target_h))
-                blob = blob.transpose((2, 0, 1)) # HWC to CHW
-                blob = blob.reshape((1, 3, target_h, target_w))
-                
-                # Inference
-                results = self.ov_compiled_model(blob)[self.ov_output]
-                density_map = results[0, 0]
-                
-                # Post-process (identique à process_batch)
-                d_norm = cv2.normalize(density_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-                d_norm = cv2.resize(d_norm, (frame.shape[1], frame.shape[0]))
-                d_color = cv2.applyColorMap(d_norm, cv2.COLORMAP_JET)
-                _, mask = cv2.threshold(d_norm, self.density_threshold, 255, cv2.THRESH_BINARY)
-                mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-                d_color = cv2.bitwise_and(d_color, mask_3ch)
-                
-                count = int(np.sum(density_map))
-                if count < 0.5: count = 0
-                return frame, d_color, count, mask
-
         else:
             # Fallback PyTorch / LWCC direct
             # On utilise lwcc.get_count_from_frame si dispo; sinon fallback à 0
@@ -296,7 +236,6 @@ class PeopleCounterProcessor:
         if not frames:
             return {'total_count': 0.0, 'tiles': [], 'frame_width': 0, 'frame_height': 0}
 
-        self.last_cuda_profiler_ms = None
         frame_h, frame_w = frames[0].shape[:2]
 
         if self.backend == "tensorrt" and self.trt_context is not None:
@@ -332,25 +271,38 @@ class PeopleCounterProcessor:
 
                         required_size = input_data.nbytes
                         t1 = time.time()
+                        self.stream_mgr.ensure_valid()
+                        stream_handle = self.stream_mgr.handle()
+                        if not stream_handle:
+                            raise RuntimeError("TensorRT CUDA stream unavailable")
                         self.cudart.cudaMemcpyAsync(
                             self.trt_inputs[0]['device'], input_data.ctypes.data, required_size,
-                            self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream
+                            self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, stream_handle
                         )
                         self.last_perf['h2d'] += time.time() - t1
 
                         t2 = time.time()
                         self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
-                        self.trt_context.execute_async_v3(self.trt_stream)
-                        self.cudart.cudaStreamSynchronize(self.trt_stream)
+                        try:
+                            self.trt_context.execute_async_v3(stream_handle)
+                        except Exception as exc:
+                            log_warning(LogChannel.DENSITY, f"TensorRT enqueueV3 failed ({exc}); recreating stream.")
+                            self._recreate_trt_stream()
+                            self.stream_mgr.ensure_valid()
+                            stream_handle = self.stream_mgr.handle()
+                            if not stream_handle:
+                                raise RuntimeError("TensorRT CUDA stream unavailable after recreation")
+                            self.trt_context.execute_async_v3(stream_handle)
+                        self.stream_mgr.synchronize()
                         self.last_perf['infer'] += time.time() - t2
 
                         t3 = time.time()
                         for output in self.trt_outputs:
                             self.cudart.cudaMemcpyAsync(
                                 output['host'].ctypes.data, output['device'], output['nbytes'],
-                                self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream
+                                self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, stream_handle
                             )
-                        self.cudart.cudaStreamSynchronize(self.trt_stream)
+                        self.stream_mgr.synchronize()
                         self.last_perf['d2h'] += time.time() - t3
 
                         t4 = time.time()
@@ -367,63 +319,12 @@ class PeopleCounterProcessor:
                             total_count += tile_entry['count']
                         self.last_perf['postprocess'] += time.time() - t4
 
-            profiler_start_ts = self._maybe_start_cuda_profiler()
-            try:
-                _run_trt_batches()
-            finally:
-                self.last_cuda_profiler_ms = self._maybe_stop_cuda_profiler(profiler_start_ts)
+            _run_trt_batches()
 
             print(
                 f"  [DENS DETAILED] Pre={self.last_perf['preprocess']*1000:.1f}ms | "
                 f"Infer={self.last_perf['infer']*1000:.1f}ms | Post={self.last_perf['postprocess']*1000:.1f}ms"
             )
-            return {'total_count': total_count, 'tiles': tiles, 'frame_width': frame_w, 'frame_height': frame_h}
-
-        elif self.backend == "openvino" and self.ov_compiled_model is not None:
-            num_frames = len(frames)
-            is_density = any(word in self.model_name.lower() for word in ["dm_count", "csrnet", "sfanet", "bay", "density"])
-            try:
-                ov_shape = list(self.ov_input.get_shape())
-                expected_b = ov_shape[0] if ov_shape[0] > 0 else num_frames
-                c, target_h, target_w = ov_shape[1], ov_shape[2], ov_shape[3]
-                if is_density and target_h == 1080:
-                    target_h, target_w = 544, 960
-            except Exception:
-                if is_density:
-                    expected_b, c, target_h, target_w = num_frames, 3, 544, 960
-                else:
-                    expected_b, c, target_h, target_w = num_frames, 3, 1080, 1920
-
-            max_ov_batch = min(expected_b, 4)
-            tiles = []
-            total_count = 0.0
-
-            with self.lock:
-                for i in range(0, num_frames, max_ov_batch):
-                    chunk = frames[i:i+max_ov_batch]
-                    actual_b = len(chunk)
-
-                    input_blob = np.zeros((actual_b, c, target_h, target_w), dtype=np.float32)
-                    for j, f in enumerate(chunk):
-                        blob = cv2.resize(f, (target_w, target_h))
-                        blob = blob.transpose((2, 0, 1))
-                        input_blob[j] = blob.astype(np.float32) / 255.0
-
-                    try:
-                        res = self.ov_compiled_model(input_blob)[self.ov_output]
-                    except Exception:
-                        res_shape = list(self.ov_output.get_shape())
-                        res = np.zeros((actual_b, res_shape[1], res_shape[2], res_shape[3]), dtype=np.float32)
-                        for j in range(actual_b):
-                            single_blob = input_blob[j:j+1]
-                            res[j:j+1] = self.ov_compiled_model(single_blob)[self.ov_output]
-
-                    for j in range(actual_b):
-                        density_map = res[j, 0]
-                        tile_entry = self._create_tile_entry(density_map, chunk[j].shape[:2])
-                        tiles.append(tile_entry)
-                        total_count += tile_entry['count']
-
             return {'total_count': total_count, 'tiles': tiles, 'frame_width': frame_w, 'frame_height': frame_h}
 
         if self.backend == "torch":
@@ -493,23 +394,3 @@ class PeopleCounterProcessor:
             'scale_x': float(tile_w),
             'scale_y': float(tile_h),
         }
-
-    def _should_profile_cuda(self):
-        return bool(self._cuda_profiler_enabled and torch.cuda.is_available() and self.backend == "tensorrt" and self.trt_context is not None)
-
-    def _maybe_start_cuda_profiler(self):
-        if not self._should_profile_cuda():
-            return None
-        started = cuda_profiler_start()
-        if not started:
-            return None
-        return time.monotonic()
-
-    def _maybe_stop_cuda_profiler(self, start_ts):
-        if start_ts is None:
-            return None
-        stopped = cuda_profiler_stop()
-        if not stopped:
-            return None
-        elapsed_ms = (time.monotonic() - start_ts) * 1000.0
-        return max(0.0, elapsed_ms)

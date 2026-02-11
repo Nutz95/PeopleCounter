@@ -20,6 +20,9 @@ try:
 except Exception:
     CudaMaskPostprocessor = None
 
+from cuda_stream_manager import CudaStreamManager
+from logger.filtered_logger import LogChannel, warning as log_warning
+
 class YoloTensorRTEngine(YoloEngine):
     def __init__(self, model_path, confidence_threshold=0.25, device='cuda', pool=None, use_gpu_preproc=False, use_gpu_post=False):
         self.confidence_threshold = confidence_threshold
@@ -42,11 +45,7 @@ class YoloTensorRTEngine(YoloEngine):
             self.trt_engine = runtime.deserialize_cuda_engine(f.read())
             self.trt_context = self.trt_engine.create_execution_context()
 
-        # Stream and memory management via Torch (highly stable)
-        if torch is not None and torch.cuda.is_available():
-            self.trt_stream = torch.cuda.current_stream().cuda_stream
-        else:
-            self.trt_stream = 0
+        self.stream_mgr = CudaStreamManager(name="YoloTensorRT")
 
         self.trt_inputs = []
         self.trt_outputs = []
@@ -123,8 +122,24 @@ class YoloTensorRTEngine(YoloEngine):
                 self.trt_context.set_tensor_address(name, tensor.data_ptr())
 
             t2 = time.time()
-            self.trt_context.execute_async_v3(self.trt_stream)
-            torch.cuda.synchronize()
+            self.stream_mgr.ensure_valid()
+            try:
+                success = self.trt_context.execute_async_v3(self.stream_mgr.handle())
+                if not success:
+                    raise RuntimeError("TensorRT execute_async_v3 returned False")
+            except Exception as exc:
+                capturing = self.stream_mgr.is_capturing()
+                reason = "capture" if capturing else "execute_async_v3 failure"
+                log_warning(LogChannel.YOLO, f"TensorRT stream {reason}; recreating stream ({exc})")
+                self.stream_mgr.reset()
+                try:
+                    success = self.trt_context.execute_async_v3(self.stream_mgr.handle())
+                    if not success:
+                        raise RuntimeError("TensorRT execute_async_v3 returned False after reset")
+                except Exception as exc2:
+                    log_warning(LogChannel.YOLO, f"TensorRT enqueue still failing after reset ({exc2})")
+                    raise
+            self.stream_mgr.synchronize()
             self.last_perf['infer'] += time.time() - t2
 
             t3 = time.time()

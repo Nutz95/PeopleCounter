@@ -2,8 +2,14 @@ from ultralytics import YOLO
 import numpy as np
 import cv2
 import os
+import sys
 import time
 from tiling_manager import TilingManager
+from logger.filtered_logger import LogChannel, warning as log_warning
+from cuda_stream_manager import CudaStreamManager
+from trt_debug import dump_trt_bindings
+from trt_output_reconstructor import dump_flattened, flatten_trt_output
+from trt_output_reconstructor import flatten_trt_output
 
 class YoloPeopleCounter:
     def __init__(self, model_name='yolov26n', device='cpu', confidence_threshold=0.3, backend='torch', tile_size=640, overlap=0.15):
@@ -13,6 +19,7 @@ class YoloPeopleCounter:
         confidence_threshold: float, minimum confidence for detection
         """
         self.backend = (backend or 'torch').lower()
+        log_warning(LogChannel.YOLO, f"YOLO backend: {self.backend}")
         self.device = device
         self.person_class_id = 0  # COCO: 0 = person
         self.confidence_threshold = confidence_threshold
@@ -21,16 +28,15 @@ class YoloPeopleCounter:
         self.tiler = TilingManager(tile_size=tile_size) # On ne passe plus overlap au constructeur si TilingManager calcule tout seul
         
         self.model = None
-        self.ov_compiled_model = None
-        self.ov_input = None
-        self.ov_output = None
-        self.ov_input_shape = None
         self.trt_context = None
         self.trt_engine = None
         self.trt_inputs = []
         self.trt_outputs = []
         self.trt_bindings = []
         self.trt_stream = None
+        self.stream_mgr = None
+        self.last_perf = {}
+        self._dumped_trt_outputs = False
 
         if self.backend == 'tensorrt_native':
             self.model_name = model_name
@@ -41,10 +47,11 @@ class YoloPeopleCounter:
             self.trt_logger = trt.Logger(trt.Logger.INFO)
             with open(model_name, "rb") as f, trt.Runtime(self.trt_logger) as runtime:
                 self.trt_engine = runtime.deserialize_cuda_engine(f.read())
+            dump_trt_bindings(self.trt_engine, "YOLO")
             
-            err, self.trt_stream = cudart.cudaStreamCreate()
-            if int(err) != 0:
-                raise RuntimeError(f"CUDA Stream Creation failed: {err}")
+            self.stream_mgr = CudaStreamManager(name="yolo_trt")
+            if not self._stream_handle():
+                raise RuntimeError("CUDA stream initialization failed via CudaStreamManager")
             
             print(f"YOLO backend loaded into TensorRT: {model_name}")
             self.trt_context = self.trt_engine.create_execution_context()
@@ -84,8 +91,6 @@ class YoloPeopleCounter:
                 
                 shape = tuple(shape)
                 print(f"[DEBUG] YOLO: Final allocation shape for {name}: {shape}")
-
-                shape = tuple(shape)
                 dtype_np = trt.nptype(dtype)
                 size = trt.volume(shape)
                 nbytes = size * np.dtype(dtype_np).itemsize
@@ -116,67 +121,65 @@ class YoloPeopleCounter:
                 
                 self.trt_context.set_tensor_address(name, int(device_ptr))
 
-        elif self.backend == 'openvino_native':
-            if os.path.isdir(model_name):
-                xml_candidates = [p for p in os.listdir(model_name) if p.lower().endswith('.xml')]
-                if xml_candidates:
-                    model_name = os.path.join(model_name, xml_candidates[0])
-            if not (os.path.isfile(model_name) and model_name.lower().endswith('.xml')):
-                raise FileNotFoundError(f"OpenVINO XML not found for model: {model_name}")
-            self.model_name = model_name
-            import openvino as ov
-            core = ov.Core()
-            try:
-                print(f"OpenVINO available devices: {core.available_devices}")
-            except Exception:
-                pass
-            ov_model = core.read_model(model_name)
-            
-            # Sécurité : OpenVINO ne supporte pas le mot clé "cuda"
-            exec_device = self.device
-            if exec_device == "cuda":
-                exec_device = "GPU"
-                
-            self.ov_compiled_model = core.compile_model(ov_model, exec_device)
-            self.ov_input = self.ov_compiled_model.inputs[0]
-            self.ov_output = self.ov_compiled_model.outputs[0]
-            try:
-                self.ov_input_shape = list(self.ov_input.get_shape())
-            except Exception:
-                self.ov_input_shape = None
-            try:
-                exec_devices = self.ov_compiled_model.get_property("EXECUTION_DEVICES")
-                print(f"YOLO OpenVINO device: {exec_devices}")
-            except Exception:
-                pass
         else:
-            if self.backend == 'openvino':
-                if os.path.isfile(model_name) and model_name.lower().endswith('.xml'):
-                    model_name = os.path.dirname(model_name)
             self.model_name = model_name
             self.model = YOLO(model_name, task='detect')
-            if self.backend != 'openvino':
-                self.model.to(device)
+            self.model.to(device)
 
-    def count_people(self, image, tile_size=640, draw_boxes=True, use_tiling=True, draw_tiles=False):
+    def _recreate_trt_stream(self):
+        if not self.stream_mgr or not hasattr(self, 'cudart'):
+            return
+        try:
+            self.stream_mgr.reset()
+        except Exception as exc:
+            log_warning(LogChannel.YOLO, f"Failed to recreate CUDA stream: {exc}")
+            raise
+        self._stream_handle()
+
+    def _stream_handle(self):
+        if not self.stream_mgr:
+            return None
+        ensure_valid = getattr(self.stream_mgr, 'ensure_valid', None)
+        if callable(ensure_valid):
+            ensure_valid()
+        stream = self.stream_mgr.handle()
+        self.trt_stream = stream
+        return stream
+
+    def _synchronize_current_stream(self):
+        sync_manager = getattr(self.stream_mgr, 'synchronize', None)
+        if callable(sync_manager):
+            sync_manager()
+            return
+        if not (getattr(self, 'cudart', None) and self.trt_stream):
+            return
+        self.cudart.cudaStreamSynchronize(self.trt_stream)
+
+    def _maybe_dump_trt_outputs(self):
+        if self._dumped_trt_outputs:
+            return
+        flag = os.environ.get('PEOPLE_COUNTER_DUMP_TRT_BINDINGS', '0').lower()
+        if flag not in ('1', 'true', 'yes'):
+            return
+        for idx, binding in enumerate(self.trt_outputs):
+            dump_flattened(binding, f'YOLO output {idx}')
+        self._dumped_trt_outputs = True
+        print('[DBG] Dumped TensorRT outputs, exiting per debug flag')
+        sys.exit(0)
+
+    def count_people(self, image, tile_size=640, draw_boxes=True, use_tiling=True, draw_tiles=False, global_tile_only=False):
         """
         Détection de personnes avec pipeline grille dense optimisée.
         """
         # Conversion RGB pour la cohérence des modèles YOLO
         image_rgb = image[..., ::-1].copy()
+        if global_tile_only:
+            use_tiling = False
+            draw_tiles = False
         
         if not use_tiling:
             # Inference sur image entière redimensionnée (beaucoup plus rapide)
-            if self.backend == 'openvino_native':
-                boxes, scores = self._ov_native_infer(image_rgb)
-                keep = self.tiler.fuse_results(boxes, scores, iou_threshold=0.25)
-                total_count = len(keep)
-                image_out = image.copy() if draw_boxes else None
-                if draw_boxes:
-                    for i in keep:
-                        x1, y1, x2, y2 = boxes[i].astype(int)
-                        cv2.rectangle(image_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            elif self.backend == 'tensorrt_native':
+            if self.backend == 'tensorrt_native':
                 boxes, scores = self._trt_native_infer(image_rgb)
                 keep = self.tiler.fuse_results(boxes, scores, iou_threshold=0.25)
                 total_count = len(keep)
@@ -235,15 +238,11 @@ class YoloPeopleCounter:
                     all_boxes_list.append(boxes)
                     all_scores_list.append(scores)
         else:
-            # OpenVINO / Torch
             for i, tile in enumerate(tiles_to_infer):
-                if self.backend == 'openvino_native':
-                    boxes, scores = self._ov_native_infer(tile)
-                else:
-                    results = self.model.predict(tile, verbose=False, imgsz=self.tile_size)
-                    mask = (results[0].boxes.cls.cpu().numpy() == self.person_class_id) & (results[0].boxes.conf.cpu().numpy() >= self.confidence_threshold)
-                    boxes = results[0].boxes.xyxy[mask].cpu().numpy()
-                    scores = results[0].boxes.conf[mask].cpu().numpy()
+                results = self.model.predict(tile, verbose=False, imgsz=self.tile_size)
+                mask = (results[0].boxes.cls.cpu().numpy() == self.person_class_id) & (results[0].boxes.conf.cpu().numpy() >= self.confidence_threshold)
+                boxes = results[0].boxes.xyxy[mask].cpu().numpy()
+                scores = results[0].boxes.conf[mask].cpu().numpy()
                 
                 if boxes.size > 0:
                     x0, y0, sw, sh = tile_metadata[i]
@@ -283,35 +282,6 @@ class YoloPeopleCounter:
         
         return (int(total_count), image_out) if draw_boxes else int(total_count)
 
-    def _ov_native_infer(self, tile_rgb):
-        img = tile_rgb.astype(np.float32) / 255.0
-        img = np.transpose(img, (2, 0, 1))[None, ...]
-        if self.ov_input_shape and len(self.ov_input_shape) == 4:
-            _, _, target_h, target_w = self.ov_input_shape
-            if img.shape[2] != target_h or img.shape[3] != target_w:
-                resized = cv2.resize(tile_rgb, (target_w, target_h))
-                img = resized.astype(np.float32) / 255.0
-                img = np.transpose(img, (2, 0, 1))[None, ...]
-        result = self.ov_compiled_model([img])[self.ov_output]
-        pred = result[0].T
-        boxes = pred[:, :4]
-        scores = pred[:, 4 + self.person_class_id]
-        mask = scores >= self.confidence_threshold
-        boxes = boxes[mask]
-        scores = scores[mask]
-        if boxes.size == 0:
-            return boxes, scores
-        x = boxes[:, 0]
-        y = boxes[:, 1]
-        w = boxes[:, 2]
-        h = boxes[:, 3]
-        x1 = x - w / 2
-        y1 = y - h / 2
-        x2 = x + w / 2
-        y2 = y + h / 2
-        boxes = np.stack([x1, y1, x2, y2], axis=1)
-        return boxes, scores
-
     def _trt_native_infer(self, tile_rgb):
         import numpy as np
         h_orig, w_orig = tile_rgb.shape[:2]
@@ -333,18 +303,51 @@ class YoloPeopleCounter:
 
         infer_start = time.monotonic()
         cuda_input = self.trt_inputs[0]
-        self.cudart.cudaMemcpyAsync(cuda_input['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
+        stream_handle = self._stream_handle()
+        if not stream_handle:
+            raise RuntimeError("TensorRT CUDA stream unavailable")
+
+        self.cudart.cudaMemcpyAsync(
+            cuda_input['device'],
+            input_data.ctypes.data,
+            input_data.nbytes,
+            self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice,
+            stream_handle,
+        )
         self.trt_context.set_input_shape(cuda_input['name'], input_data.shape)
-        self.trt_context.execute_async_v3(self.trt_stream)
+
+        def stream_is_capturing():
+            return bool(self.stream_mgr and self.stream_mgr.is_capturing())
+
+        try:
+            success = self.trt_context.execute_async_v3(stream_handle)
+            if not success:
+                raise RuntimeError("TensorRT execute_async_v3 returned False")
+        except Exception as exc:
+            reason = "capture" if stream_is_capturing() else "execute_async_v3 failure"
+            log_warning(LogChannel.YOLO, f"TensorRT stream {reason}; recreating stream ({exc})")
+            self._recreate_trt_stream()
+            stream_handle = self._stream_handle()
+            success = self.trt_context.execute_async_v3(stream_handle)
+            if not success:
+                raise RuntimeError("TensorRT execute_async_v3 failed even after recreating stream")
+
         for output in self.trt_outputs:
-            self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
-        self.cudart.cudaStreamSynchronize(self.trt_stream)
+            self.cudart.cudaMemcpyAsync(
+                output['host'].ctypes.data,
+                output['device'],
+                output['nbytes'],
+                self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                stream_handle,
+            )
+        self._synchronize_current_stream()
+        self._maybe_dump_trt_outputs()
         infer_end = time.monotonic()
         self.last_perf['infer'] = infer_end - infer_start
 
         post_start = time.monotonic()
-        result = self.trt_outputs[0]['host']
-        pred = result[0].T
+        binding = self.trt_outputs[0]
+        pred, _ = flatten_trt_output(binding)
         boxes = pred[:, :4]
         scores = pred[:, 4 + self.person_class_id]
         mask = scores >= self.confidence_threshold
@@ -418,21 +421,56 @@ class YoloPeopleCounter:
                     all_scores.append(single_scores)
             else:
                 infer_start = time.monotonic()
-                self.cudart.cudaMemcpyAsync(self.trt_inputs[0]['device'], input_data.ctypes.data, input_data.nbytes, self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self.trt_stream)
+                stream_handle = self._stream_handle()
+                if not stream_handle:
+                    raise RuntimeError("TensorRT CUDA stream unavailable for batch inference")
+
+                self.cudart.cudaMemcpyAsync(
+                    self.trt_inputs[0]['device'],
+                    input_data.ctypes.data,
+                    input_data.nbytes,
+                    self.cudart.cudaMemcpyKind.cudaMemcpyHostToDevice,
+                    stream_handle,
+                )
                 self.trt_context.set_input_shape(self.trt_inputs[0]['name'], input_data.shape)
-                self.trt_context.execute_async_v3(self.trt_stream)
-                self.cudart.cudaStreamSynchronize(self.trt_stream)
+
+                def stream_is_capturing():
+                    return bool(self.stream_mgr and self.stream_mgr.is_capturing())
+
+                try:
+                    success = self.trt_context.execute_async_v3(stream_handle)
+                    if not success:
+                        raise RuntimeError("TensorRT execute_async_v3 returned False")
+                except Exception as exc:
+                    reason = "capture" if stream_is_capturing() else "execute_async_v3 failure"
+                    log_warning(LogChannel.YOLO, f"TensorRT stream {reason}; recreating stream ({exc})")
+                    self._recreate_trt_stream()
+                    stream_handle = self._stream_handle()
+                    success = self.trt_context.execute_async_v3(stream_handle)
+                    if not success:
+                        raise RuntimeError("TensorRT execute_async_v3 failed even after recreating stream")
 
                 for output in self.trt_outputs:
-                    self.cudart.cudaMemcpyAsync(output['host'].ctypes.data, output['device'], output['nbytes'], self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self.trt_stream)
-                self.cudart.cudaStreamSynchronize(self.trt_stream)
+                    self.cudart.cudaMemcpyAsync(
+                        output['host'].ctypes.data,
+                        output['device'],
+                        output['nbytes'],
+                        self.cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                        stream_handle,
+                    )
+                self._synchronize_current_stream()
+                self._maybe_dump_trt_outputs()
                 infer_end = time.monotonic()
                 perf_infer += infer_end - infer_start
 
                 post_start = time.monotonic()
-                result = self.trt_outputs[0]['host']
+                binding = self.trt_outputs[0]
+                result, per_sample = flatten_trt_output(binding)
+                num_predictions = per_sample or result.shape[0]
                 for j in range(actual_b):
-                    pred = result[j].T
+                    start = j * num_predictions
+                    end = start + num_predictions
+                    pred = result[start:end]
                     boxes = pred[:, :4]
                     scores = pred[:, 4 + self.person_class_id]
                     mask = scores >= self.confidence_threshold

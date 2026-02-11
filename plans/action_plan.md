@@ -2,7 +2,7 @@
 
 ## TL;DR
 1. Keep `camera_app_pipeline.py` lean by offloading frame bookkeeping to the new `frame_tasks` helpers and the split `pipeline_components` modules (`ProfileManager`, `ModelLoader`, `MetricsCollector`).
-2. The runtime still threads through the `ModelThread` join loop; the plan is to evolve toward YOLO/density worker pools with bounded queues and ordered dispatch.
+2. YOLO/Density work now flows through `WorkerPool`s that tag frames, respect queue bounds, and feed results back to the capture loop.
 3. Surface queue-depth metrics and warnings so the UI and logs stay consistent while the GPU runs at capacity.
 
 ## Architecture Overview
@@ -43,7 +43,7 @@ flowchart TD
     style DWorkers fill:#9ff,stroke:#333,stroke-width:2px
 ```
 
-Current runtime still drives YOLO/density via the existing `ModelThread` join loop in `camera_app_pipeline.py`; the diagram above is the eventual goal once the worker pools and queue helpers from `frame_tasks` are wired in.
+Current runtime now drives YOLO/density via the `WorkerPool`-backed path in `camera_app_pipeline.py`; the diagram above remains the long-term distributed dispatcher layout once per-group result handling grows further.
 
 ## Milestones
 
@@ -54,16 +54,16 @@ Current runtime still drives YOLO/density via the existing `ModelThread` join lo
 - [x] Confirm `logger.filtered_logger` gating respects the per-task metadata when debugging YOLO/density outputs.
 
 ### Milestone 2 — Worker Pool Infrastructure
-- [ ] Introduce `worker_pool.py` that consumes `frame_tasks.FrameTask`/`ResultTask`, manages stop events, and emits saturation warnings when queues hit capacity.
-- [ ] Surface APIs to enqueue frames, dequeue ordered results, and expose queue depths via `MetricsCollector` and logs.
-- [ ] Validate worker logging through `configure_logger` so filtered logs stay channel-aware while worker pools run.
+- [x] Introduce `worker_pool.py` that consumes `frame_tasks.FrameTask`/`ResultTask`, manages stop events, and emits saturation warnings when queues hit capacity.
+- [x] Surface APIs to enqueue frames, dequeue ordered results, and expose queue depths via `MetricsCollector` and logs.
+- [x] Validate worker logging through `configure_logger` so filtered logs stay channel-aware while worker pools run.
 
 ### Milestone 3 — Capture Loop Overhaul in CameraAppPipeline
-- [ ] Replace the `ModelThread` join-based loop with queue-backed capture/enqueue semantics that tag `FrameTask`s with IDs and depth metadata.
-- [ ] Start YOLO/density worker groups before entering `run()`, tag frames with incrementing IDs, and enqueue them per group.
-- [ ] Drain the result queue each iteration, apply ordered dispatch (skip stale results), and keep the existing metrics/callback/log logic intact.
-- [ ] Expose `yolo_queue_depth`/`density_queue_depth` in the metrics payload and log warnings when groups drop frames due to saturation.
-- [ ] Gracefully shut down workers in the `finally` block.
+- [x] Replace the `ModelThread` join-based loop with queue-backed capture/enqueue semantics that tag `FrameTask`s with IDs and depth metadata.
+- [x] Start YOLO/density worker groups before entering `run()`, tag frames with incrementing IDs, and enqueue them per group.
+- [x] Drain the result queue each iteration, apply ordered dispatch (skip stale results), and keep the existing metrics/callback/log logic intact.
+- [x] Expose `yolo_queue_depth`/`density_queue_depth` in the metrics payload and log warnings when groups drop frames due to saturation.
+- [x] Gracefully shut down workers in the `finally` block.
 
 ### Milestone 4 — Density Pipeline Follow-up (future)
 - [ ] Re-enable density processing (once YOLO concurrency is stable) with its own worker group and ordered processing path.
