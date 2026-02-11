@@ -7,6 +7,7 @@ from app_v2.application.frame_scheduler import FrameScheduler
 from app_v2.application.processing_graph import ProcessingGraph
 from app_v2.application.performance_tracker import PerformanceTracker
 from app_v2.application.result_aggregator import ResultAggregator
+from app_v2.application.inference_stream_controller import InferenceStreamController
 from app_v2.infrastructure.flask_stream_server import FlaskStreamServer
 from logger.filtered_logger import LogChannel, info as log_info, warning as log_warning
 
@@ -22,7 +23,9 @@ class PipelineOrchestrator:
         self.processing_graph = ProcessingGraph()
         self.publisher = FlaskStreamServer()
         self.aggregator = ResultAggregator(self.fusion_strategy, self.publisher)
+        self.inference_controller = InferenceStreamController(self.config)
         self.performance_tracker = PerformanceTracker()
+        log_info(LogChannel.GLOBAL, "PipelineOrchestrator components initialized")
 
     def run(self) -> None:
         log_info(LogChannel.GLOBAL, f"Starting app_v2 pipeline with config {self.config}")
