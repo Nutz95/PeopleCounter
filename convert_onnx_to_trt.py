@@ -52,15 +52,15 @@ def build_engine(onnx_path, engine_path, max_batch_size=1):
             for i in range(1, len(new_dims)):
                 if new_dims[i] <= 0: # If dynamic, provide a default
                     if i == 1: new_dims[i] = 3
-                    elif i == 2: 
-                        # Pour la densité, on force la calibration 544p demandée pour le tiling
+                    elif i == 2:
+                        # Pour la densité, on force maintenant la calibration 720x640 demandée pour les tiles
                         if is_density:
-                            new_dims[i] = 544
+                            new_dims[i] = 720
                         else:
                             new_dims[i] = 640
-                    elif i == 3: 
+                    elif i == 3:
                         if is_density:
-                            new_dims[i] = 960
+                            new_dims[i] = 640
                         else:
                             new_dims[i] = 640
                     else: 

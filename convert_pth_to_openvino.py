@@ -1,16 +1,34 @@
 import os
 import sys
-# Try relative path first
+from pathlib import Path
+
+# Root helpers and local LWCC import path
 root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(root, "external", "lwcc"))
+
+# Prioritize local weights directory so lwcc.util.functions.weights_check reuses models/lwcc_weights
+lwcc_weights_dir = os.environ.get('LWCC_WEIGHTS_PATH', os.path.join(root, "models", "lwcc_weights"))
+os.makedirs(lwcc_weights_dir, exist_ok=True)
+os.environ['LWCC_WEIGHTS_PATH'] = str(lwcc_weights_dir)
+
 import torch
-import onnx
-from pathlib import Path
-from lwcc.util.functions import weights_check
 from lwcc.models.CSRNet import make_model as make_csrnet
 from lwcc.models.SFANet import make_model as make_sfanet
 from lwcc.models.Bay import make_model as make_bay
 from lwcc.models.DMCount import make_model as make_dmcount
+
+try:
+    import torch._dynamo as torch_dynamo
+    torch_dynamo.config.suppress_errors = True
+    torch_dynamo.config.verbose = False
+    torch_dynamo_disable = torch_dynamo.disable
+except Exception:
+    torch_dynamo_disable = None
+
+def _wrap_export(fn):
+    if torch_dynamo_disable:
+        return torch_dynamo_disable()(fn)
+    return fn
 
 # OpenVINO Model Optimizer import (assume mo is in PATH or use absolute path)
 # Example: mo_path = r"C:\Program Files (x86)\Intel\openvino_2023\tools\model_optimizer\mo.py"
@@ -34,8 +52,8 @@ def convert_pth_to_onnx(model_name, model_weights, pth_path, onnx_path):
     
     print(f"[INFO] Loading {model_name} weights from {pth_path}")
     model = None
-    # On utilise 544x960 car 544 est un multiple de 16 (requis par SFANet)
-    target_h, target_w = 544, 960
+    # Align on the 720x640 tile used by the density tiling pipeline
+    target_h, target_w = 720, 640
     dummy_input = torch.randn(1, 3, target_h, target_w)
     if model_name == "CSRNet":
         model = make_csrnet(model_weights)
@@ -53,24 +71,26 @@ def convert_pth_to_onnx(model_name, model_weights, pth_path, onnx_path):
     
     # Pour éviter les erreurs avec les nouvelles versions de PyTorch (Dynamo), 
     # on désactive temporairement le tracking dynamique si ça pose problème ou on utilise fixed shapes.
+    exporter = _wrap_export(torch.onnx.export)
+    dynamic_shapes = [{0: 'batch'}]
     try:
-        torch.onnx.export(
-            model, 
-            dummy_input, 
-            onnx_path, 
-            opset_version=18, 
-            input_names=['input'], 
+        exporter(
+            model,
+            dummy_input,
+            onnx_path,
+            opset_version=18,
+            input_names=['input'],
             output_names=['output'],
-            dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}}
+            dynamic_shapes=dynamic_shapes,
         )
     except Exception as e:
         print(f"[WARN] Standard export failed, trying fixed shape export for {model_name}: {e}")
-        torch.onnx.export(
-            model, 
-            dummy_input, 
-            onnx_path, 
-            opset_version=18, 
-            input_names=['input'], 
+        exporter(
+            model,
+            dummy_input,
+            onnx_path,
+            opset_version=18,
+            input_names=['input'],
             output_names=['output']
         )
     return True
@@ -111,9 +131,6 @@ def main():
                 convert_onnx_to_openvino(onnx_path, ov_dir)
         else:
             print(f"[WARN] Weight file not found: {pth_path}")
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()

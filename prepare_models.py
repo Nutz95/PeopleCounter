@@ -152,13 +152,6 @@ except Exception as e:
     print(f"[prepare_models] Warning: failed to relocate weights: {e}")
 
 try:
-    # Export density models to ONNX
-    print("[prepare_models] Running export_density_to_onnx.py")
-    run(f"python3 export_density_to_onnx.py")
-except Exception as e:
-    print(f"[prepare_models] Warning: export_density_to_onnx.py failed: {e}")
-
-try:
     # Export YOLO models to TRT
     print("[prepare_models] Running export_yolos_to_trt.py")
     run(f"python3 export_yolos_to_trt.py")
@@ -166,6 +159,13 @@ except Exception as e:
     print(f"[prepare_models] Warning: export_yolos_to_trt.py failed: {e}")
 
 # Convert any generated LWCC ONNX models to TensorRT if CUDA available
+try:
+    # Convert PTH to OpenVINO IR
+    print("[prepare_models] Running convert_pth_to_openvino.py")
+    run(f"python3 convert_pth_to_openvino.py")
+except Exception as e:
+    print(f"[prepare_models] Warning: convert_pth_to_openvino.py failed: {e}")
+
 try:
     onnx_dir = ROOT / 'models' / 'onnx'
     trt_dir = ROOT / 'models' / 'tensorrt'
@@ -185,13 +185,6 @@ try:
                 print(f"[prepare_models] Warning: convert_onnx_to_trt failed for {onnx}: {ce}")
 except Exception as e:
     print(f"[prepare_models] Warning: LWCC ONNX->TRT conversion failed: {e}")
-
-try:
-    # Convert PTH to OpenVINO IR
-    print("[prepare_models] Running convert_pth_to_openvino.py")
-    run(f"python3 convert_pth_to_openvino.py")
-except Exception as e:
-    print(f"[prepare_models] Warning: convert_pth_to_openvino.py failed: {e}")
 
 try:
     # Prepare YOLO models (ONNX/OpenVINO/TensorRT)
