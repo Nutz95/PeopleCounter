@@ -32,7 +32,12 @@ flowchart LR
     FrameSource --> FrameScheduler
 ```
 
-The graph shows where each stage executes: the capture/scheduler/fusion nodes run on the CPU (with NVDEC delivering frames straight into GPU memory so scheduling can keep them there), the preprocessing and inference nodes run on CUDA streams, and Flask only publishes the merged payload without touching TensorRT. Aggregation/fusion stay on CPU today for simplicity, but their work is intentionally lightweight (just merging dictionaries) so latency remains minimal; the same interfaces can evolve into GPU-assisted merge/publish if you need even tighter deadlines.
+The graph shows where each stage executes: the capture/scheduler/fusion nodes run on the CPU (NVDEC keeps decoding directly into GPU buffers so the scheduler can hand payloads to the preprocessor without ever copying back), the preprocessing and inference nodes run on CUDA streams, and Flask only publishes the merged payload without touching TensorRT. Aggregation/fusion stay on CPU today for simplicity, but their work is intentionally lightweight (just merging dictionaries) so latency remains minimal; the same interfaces can evolve into GPU-assisted merge/publish if you need every stage on the device.
+
+## Frame concurrency
+
+- Frame N+1 begins preprocessing as soon as the NVDEC decoder has delivered its GPU buffer, even while Frame N is still inferencing on TensorRT streams. The scheduler keeps a sliding window of in-flight frame_ids so there is always a payload ready for each stream.
+- Because the scheduling and instrumentation run on the CPU but operate on GPU-resident buffers, the GPU remains saturated across all strategies without unnecessary host copies.
 
 ## Fusion strategies
 
@@ -75,6 +80,17 @@ flowchart TD
 
 Raw stream mode forwards whatever payload arrives without waiting, providing the browser full control over masks, density heatmaps, and fusion decisions.
 This mode keeps latency tight by issuing GPU-ready payloads directly; the CPU merely orchestrates the streams so TensorRT stays in charge of the heavy lifting.
+
+## Tile management
+
+- YOLO tiling keeps overlapping tiles for the final fusion pass; the orchestrator calculates the overlap for the non-global tiles so downstream consumers know how to blend masks without seams.
+- Density sits in GPU tile batches: all tiles for a frame (roughly 6 columns × 3 rows of 640×720) are processed together on the density stream instead of one by one, so inference latency stays predictable.
+- Because density tiles map exactly to 640×720 buffers with no overlap, the exported ONNX engine mirrors that layout and avoids extra memory movements.
+
+## Performance instrumentation
+
+- The `PerformanceTracker` component records how long decoding, preprocessing, inference, aggregation, and publishing take for each frame_id. The tracker exposes a context manager so stages can log durations without sprinkling time calculations everywhere.
+- These runtime metrics make it possible to compare fusion modes, confirm frame N+1 starts while frame N is still inferencing, and identify which CUDA stream would benefit most from further optimization.
 
 ## CUDA multi-streams
 

@@ -29,7 +29,7 @@ def export_dmcount_qnrf():
     state_dict = torch.load(weights_path, map_location="cpu")
     if "model" in state_dict:
         state_dict = state_dict["model"]
-    # Nettoyage optionnel de certains préfixes si nécessaire
+    # Optionally strip common checkpoints prefixes before loading
     new_state_dict = {}
     for k, v in state_dict.items():
         if k.startswith('module.'):
@@ -41,8 +41,8 @@ def export_dmcount_qnrf():
     model.eval()
 
     # DUMMY INPUT with Batch support (B, C, H, W)
-    # On utilise 544x960 car 544 est un multiple de 16 (requis par SFANet et plus stable pour VGG)
-    target_h, target_w = 544, 960
+    # Target tile size is 640x720 to match the planned density tiling on 4K (6 columns × 3 rows) without overlap.
+    target_h, target_w = 720, 640
     dummy_input = torch.randn(1, 3, target_h, target_w)
     
     print(f"Exporting DM-Count QNRF to {onnx_path} (opset 18, resolution {target_h}x{target_w})...")
