@@ -48,6 +48,9 @@ class YoloPeopleCounter:
             with open(model_name, "rb") as f, trt.Runtime(self.trt_logger) as runtime:
                 self.trt_engine = runtime.deserialize_cuda_engine(f.read())
             dump_trt_bindings(self.trt_engine, "YOLO")
+            # Dump allocation/profile info if debug flag enabled
+            from trt_debug import dump_trt_allocation_info
+            dump_trt_allocation_info(self.trt_engine, "YOLO")
             
             self.stream_mgr = CudaStreamManager(name="yolo_trt")
             if not self._stream_handle():

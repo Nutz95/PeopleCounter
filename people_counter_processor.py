@@ -93,7 +93,9 @@ class PeopleCounterProcessor:
                         self.trt_engine = runtime.deserialize_cuda_engine(f.read())
                     _maybe_dump_binding_shapes(self.trt_engine, "Density")
                     print(f"LWCC backend loaded into TensorRT: {engine_path}")
-
+                        print(f"LWCC backend loaded into TensorRT: {engine_path}")
+                        from trt_debug import dump_trt_allocation_info
+                        dump_trt_allocation_info(self.trt_engine, "Density")
                     self.stream_mgr = CudaStreamManager(name="density_trt")
                     self.stream_mgr.ensure_valid()
                     if not self.stream_mgr.handle():
