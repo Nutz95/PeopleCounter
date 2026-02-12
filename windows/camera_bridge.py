@@ -73,6 +73,7 @@ def query_dshow_devices(ffmpeg_path: Path) -> list[DirectShowDevice]:
         text=True,
         check=False,
     )
+    logging.debug("FFmpeg -list_devices stderr:\n%s", result.stderr)
     devices: list[DirectShowDevice] = []
     current: Optional[DirectShowDevice] = None
     for line in result.stderr.splitlines():
@@ -97,6 +98,7 @@ def choose_device(ffmpeg_path: Path) -> Optional[DirectShowDevice]:
     devices = query_dshow_devices(ffmpeg_path)
     if not devices:
         print("[!] Aucun périphérique DirectShow détecté")
+        logging.debug("FFmpeg output did not contain video devices")
         return None
     if len(devices) == 1:
         print(f"[+] Utilisation du périphérique vidéo : {devices[0].friendly_name}")
