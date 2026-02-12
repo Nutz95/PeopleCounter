@@ -363,8 +363,21 @@ def start_ffmpeg_stream(
     else:
         # Hardware encoders: use encoder name directly. Add GOP if requested.
         cmd += ["-c:v", encoder]
+        # Special handling per-hardware encoder
+        if encoder.startswith("h264_vaapi"):
+            # VAAPI requires the frames to be uploaded to the VAAPI device in a supported
+            # pixel format (usually nv12). Insert filter to convert and upload.
+            # Note: on some systems you may need to pass -vaapi_device /dev/dri/renderD128
+            cmd += ["-vf", "format=nv12,hwupload"]
         if gop1:
-            cmd += ["-g", "1"]
+            # NVIDIA NVENC enforces: Gop Length should be greater than number of B frames + 1
+            # Setting GOP=1 with default B-frames will fail. For nvenc, disable B-frames and
+            # use the minimal allowed GOP (2). If true GOP=1 is required, fallback to libx264.
+            if encoder.startswith("h264_nvenc"):
+                cmd += ["-bf", "0", "-g", "2"]
+                logger.warning("h264_nvenc doesn't support GOP=1; using -bf 0 -g 2 instead")
+            else:
+                cmd += ["-g", "1"]
 
     # Output as MPEG-TS to stdout
     cmd += ["-f", "mpegts", "-"]
