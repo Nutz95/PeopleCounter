@@ -5,10 +5,8 @@ This document describes the v2 preprocessing chain added for model-input plannin
 ## Components
 
 - `InputSpecRegistry` (`app_v2/application/input_spec_registry.py`)
-  - Builds input specs from pipeline-like config.
-  - Supports at least:
-    - `yolo_global`: one global letterbox input (`640x640` by default)
-    - `yolo_tiles`: tiled inputs (`640x640`) with overlap (default `0.2`)
+  - Builds input specs from the `preprocess` block in `app_v2/config/pipeline.yaml`.
+  - Requires each entry to define `target_width`, `target_height`, `mode`, and `overlap` so changes to model inputs happen through configuration instead of hard-coded defaults.
 
 - `GpuPreprocessPlanner` (`app_v2/application/gpu_preprocess_planner.py`)
   - Converts frame size + `InputSpec` into concrete `PreprocessTask` entries.

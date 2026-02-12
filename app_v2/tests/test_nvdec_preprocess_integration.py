@@ -35,8 +35,18 @@ def _pipeline_like_config() -> dict[str, Any]:
             "yolo_tiles": {"enabled": True},
         },
         "preprocess": {
-            "yolo_global": {"target_width": 640, "target_height": 640},
-            "yolo_tiles": {"target_width": 640, "target_height": 640, "overlap": 0.2},
+            "yolo_global": {
+                "target_width": 640,
+                "target_height": 640,
+                "mode": "global",
+                "overlap": 0.0,
+            },
+            "yolo_tiles": {
+                "target_width": 640,
+                "target_height": 640,
+                "mode": "tiles",
+                "overlap": 0.2,
+            },
         },
     }
 
