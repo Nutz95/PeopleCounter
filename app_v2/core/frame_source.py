@@ -16,5 +16,5 @@ class FrameSource(ABC):
         """Release any hardware handles held by the source."""
 
     @abstractmethod
-    def next_frame(self) -> tuple[int, Any]:
-        """Return the next (frame_id, payload) tuple or raise StopIteration when done."""
+    def next_frame(self, frame_id: int) -> Any:
+        """Return the next payload for frame_id or raise StopIteration when done."""

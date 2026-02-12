@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from app_v2.core.frame_source import FrameSource
@@ -28,16 +29,14 @@ class RTSPFrameSource(FrameSource):
         self.decoder.stop()
         self.connected = False
 
-    def next_frame(self) -> tuple[int, Any]:
-        """Return the next frame_id and raw image payload."""
+    def next_frame(self, frame_id: int) -> Any:
+        """Return a decoded GPU frame for the scheduled frame_id."""
         if not self.connected:
             raise RuntimeError("Frame source is disconnected")
-        # The orchestrator owns frame_id assignment via FrameScheduler; we return a decoded GPU frame placeholder.
-        # Until NVDEC bindings are wired, this returns a stub frame stored in the NVDEC ring buffer.
-        slot = self.decoder.decode_next_into_ring(frame_id=0)
+        slot = self.decoder.decode_next_into_ring(frame_id=frame_id, timestamp_ns=int(time.time_ns()))
         popped = self.decoder.ring.pop_ready(block=True)
         if popped is None:
             raise RuntimeError("No decoded frame available")
         slot, frame = popped
         self.decoder.ring.release(slot)
-        return 0, frame
+        return frame

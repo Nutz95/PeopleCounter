@@ -2,6 +2,8 @@
 
 This architecture document captures the responsibility split across core, infrastructure, and application layers. The design follows SOLID principles, avoids inlined inference in Flask, and relies on frame_id propagation to keep every model independent.
 
+The `app_v2` orchestrator now instantiates the NVDEC scheduler, CUDA preprocessor, and the TensorRT contexts so the decoding, fusion, and Flask publishing paths described below actually execute inside `people-counter:gpu-final-nvdec`.
+
 ## Technical context
 
 - Python + Docker on CUDA 13.x with TensorRT-only inference (RTX 5060 Ti).

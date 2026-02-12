@@ -18,9 +18,9 @@ PeopleCounter v2 is a GPU-first rewrite that targets TensorRT-only inference wit
 ## Getting started
 
 1. Run `./1_prepare.sh` at the repo root to build and prepopulate the Docker image (`people-counter:gpu-final`).
-2. (Optional) Run `./2_prepare_nvdec.sh` to build the NVDEC-enabled image layer with VPF/PyNvCodec.
+2. Run `./2_prepare_nvdec.sh` to build the NVDEC-enabled image layer with VPF/PyNvCodec; this step is mandatory so the orchestrator can decode directly on the GPU and the tests execute inside `people-counter:gpu-final-nvdec`.
 3. Run `./4_run_app.sh --app-version v2 rtsp://<camera-url>` to launch the v2 orchestrator inside the prepared image.
-4. Run `./5_run_tests.sh` (after each implementation pass) so the orchestrator is compiled and the current pytest suite executes inside the same GPU container that powers the production pipeline.
+4. Run `./5_run_tests.sh` (after each implementation pass) so the orchestrator is compiled and the current pytest suite executes inside the NVDEC-ready container, ensuring the GPU loop stays validated.
 5. The Flask server exposes the same web UI at http://localhost:5000 once inference logic is implemented.
 
-The skeleton in this folder includes config loaders, interfaces, infrastructure stubs, and orchestration scaffolding; replace the stub methods in each class with real TensorRT execution code to finish the port.
+The skeleton in this folder now wires NVDEC decode, CUDA preprocessing, and TensorRT inference into a single `PipelineOrchestrator`. It also includes a GPU-first test harness (`app_v2/tests` + `./5_run_tests.sh`) so every change to the scheduler, fusion strategy, or publisher runs inside the same NVDEC image used for deployment.

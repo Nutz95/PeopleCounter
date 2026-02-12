@@ -16,13 +16,13 @@ This repository ships a multi-stage `Dockerfile` that bundles **OpenCV 4.13.0 wi
 docker run --rm --gpus all people-counter:gpu-final python3 -c "import torch, cv2; print('PyTorch CUDA:', torch.cuda.is_available()); print('OpenCV CUDA devices:', cv2.cuda.getCudaEnabledDeviceCount())"
 ```
 
-3. Run the GPU test harness:
+3. Run the GPU test harness after you rebuild the NVDEC layer with `./2_prepare_nvdec.sh` so the tests execute inside `people-counter:gpu-final-nvdec`:
 
 ```bash
 ./5_run_tests.sh
 ```
 
-It compiles `app_v2` with `python -m compileall` and executes `pytest app_v2/tests` inside the prepared `people-counter:gpu-final` image so the orchestration stays validated after every Python build.
+It compiles `app_v2` with `python -m compileall` and executes `pytest app_v2/tests` inside the NVDEC-ready `people-counter:gpu-final-nvdec` image so the orchestrator is validated on the same GPU stack used in production.
 
 4. Prerequisites inside WSL:
 

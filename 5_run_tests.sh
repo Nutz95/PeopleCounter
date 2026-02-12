@@ -7,7 +7,7 @@ cd "$BASE_DIR"
 
 IMAGE_NAME="${IMAGE_NAME:-people-counter:gpu-final-nvdec}"
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
-    echo "⚠️ Docker image $IMAGE_NAME not found. Run ./1_prepare.sh then ./2_prepare_nvdec.sh (or set IMAGE_NAME to an existing tag)."
+    echo "⚠️ Docker image $IMAGE_NAME not found. Step 2 (./2_prepare_nvdec.sh) is mandatory after ./1_prepare.sh—rebuild both before retrying or set IMAGE_NAME to an existing NVDEC-ready tag."
     exit 1
 fi
 

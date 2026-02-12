@@ -45,10 +45,12 @@ We have split the workflow into six stages:
 
 1. `./0_build_image.sh` performs the heavy Docker image build (`people-counter:gpu-final`), so you only spend that hour once.
 2. `./1_prepare.sh` layers the apt/pip dependencies on top of the already built image.
-3. `./2_prepare_nvdec.sh` (optional) builds and installs VPF + PyNvCodec from source in a **new image layer** and commits `people-counter:gpu-final-nvdec`, so you can add NVDEC support without rebuilding the long OpenCV layers.
+3. `./2_prepare_nvdec.sh` builds and installs VPF + PyNvCodec from source in a **new image layer**, committing `people-counter:gpu-final-nvdec`. NVDEC support is now required to run the `app_v2` orchestrator and the GPU test harness.
 4. `./3_prepare_models.sh` runs `prepare_models.py` inside the prepared image so you can rebuild TensorRT/ONNX assets without re-running the installs.
-5. `./4_run_app.sh --app-version v1 <source>` launches the legacy pipeline from `app_v1/` with the existing worker graph. Use `--app-version v2` to start the new GPU-first orchestration in `app_v2/`.
-6. `./5_run_tests.sh` compiles `app_v2` and runs `pytest app_v2/tests` inside the prepared image so each implementation pass can re-validate the GPU components before deployment.
+5. `./4_run_app.sh --app-version v1 <source>` launches the legacy pipeline from `app_v1/` with the existing worker graph. Use `--app-version v2` to start the new GPU-first orchestration in `app_v2/`, which now decodes via NVDEC, preprocesses on CUDA, executes the TensorRT engines, fuses metadata, and publishes through the Flask server.
+6. `./5_run_tests.sh` compiles `app_v2` and runs `pytest app_v2/tests` inside the NVDEC-ready `people-counter:gpu-final-nvdec` image so each implementation pass runs on the same GPU stack that ships to production.
+
+The `app_v2` orchestrator now drives NVDEC decode, CUDA preprocessing, TensorRT inference, and metadata fusion before the Flask streamer publishes the merged masks; see `app_v2/README.md` for the clean-architecture overview.
 
 Use `IMAGE_NAME=people-counter:gpu-final-nvdec` with `./4_run_app.sh` or `./5_run_tests.sh` when running on the optional NVDEC-enabled image.
 
