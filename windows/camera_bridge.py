@@ -265,6 +265,46 @@ def query_device_options(ffmpeg_path: Path, device: DirectShowDevice) -> list[tu
     return options
 
 
+def detect_encoders(ffmpeg_path: Path) -> list[str]:
+    """Return a list of available H.264 encoders reported by ffmpeg (-encoders)."""
+    try:
+        result = subprocess.run(
+            [str(ffmpeg_path), "-hide_banner", "-encoders"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return ["libx264"]
+    out = (result.stdout or "") + "\n" + (result.stderr or "")
+    encs = set()
+    for line in out.splitlines():
+        line = line.strip()
+        # ffmpeg encoders lines typically look like: " V..... h264_nvenc            NVIDIA NVENC H.264 encoder"
+        m = re.match(r"^[A-Z\.\s]+\s+(h264_[a-z0-9_]+|libx264)\b", line)
+        if m:
+            encs.add(m.group(1))
+    preferred = ["h264_nvenc", "h264_qsv", "h264_vaapi", "h264_amf", "libx264"]
+    result_list = [e for e in preferred if e in encs]
+    if not result_list:
+        # fallback to libx264
+        return ["libx264"]
+    return result_list
+
+
+def choose_encoder(ffmpeg_path: Path) -> str:
+    encs = detect_encoders(ffmpeg_path)
+    print("\n--- ENCODEURS H.264 DISPONIBLES ---")
+    for idx, e in enumerate(encs, 1):
+        print(f"{idx}. {e}")
+    choice = input(f"Choisissez un encodeur (1-{len(encs)}) [{encs.index('libx264')+1 if 'libx264' in encs else 1}]: ").strip()
+    if choice.isdigit() and 1 <= int(choice) <= len(encs):
+        return encs[int(choice) - 1]
+    # default to first
+    return encs[0]
+
+
 def choose_stream_settings(options: list[tuple[int, int, int]]) -> tuple[int, int, int, bool]:
     if not options:
         print("[!] Aucun mode détecté via FFmpeg, utilisation du fallback 1280x720@30")
@@ -302,6 +342,7 @@ def start_ffmpeg_stream(
     height: int,
     fps: int,
     gop1: bool = False,
+    encoder: str = "libx264",
 ) -> subprocess.Popen:
     cmd = [
         str(ffmpeg_path),
@@ -310,16 +351,20 @@ def start_ffmpeg_stream(
         "-video_size", f"{width}x{height}",
         "-rtbufsize", "150M",
         "-i", f"video={device_input}",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-tune", "zerolatency",
     ]
 
-    # Ensure repeat of SPS/PPS for late joiners; optionally force GOP=1
-    x264_params = ["repeat-headers=1"]
-    if gop1:
-        x264_params.extend(["keyint=1", "min-keyint=1", "scenecut=0"])
-    cmd += ["-x264-params", ":".join(x264_params)]
+    # Configure encoder
+    if encoder == "libx264":
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency"]
+        x264_params = ["repeat-headers=1"]
+        if gop1:
+            x264_params.extend(["keyint=1", "min-keyint=1", "scenecut=0"])
+        cmd += ["-x264-params", ":".join(x264_params)]
+    else:
+        # Hardware encoders: use encoder name directly. Add GOP if requested.
+        cmd += ["-c:v", encoder]
+        if gop1:
+            cmd += ["-g", "1"]
 
     # Output as MPEG-TS to stdout
     cmd += ["-f", "mpegts", "-"]
@@ -362,6 +407,7 @@ if __name__ == "__main__":
 
     options = query_device_options(ffmpeg_path, device)
     width, height, fps, gop1 = choose_stream_settings(options)
+    encoder = choose_encoder(ffmpeg_path)
     ip = get_ip()
 
     broadcaster = StreamBroadcaster()
@@ -387,7 +433,7 @@ if __name__ == "__main__":
     try:
         while True:
             ffmpeg_proc = start_ffmpeg_stream(
-                ffmpeg_path, device.input_name, width, height, fps, gop1=gop1
+                ffmpeg_path, device.input_name, width, height, fps, gop1=gop1, encoder=encoder
             )
             try:
                 stream_ffmpeg_output(ffmpeg_proc, broadcaster)
