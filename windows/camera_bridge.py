@@ -101,9 +101,6 @@ def choose_device(ffmpeg_path: Path) -> Optional[DirectShowDevice]:
         print("[!] Aucun périphérique DirectShow détecté")
         logging.debug("FFmpeg output did not contain video devices")
         return None
-    if len(devices) == 1:
-        print(f"[+] Utilisation du périphérique vidéo : {devices[0].friendly_name}")
-        return devices[0]
     print("\n--- PÉRIPHÉRIQUES VIDÉO DISPONIBLES ---")
     for idx, device in enumerate(devices, 1):
         input_note = "" if device.input_name == device.friendly_name else f" (entrée: {device.input_name})"
