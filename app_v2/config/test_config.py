@@ -6,7 +6,10 @@ from typing import Any
 import yaml
 
 
-_CONFIG_PATH = Path(__file__).parent / "test_config.yaml"
+_CONFIG_DIR = Path(__file__).resolve().parent
+if _CONFIG_DIR.name == "__pycache__":
+    _CONFIG_DIR = _CONFIG_DIR.parent
+_CONFIG_PATH = _CONFIG_DIR / "test_config.yaml"
 
 
 def load_test_config() -> dict[str, Any]:

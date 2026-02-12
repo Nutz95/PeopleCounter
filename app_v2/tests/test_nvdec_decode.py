@@ -23,23 +23,23 @@ def _normalize_stream_url(value: Any) -> str | None:
     return url if url else None
 
 
-NVDEC_TEST_STREAM_URL = (
-    _normalize_stream_url(os.environ.get("NVDEC_TEST_STREAM_URL"))
-    or _normalize_stream_url(CONFIG.get("nvdec_test_stream_url"))
-)
+def _resolve_stream_url() -> str | None:
+    return (
+        _normalize_stream_url(os.environ.get("NVDEC_TEST_STREAM_URL"))
+        or _normalize_stream_url(CONFIG.get("nvdec_test_stream_url"))
+    )
 
 
-@pytest.mark.skipif(
-    NVDEC_TEST_STREAM_URL is None,
-    reason="Set NVDEC_TEST_STREAM_URL to exercise the real decoder",
-)
 def test_nvdec_decodes_windows_stream() -> None:
+    stream_url = _resolve_stream_url()
+    if stream_url is None:
+        pytest.skip("Set NVDEC_TEST_STREAM_URL to exercise the real decoder")
     try:
         importlib.import_module("PyNvCodec")
     except ModuleNotFoundError:
         pytest.skip("PyNvCodec must be installed to exercise the NVDEC decoder")
     try:
-        decoder = NvdecDecoder(NVDEC_TEST_STREAM_URL, NvdecDecodeConfig(ring_capacity=4))
+        decoder = NvdecDecoder(stream_url, NvdecDecodeConfig(ring_capacity=4))
     except RuntimeError as exc:
         message = str(exc).lower()
         if "libnvcuvid" in message or "cuda codec" in message or "pyNvdecoder" in message:
