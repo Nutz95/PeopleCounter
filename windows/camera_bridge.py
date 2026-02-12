@@ -89,6 +89,58 @@ def select_resolution() -> tuple[int, int] | None:
     return actual_w, actual_h
 
 
+def query_dshow_devices(ffmpeg_path: Path) -> list[str]:
+    result = subprocess.run(
+        [
+            str(ffmpeg_path),
+            "-list_devices",
+            "true",
+            "-f",
+            "dshow",
+            "-i",
+            "dummy",
+        ],
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    devices: list[str] = []
+    recording = False
+    for line in result.stderr.splitlines():
+        if "DirectShow video devices" in line:
+            recording = True
+            continue
+        if recording:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("\"") and line.endswith("\""):
+                devices.append(line.strip('"'))
+            elif line.startswith("\"" ):
+                devices.append(line.split('"')[1])
+            if line.startswith("DirectShow audio devices"):
+                break
+    return devices
+
+
+def choose_device(ffmpeg_path: Path) -> str | None:
+    devices = query_dshow_devices(ffmpeg_path)
+    if not devices:
+        print("[!] Aucun périphérique DirectShow détecté")
+        return None
+    if len(devices) == 1:
+        print(f"[+] Utilisation du périphérique vidéo : {devices[0]}")
+        return devices[0]
+    print("\n--- PÉRIPHÉRIQUES VIDÉO DISPONIBLES ---")
+    for idx, name in enumerate(devices, 1):
+        print(f"{idx}. {name}")
+    choice = input(f"Choisissez une source (1-{len(devices)}) [1]: ").strip() or "1"
+    if choice.isdigit() and 1 <= int(choice) <= len(devices):
+        return devices[int(choice) - 1]
+    print("[!] Sélection invalide, utilisation du premier périphérique")
+    return devices[0]
+
+
 def get_ip() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -101,14 +153,13 @@ def get_ip() -> str:
     return ip
 
 
-def start_ffmpeg_stream(ffmpeg_path: Path, width: int, height: int) -> subprocess.Popen:
+def start_ffmpeg_stream(ffmpeg_path: Path, device: str, width: int, height: int) -> subprocess.Popen:
     cmd = [
         str(ffmpeg_path),
         "-f", "dshow",
-        "-video_device_number", str(CAMERA_INDEX),
         "-framerate", "30",
         "-video_size", f"{width}x{height}",
-        "-i", f"video={CAMERA_INDEX}",
+        "-i", f"video={device}",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-tune", "zerolatency",
@@ -131,17 +182,21 @@ if __name__ == "__main__":
 
     width, height = resolution
     ip = get_ip()
+    device = choose_device(ffmpeg_path)
+    if device is None:
+        sys.exit(1)
 
     print("\n" + "="*60)
     print("      WINDOWS CAMERA BRIDGE POUR DOCKER (H.264 via FFmpeg)")
     print("="*60)
     print(f"\n[+] Flux disponible sur : http://{ip}:{PORT}/video_feed")
+    print(f"[+] Périphérique utilisé : {device}")
     print(f"[+] Commande de test : ffprobe http://{ip}:{PORT}/video_feed")
     print(f"\n[!] COMMANDE A COPIER DANS LE TERMINAL WSL :")
     print(f"    ./run_app.sh http://{ip}:{PORT}/video_feed")
     print("\n" + "="*60)
 
-    ffmpeg_proc = start_ffmpeg_stream(ffmpeg_path, width, height)
+    ffmpeg_proc = start_ffmpeg_stream(ffmpeg_path, device, width, height)
     try:
         ffmpeg_proc.wait()
     except KeyboardInterrupt:
