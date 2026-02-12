@@ -225,34 +225,62 @@ def query_device_options(ffmpeg_path: Path, device: DirectShowDevice) -> list[tu
         check=False,
     )
     logger.debug("FFmpeg -list_options stderr for %s:\n%s", device.friendly_name, result.stderr)
-    pattern = re.compile(r"size=(\d+)x(\d+).*?fps=(\d+)")
-    options: list[tuple[int, int, int]] = []
-    seen = set()
+    # Build a map of size -> max fps seen for that size in FFmpeg output
+    size_map: dict[tuple[int, int], int] = {}
+    size_pattern = re.compile(r"s=(\d+)x(\d+)")
+    fps_pattern = re.compile(r"fps=(\d+)")
     for line in result.stderr.splitlines():
-        match = pattern.search(line)
-        if not match:
-            continue
-        width, height, fps = map(int, match.groups())
-        key = (width, height, fps)
-        if key in seen:
-            continue
-        seen.add(key)
-        options.append(key)
+        sizes = size_pattern.findall(line)
+        fpss = fps_pattern.findall(line)
+        max_fps = 0
+        if fpss:
+            try:
+                max_fps = max(int(x) for x in fpss)
+            except ValueError:
+                max_fps = 0
+        for w_str, h_str in sizes:
+            try:
+                w = int(w_str)
+                h = int(h_str)
+            except ValueError:
+                continue
+            key = (w, h)
+            prev = size_map.get(key, 0)
+            if max_fps > prev:
+                size_map[key] = max_fps
+
+    # If no sizes parsed, try to fallback by probing a common set
+    if not size_map:
+        common = [(3840, 2160), (2560, 1440), (1920, 1080), (1280, 720), (640, 480)]
+        for w, h in common:
+            size_map[(w, h)] = 30
+
+    # Convert to list of options (width, height, fps) using the recorded max fps
+    options: list[tuple[int, int, int]] = []
+    for (w, h), fps in size_map.items():
+        options.append((w, h, fps if fps > 0 else 30))
+
+    # Sort by resolution area desc then width
+    options.sort(key=lambda t: (t[0] * t[1], t[0]), reverse=True)
     return options
 
 
-def choose_stream_settings(options: list[tuple[int, int, int]]) -> tuple[int, int, int]:
+def choose_stream_settings(options: list[tuple[int, int, int]]) -> tuple[int, int, int, bool]:
     if not options:
         print("[!] Aucun mode détecté via FFmpeg, utilisation du fallback 1280x720@30")
-        return 1280, 720, 30
+        return 1280, 720, 30, False
     print("\n--- MODES SUPPORTED PAR LA CAMÉRA ---")
     for idx, (w, h, fps) in enumerate(options, 1):
         print(f"{idx}. {w}x{h} @ {fps} fps")
     choice = input(f"Choisissez un mode (1-{len(options)}) [1]: ").strip() or "1"
     if choice.isdigit() and 1 <= int(choice) <= len(options):
-        return options[int(choice) - 1]
-    print("[!] Sélection invalide, utilisation du premier mode détecté")
-    return options[0]
+        w, h, fps = options[int(choice) - 1]
+    else:
+        print("[!] Sélection invalide, utilisation du premier mode détecté")
+        w, h, fps = options[0]
+    gop_choice = input("Forcer GOP=1 (toutes les images I-frame) ? [y/N]: ").strip().lower()
+    gop1 = gop_choice.startswith("y")
+    return w, h, fps, gop1
 
 
 def get_ip() -> str:
@@ -273,6 +301,7 @@ def start_ffmpeg_stream(
     width: int,
     height: int,
     fps: int,
+    gop1: bool = False,
 ) -> subprocess.Popen:
     cmd = [
         str(ffmpeg_path),
@@ -284,9 +313,16 @@ def start_ffmpeg_stream(
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-tune", "zerolatency",
-        "-f", "mpegts",
-        "-",
     ]
+
+    # Ensure repeat of SPS/PPS for late joiners; optionally force GOP=1
+    x264_params = ["repeat-headers=1"]
+    if gop1:
+        x264_params.extend(["keyint=1", "min-keyint=1", "scenecut=0"])
+    cmd += ["-x264-params", ":".join(x264_params)]
+
+    # Output as MPEG-TS to stdout
+    cmd += ["-f", "mpegts", "-"]
     logger.info("Launching FFmpeg bridge: %s", " ".join(cmd))
     print("[i] Démarrage de FFmpeg pour streamer le flux H.264 …")
     proc = subprocess.Popen(
@@ -325,7 +361,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     options = query_device_options(ffmpeg_path, device)
-    width, height, fps = choose_stream_settings(options)
+    width, height, fps, gop1 = choose_stream_settings(options)
     ip = get_ip()
 
     broadcaster = StreamBroadcaster()
@@ -350,7 +386,9 @@ if __name__ == "__main__":
 
     try:
         while True:
-            ffmpeg_proc = start_ffmpeg_stream(ffmpeg_path, device.input_name, width, height, fps)
+            ffmpeg_proc = start_ffmpeg_stream(
+                ffmpeg_path, device.input_name, width, height, fps, gop1=gop1
+            )
             try:
                 stream_ffmpeg_output(ffmpeg_proc, broadcaster)
             except KeyboardInterrupt:
