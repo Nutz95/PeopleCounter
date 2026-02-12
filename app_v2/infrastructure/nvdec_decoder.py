@@ -30,7 +30,6 @@ class NvdecDecoder:
         self._config = config or NvdecDecodeConfig()
         self._ring = GpuRingBuffer(self._config.ring_capacity)
         self._pynvcodec = self._load_pynvcodec()
-        self._demuxer = self._create_demuxer()
         self._probe_info: dict[str, Any] | None = None
         self._decoder = self._create_decoder()
         self._width, self._height = self._dimensions()
@@ -77,61 +76,38 @@ class NvdecDecoder:
         except ModuleNotFoundError as exc:
             raise RuntimeError("PyNvCodec must be installed to use NvdecDecoder") from exc
 
-    def _create_demuxer(self) -> Any:
-        demuxer_attempts = (
-            ("FFmpegDemuxer", (self.stream_url, 0)),
-            ("FFmpegDemuxer", (self.stream_url,)),
-            ("PyFFmpegDemuxer", (self.stream_url,)),
-        )
-        last_exc: Exception | None = None
-        for name, args in demuxer_attempts:
-            demuxer_cls = getattr(self._pynvcodec, name, None)
-            if demuxer_cls is None:
-                continue
-            try:
-                return demuxer_cls(*args)
-            except Exception as exc:  # pragma: no cover - depends on PyNvCodec build
-                last_exc = exc
-        message = "PyNvCodec FFmpeg-style demuxer is unavailable"
-        if last_exc is not None:
-            raise RuntimeError(message) from last_exc
-        raise RuntimeError(message)
-
     def _create_decoder(self) -> Any:
-        try:
-            log_debug(LogChannel.NVDEC, "Trying PyNvDecoder(demuxer, gpu_id)")
-            return self._pynvcodec.PyNvDecoder(self._demuxer, self._config.gpu_id)
-        except (TypeError, AttributeError, RuntimeError) as exc:
-            log_debug(LogChannel.NVDEC, f"PyNvDecoder(demuxer, gpu_id) failed: {exc}")
+        decoder_opts = self._build_decoder_opts()
+        if decoder_opts:
             try:
-                log_debug(LogChannel.NVDEC, "Trying PyNvDecoder(url, gpu_id)")
-                return self._pynvcodec.PyNvDecoder(self.stream_url, self._config.gpu_id)
-            except (TypeError, AttributeError, RuntimeError) as exc2:
-                log_debug(LogChannel.NVDEC, f"PyNvDecoder(url, gpu_id) failed: {exc2}")
-                decoder_opts = self._build_decoder_opts()
-                if decoder_opts:
-                    try:
-                        log_debug(LogChannel.NVDEC, f"Trying PyNvDecoder(url, gpu_id, opts={decoder_opts})")
-                        return self._pynvcodec.PyNvDecoder(self.stream_url, self._config.gpu_id, decoder_opts)
-                    except (TypeError, AttributeError, RuntimeError) as exc3:
-                        log_debug(LogChannel.NVDEC, f"PyNvDecoder(url, gpu_id, opts) failed: {exc3}")
-                width, height = self._dimensions()
-                if not width or not height:
-                    raise RuntimeError("Cannot resolve stream dimensions for PyNvDecoder")
-                pixel_format = getattr(self._pynvcodec.PixelFormat, "NV12", None)
-                if pixel_format is None:
-                    raise RuntimeError("Cannot resolve NV12 pixel format for PyNvDecoder")
-                codec_enum = self._resolve_cuda_codec_enum()
-                if codec_enum is None:
-                    raise RuntimeError("CUDA codec value is not supported by PyNvDecoder")
-                try:
-                    log_debug(
-                        LogChannel.NVDEC,
-                        f"Trying PyNvDecoder({width}x{height}, NV12, {codec_enum}, gpu_id={self._config.gpu_id})",
-                    )
-                    return self._pynvcodec.PyNvDecoder(width, height, pixel_format, codec_enum, self._config.gpu_id)
-                except TypeError as exc:
-                    raise RuntimeError("PyNvDecoder width/height constructor is unavailable") from exc
+                log_debug(LogChannel.NVDEC, "Trying PyNvDecoder(url, gpu_id, opts)")
+                return self._pynvcodec.PyNvDecoder(self.stream_url, self._config.gpu_id, decoder_opts)
+            except (TypeError, AttributeError, RuntimeError) as exc:
+                log_debug(LogChannel.NVDEC, f"PyNvDecoder(url, gpu_id, opts) failed: {exc}")
+
+        try:
+            log_debug(LogChannel.NVDEC, "Trying PyNvDecoder(url, gpu_id)")
+            return self._pynvcodec.PyNvDecoder(self.stream_url, self._config.gpu_id)
+        except (TypeError, AttributeError, RuntimeError) as exc:
+            log_debug(LogChannel.NVDEC, f"PyNvDecoder(url, gpu_id) failed: {exc}")
+
+        width, height = self._dimensions()
+        if not width or not height:
+            raise RuntimeError("Cannot resolve stream dimensions for PyNvDecoder")
+        pixel_format = getattr(self._pynvcodec.PixelFormat, "NV12", None)
+        if pixel_format is None:
+            raise RuntimeError("Cannot resolve NV12 pixel format for PyNvDecoder")
+        codec_enum = self._resolve_cuda_codec_enum()
+        if codec_enum is None:
+            raise RuntimeError("CUDA codec value is not supported by PyNvDecoder")
+        try:
+            log_debug(
+                LogChannel.NVDEC,
+                f"Trying PyNvDecoder({width}x{height}, NV12, {codec_enum}, gpu_id={self._config.gpu_id})",
+            )
+            return self._pynvcodec.PyNvDecoder(width, height, pixel_format, codec_enum, self._config.gpu_id)
+        except TypeError as exc:
+            raise RuntimeError("PyNvDecoder width/height constructor is unavailable") from exc
 
     def _build_decoder_opts(self) -> dict[str, str]:
         url = (self.stream_url or "").lower()
@@ -146,26 +122,10 @@ class NvdecDecoder:
         return {}
 
     def _dimensions(self) -> tuple[int, int]:
-        width = self._call_demuxer_method("Width") or 0
-        height = self._call_demuxer_method("Height") or 0
-        if width and height:
-            return width, height
         info = self._probe_stream_info()
-        width = width or info.get("width", 0)
-        height = height or info.get("height", 0)
+        width = info.get("width", 0)
+        height = info.get("height", 0)
         return width, height
-
-    def _call_demuxer_method(self, method_name: str) -> int | None:
-        method = getattr(self._demuxer, method_name, None)
-        if callable(method):
-            try:
-                return int(method())
-            except TypeError:
-                try:
-                    return int(method)
-                except Exception:
-                    return None
-        return None
 
     def _decode_surface(self) -> Any | None:
         for _ in range(self._config.surface_retry_limit):
@@ -232,11 +192,6 @@ class NvdecDecoder:
 
     def _resolve_cuda_codec_enum(self) -> Any | None:
         members = getattr(self._pynvcodec.CudaVideoCodec, "__members__", {})
-        cuda_codec = self._call_demuxer_method("Codec")
-        if cuda_codec is not None:
-            for member in members.values():
-                if getattr(member, "value", None) == cuda_codec:
-                    return member
         info = self._probe_stream_info()
         codec_name = info.get("codec_name")
         if codec_name:
