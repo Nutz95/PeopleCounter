@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,12 +31,23 @@ class StreamBroadcaster:
     def __init__(self) -> None:
         self._clients: list[queue.Queue[bytes | None]] = []
         self._lock = threading.Lock()
+        self._history: deque[bytes] = deque()
+        self._history_size = 0
+        self._history_limit = 512 * 1024
 
     def register(self) -> queue.Queue[bytes | None]:
         q: queue.Queue[bytes | None] = queue.Queue(maxsize=64)
         with self._lock:
             self._clients.append(q)
+            history = list(self._history)
         return q
+
+    def register_with_history(self) -> tuple[queue.Queue[bytes | None], list[bytes]]:
+        q = queue.Queue(maxsize=64)
+        with self._lock:
+            self._clients.append(q)
+            history = list(self._history)
+        return q, history
 
     def unregister(self, q: queue.Queue[bytes | None]) -> None:
         with self._lock:
@@ -43,6 +55,11 @@ class StreamBroadcaster:
                 self._clients.remove(q)
 
     def broadcast(self, chunk: bytes) -> None:
+        self._history.append(chunk)
+        self._history_size += len(chunk)
+        while self._history_size > self._history_limit and self._history:
+            removed = self._history.popleft()
+            self._history_size -= len(removed)
         with self._lock:
             clients = list(self._clients)
         for q in clients:
@@ -68,13 +85,16 @@ class StreamRequestHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
-        queue_ref = self.broadcaster.register()
+        queue_ref, history = self.broadcaster.register_with_history()
         self.send_response(200)
         self.send_header("Content-Type", "video/mp2t")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
         try:
+            for chunk in history:
+                self.wfile.write(chunk)
+            self.wfile.flush()
             while True:
                 chunk = queue_ref.get()
                 if chunk is None:
