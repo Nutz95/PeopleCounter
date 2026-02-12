@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import cv2
 import socket
 import logging
 import subprocess
 import sys
-import threading
 from pathlib import Path
 import urllib.request
 import zipfile
