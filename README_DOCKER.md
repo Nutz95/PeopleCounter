@@ -18,6 +18,8 @@ docker run --rm --gpus all people-counter:gpu-final python3 -c "import torch, cv
 
 3. Run the GPU test harness after you rebuild the NVDEC layer with `./2_prepare_nvdec.sh` so the tests execute inside `people-counter:gpu-final-nvdec`. The NVDEC layer now patches FFmpegDemuxer so codecs such as MJPEG skip the Annex-B bitstream filter, preventing the "unknown filter by name" error when the Windows bridge exposes an MJPEG stream.
 
+    The installer first looks for `external/Video_Codec_SDK_13.0.37` inside the repository and copies the contained `libnvcuvid.so` plus headers into `/usr/local/cuda`. When that folder is missing, it downloads https://developer.nvidia.com/downloads/video-codec-sdk/13.0.37/video_codec_sdk_13.0.37.zip (you will usually need to sign in with a NVIDIA account), extracts it into `externals/`, and stages the codec files before building PyNvCodec. Use `VIDEO_CODEC_SDK_DIR=/path/to/Video_Codec_SDK ./2_prepare_nvdec.sh` if you prefer to point at a different SDK copy instead of downloading another archive, or override `VIDEO_CODEC_SDK_DOWNLOAD_URL`/`VIDEO_CODEC_SDK_VERSION` for alternate versions.
+
 ```bash
 ./5_run_tests.sh
 ```

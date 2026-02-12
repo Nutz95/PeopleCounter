@@ -19,6 +19,8 @@ PeopleCounter v2 is a GPU-first rewrite that targets TensorRT-only inference wit
 
 1. Run `./1_prepare.sh` at the repo root to build and prepopulate the Docker image (`people-counter:gpu-final`).
 2. Run `./2_prepare_nvdec.sh` to build the NVDEC-enabled image layer with VPF/PyNvCodec; this step is mandatory so the orchestrator can decode directly on the GPU and the tests execute inside `people-counter:gpu-final-nvdec`.
+
+	The installer now prefers a repo-local copy under `external/Video_Codec_SDK_13.0.37` and copies that folder's `libnvcuvid.so` and headers into `/usr/local/cuda`. When that directory is absent, it downloads the archive at https://developer.nvidia.com/downloads/video-codec-sdk/13.0.37/video_codec_sdk_13.0.37.zip (you will normally need to authenticate with a NVIDIA account), extracts it into `externals/`, and stages the codec files before building PyNvCodec. If you already have the SDK archive or want to use a different version, set `VIDEO_CODEC_SDK_DIR=/path/to/Video_Codec_SDK` and optionally override `VIDEO_CODEC_SDK_DOWNLOAD_URL`/`VIDEO_CODEC_SDK_VERSION` before running this prep step.
 3. Run `./4_run_app.sh --app-version v2 rtsp://<camera-url>` to launch the v2 orchestrator inside the prepared image.
 4. Run `./5_run_tests.sh` (after each implementation pass) so the orchestrator is compiled and the current pytest suite executes inside the NVDEC-ready container, ensuring the GPU loop stays validated.
 5. The Flask server exposes the same web UI at http://localhost:5000 once inference logic is implemented.
