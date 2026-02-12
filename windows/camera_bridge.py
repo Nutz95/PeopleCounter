@@ -5,6 +5,7 @@ import re
 import socket
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 import urllib.request
 import zipfile
@@ -16,6 +17,24 @@ FFMPEG_DOWNLOAD_URL = (
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 )
 FFMPEG_BIN_DIR = Path(__file__).resolve().parent / "bin"
+DEVICE_PATTERN = re.compile(r'"(?P<name>.+)" \((?P<type>[^)]+)\)')
+ALTERNATIVE_NAME_PATTERN = re.compile(r'Alternative name\s+"?(.+?)"?$')
+
+
+@dataclass
+class DirectShowDevice:
+    friendly_name: str
+    device_type: str
+    alternatives: list[str] = field(default_factory=list)
+
+    def add_alternative(self, alt_name: str) -> None:
+        self.alternatives.append(alt_name)
+
+    @property
+    def input_name(self) -> str:
+        if self.alternatives:
+            return self.alternatives[-1]
+        return self.friendly_name
 
 
 def ensure_ffmpeg() -> Path | None:
@@ -39,7 +58,7 @@ def ensure_ffmpeg() -> Path | None:
     return ffmpeg_path
 
 
-def query_dshow_devices(ffmpeg_path: Path) -> list[str]:
+def query_dshow_devices(ffmpeg_path: Path) -> list[DirectShowDevice]:
     result = subprocess.run(
         [
             str(ffmpeg_path),
@@ -54,44 +73,46 @@ def query_dshow_devices(ffmpeg_path: Path) -> list[str]:
         text=True,
         check=False,
     )
-    devices: list[str] = []
-    recording = False
+    devices: list[DirectShowDevice] = []
+    current: Optional[DirectShowDevice] = None
     for line in result.stderr.splitlines():
-        if "DirectShow video devices" in line:
-            recording = True
+        match = DEVICE_PATTERN.search(line)
+        if match:
+            name = match.group("name").strip()
+            device_type = match.group("type").strip().lower()
+            current = DirectShowDevice(name, device_type)
+            if device_type == "video":
+                devices.append(current)
+            else:
+                current = None
             continue
-        if recording:
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("\"") and line.endswith("\""):
-                devices.append(line.strip('"'))
-            elif line.startswith("\"" ):
-                devices.append(line.split('"')[1])
-            if line.startswith("DirectShow audio devices"):
-                break
+        if current is not None:
+            alt_match = ALTERNATIVE_NAME_PATTERN.search(line)
+            if alt_match:
+                current.add_alternative(alt_match.group(1).strip())
     return devices
 
 
-def choose_device(ffmpeg_path: Path) -> Optional[str]:
+def choose_device(ffmpeg_path: Path) -> Optional[DirectShowDevice]:
     devices = query_dshow_devices(ffmpeg_path)
     if not devices:
         print("[!] Aucun périphérique DirectShow détecté")
         return None
     if len(devices) == 1:
-        print(f"[+] Utilisation du périphérique vidéo : {devices[0]}")
+        print(f"[+] Utilisation du périphérique vidéo : {devices[0].friendly_name}")
         return devices[0]
     print("\n--- PÉRIPHÉRIQUES VIDÉO DISPONIBLES ---")
-    for idx, name in enumerate(devices, 1):
-        print(f"{idx}. {name}")
+    for idx, device in enumerate(devices, 1):
+        input_note = "" if device.input_name == device.friendly_name else f" (entrée: {device.input_name})"
+        print(f"{idx}. {device.friendly_name}{input_note}")
     choice = input(f"Choisissez une source (1-{len(devices)}) [1]: ").strip() or "1"
     if choice.isdigit() and 1 <= int(choice) <= len(devices):
         return devices[int(choice) - 1]
-    print("[!] Sélection invalide, utilisation du premier périphérique")
+    print("[!] Sélection invalide, utilisation du premier périphérique détecté")
     return devices[0]
 
 
-def query_device_options(ffmpeg_path: Path, device: str) -> list[tuple[int, int, int]]:
+def query_device_options(ffmpeg_path: Path, device: DirectShowDevice) -> list[tuple[int, int, int]]:
     result = subprocess.run(
         [
             str(ffmpeg_path),
@@ -100,7 +121,7 @@ def query_device_options(ffmpeg_path: Path, device: str) -> list[tuple[int, int,
             "-list_options",
             "true",
             "-i",
-            f"video={device}",
+            f"video={device.input_name}",
         ],
         stderr=subprocess.PIPE,
         text=True,
@@ -148,13 +169,19 @@ def get_ip() -> str:
     return ip
 
 
-def start_ffmpeg_stream(ffmpeg_path: Path, device: str, width: int, height: int, fps: int) -> subprocess.Popen:
+def start_ffmpeg_stream(
+    ffmpeg_path: Path,
+    device_input: str,
+    width: int,
+    height: int,
+    fps: int,
+) -> subprocess.Popen:
     cmd = [
         str(ffmpeg_path),
         "-f", "dshow",
         "-framerate", str(fps),
         "-video_size", f"{width}x{height}",
-        "-i", f"video={device}",
+        "-i", f"video={device_input}",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-tune", "zerolatency",
@@ -183,14 +210,16 @@ if __name__ == "__main__":
     print("      WINDOWS CAMERA BRIDGE POUR DOCKER (H.264 via FFmpeg)")
     print("="*60)
     print(f"\n[+] Flux disponible sur : http://{ip}:{PORT}/video_feed")
-    print(f"[+] Périphérique utilisé : {device}")
+    display_input = device.input_name
+    input_note = f" (entrée: {display_input})" if display_input != device.friendly_name else ""
+    print(f"[+] Périphérique utilisé : {device.friendly_name}{input_note}")
     print(f"[+] Mode retenu : {width}x{height} @ {fps} fps")
     print(f"[+] Commande de test : ffprobe http://{ip}:{PORT}/video_feed")
     print(f"\n[!] COMMANDE A COPIER DANS LE TERMINAL WSL :")
     print(f"    ./run_app.sh http://{ip}:{PORT}/video_feed")
     print("\n" + "="*60)
 
-    ffmpeg_proc = start_ffmpeg_stream(ffmpeg_path, device, width, height, fps)
+    ffmpeg_proc = start_ffmpeg_stream(ffmpeg_path, device.input_name, width, height, fps)
     try:
         ffmpeg_proc.wait()
     except KeyboardInterrupt:
