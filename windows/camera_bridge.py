@@ -5,6 +5,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 import urllib.request
@@ -224,9 +225,18 @@ if __name__ == "__main__":
     print(f"    ./run_app.sh http://{ip}:{PORT}/video_feed")
     print("\n" + "="*60)
 
-    ffmpeg_proc = start_ffmpeg_stream(ffmpeg_path, device.input_name, width, height, fps)
     try:
-        ffmpeg_proc.wait()
+        while True:
+            ffmpeg_proc = start_ffmpeg_stream(ffmpeg_path, device.input_name, width, height, fps)
+            try:
+                ffmpeg_proc.wait()
+            except KeyboardInterrupt:
+                ffmpeg_proc.terminate()
+                ffmpeg_proc.wait()
+                break
+            if ffmpeg_proc.returncode == 0:
+                break
+            logger.warning("FFmpeg exited (code=%s); restarting in 1s", ffmpeg_proc.returncode)
+            time.sleep(1)
     except KeyboardInterrupt:
-        ffmpeg_proc.terminate()
-        ffmpeg_proc.wait()
+        pass
