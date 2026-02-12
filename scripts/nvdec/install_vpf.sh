@@ -54,6 +54,30 @@ if [[ ! -d "$CUDA_HOME" ]]; then
     exit 1
 fi
 
+echo "🩹 Patching FFmpeg demuxer bitstream filter selection..."
+"$PYTHON_BIN" - <<PY
+from pathlib import Path
+
+path = Path("$VPF_DIR/src/TC/src/FFmpegDemuxer.cpp")
+if not path.exists():
+    raise SystemExit(f"FFmpegDemuxer source missing: {path}")
+old = """  const string bfs_name =
+      is_mp4H264 ? "h264_mp4toannexb"
+                 : is_mp4HEVC ? "hevc_mp4toannexb" : is_VP9 ? string() : "unknown";
+"""
+new = """  const string bfs_name =
+      is_mp4H264 ? "h264_mp4toannexb"
+                 : is_mp4HEVC ? "hevc_mp4toannexb"
+                              : string();
+"""
+content = path.read_text()
+if old not in content:
+    print("🧷 FFmpegDemuxer filter patch already applied")
+else:
+    path.write_text(content.replace(old, new, 1))
+    print("✅ FFmpegDemuxer now skips unknown bitstream filters")
+PY
+
 echo "🔧 Building VPF C++ core..."
 export CUDAARCHS="$CUDA_ARCHS"
 cmake -S . -B build \

@@ -27,4 +27,5 @@ def apply_log_config() -> None:
         extreme_debug=channels.get("global"),
         yolo_debug=channels.get("yolo"),
         density_debug=channels.get("density"),
+        nvdec_debug=channels.get("nvdec"),
     )

@@ -1,0 +1,2 @@
+# Override this value when you want pytest to exercise the real NVDEC stream.
+nvdec_test_stream_url: "http://192.168.1.62:5002/video_feed"

@@ -1,5 +1,5 @@
 import os
-from enum import Enum, auto
+from enum import Enum
 
 from env_utils import parse_bool_env
 
@@ -7,6 +7,7 @@ class LogChannel(Enum):
     GLOBAL = "GLOBAL"
     YOLO = "YOLO"
     DENSITY = "DENSITY"
+    NVDEC = "NVDEC"
 
 
 class LogLevel(Enum):
@@ -21,22 +22,27 @@ class FilteredLogger:
         self.extreme_debug = parse_bool_env('EXTREME_DEBUG', '0')
         self.yolo_debug = parse_bool_env('YOLO_DEBUG_LOGS', '0')
         self.density_debug = parse_bool_env('DENSITY_DEBUG_LOGS', '0')
+        self.nvdec_debug = parse_bool_env('NVDEC_DEBUG_LOGS', '1')
 
-    def configure(self, *, extreme_debug=None, yolo_debug=None, density_debug=None):
+    def configure(self, *, extreme_debug=None, yolo_debug=None, density_debug=None, nvdec_debug=None):
         if extreme_debug is not None:
             self.extreme_debug = extreme_debug
         if yolo_debug is not None:
             self.yolo_debug = yolo_debug
         if density_debug is not None:
             self.density_debug = density_debug
+        if nvdec_debug is not None:
+            self.nvdec_debug = nvdec_debug
 
     def should_log_debug(self, channel):
         if channel == LogChannel.GLOBAL:
-            return self.extreme_debug or self.yolo_debug or self.density_debug
+            return self.extreme_debug or self.yolo_debug or self.density_debug or self.nvdec_debug
         if channel == LogChannel.YOLO:
             return self.yolo_debug
         if channel == LogChannel.DENSITY:
             return self.density_debug
+        if channel == LogChannel.NVDEC:
+            return self.nvdec_debug
         return False
 
     def _print(self, level, channel, message):

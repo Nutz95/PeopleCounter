@@ -12,7 +12,7 @@ PeopleCounter v2 is a GPU-first rewrite that targets TensorRT-only inference wit
 ## Configuration
 
 - `config/pipeline.yaml` defines which models are enabled, the fusion strategy, tiling metadata, and the CUDA stream indices consumed by `CudaStreamPool`.
-- `config/log.yaml` controls the filtered logger channels (`GLOBAL`, `YOLO`, `DENSITY`) so you can mute noisy lanes without touching the code.
+- `config/log.yaml` controls the filtered logger channels (`GLOBAL`, `YOLO`, `DENSITY`, `NVDEC`). Toggle `NVDEC_DEBUG_LOGS` (or flip the `nvdec` flag in the same YAML) when you want to see decode diagnostics without overflowing the final console.
 - `plans/app_v2_migration_plan.md` tracks the remaining scaffolding and documentation updates so the rewrite stays in sync.
 
 ## Getting started
@@ -23,4 +23,9 @@ PeopleCounter v2 is a GPU-first rewrite that targets TensorRT-only inference wit
 4. Run `./5_run_tests.sh` (after each implementation pass) so the orchestrator is compiled and the current pytest suite executes inside the NVDEC-ready container, ensuring the GPU loop stays validated.
 5. The Flask server exposes the same web UI at http://localhost:5000 once inference logic is implemented.
 
-The skeleton in this folder now wires NVDEC decode, CUDA preprocessing, and TensorRT inference into a single `PipelineOrchestrator`. It also includes a GPU-first test harness (`app_v2/tests` + `./5_run_tests.sh`) so every change to the scheduler, fusion strategy, or publisher runs inside the same NVDEC image used for deployment.
+ The skeleton in this folder now wires NVDEC decode, CUDA preprocessing, and TensorRT inference into a single `PipelineOrchestrator`. It also includes a GPU-first test harness (`app_v2/tests` + `./5_run_tests.sh`) so every change to the scheduler, fusion strategy, or publisher runs inside the same NVDEC image used for deployment.
+
+### Debugging & testing
+
+- Set `NVDEC_TEST_STREAM_URL` (or edit `app_v2/config/test_config.yaml`) to your Windows bridge RTSP endpoint when you want to validate the real decoder; `pytest app_v2/tests/test_nvdec_decode.py` will consume that stream and assert on the GPU-resident NV12 surfaces.
+- Use `plans/nvdec_performance_baseline.md` as the capture sheet for your first timing run so the early `PerformanceTracker` metrics and `nvidia-smi` snapshots can serve as a reference when TensorRT strips in the true prediction payloads.

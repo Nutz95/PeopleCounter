@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app_v2.infrastructure.gpu_ring_buffer import GpuFrame, GpuPixelFormat, GpuRingBuffer
-from logger.filtered_logger import LogChannel, info as log_info, warning as log_warning
+from logger.filtered_logger import LogChannel, debug as log_debug, info as log_info, warning as log_warning
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +61,7 @@ class NvdecDecoder:
                 raise RuntimeError("NVDEC decoder failed to produce a surface")
             frame = self._surface_to_gpu_frame(surface, frame_id, timestamp_ns)
             self._ring.commit(slot, frame)
-            log_info(LogChannel.GLOBAL, f"Decoded frame {frame_id} into slot {slot}")
+            log_debug(LogChannel.NVDEC, f"Decoded frame {frame_id} into slot {slot}")
             return slot
         except Exception:
             self._ring.release(slot)
@@ -74,20 +74,51 @@ class NvdecDecoder:
             raise RuntimeError("PyNvCodec must be installed to use NvdecDecoder") from exc
 
     def _create_demuxer(self) -> Any:
-        try:
-            return self._pynvcodec.FFmpegDemuxer(self.stream_url, 0)
-        except AttributeError as exc:
-            raise RuntimeError("PyNvCodec FFmpegDemuxer is unavailable") from exc
+        demuxer_attempts = (
+            ("FFmpegDemuxer", (self.stream_url, 0)),
+            ("FFmpegDemuxer", (self.stream_url,)),
+            ("PyFFmpegDemuxer", (self.stream_url,)),
+        )
+        last_exc: Exception | None = None
+        for name, args in demuxer_attempts:
+            demuxer_cls = getattr(self._pynvcodec, name, None)
+            if demuxer_cls is None:
+                continue
+            try:
+                return demuxer_cls(*args)
+            except Exception as exc:  # pragma: no cover - depends on PyNvCodec build
+                last_exc = exc
+        message = "PyNvCodec FFmpeg-style demuxer is unavailable"
+        if last_exc is not None:
+            raise RuntimeError(message) from last_exc
+        raise RuntimeError(message)
 
     def _create_decoder(self) -> Any:
         try:
             return self._pynvcodec.PyNvDecoder(self._demuxer, self._config.gpu_id)
         except (TypeError, AttributeError):
-            width, height = self._dimensions()
-            pixel_format = getattr(self._pynvcodec.PixelFormat, "NV12", None)
-            if pixel_format is None:
-                raise RuntimeError("Cannot resolve NV12 pixel format for PyNvDecoder")
-            return self._pynvcodec.PyNvDecoder(width, height, pixel_format, self._config.gpu_id)
+            try:
+                return self._pynvcodec.PyNvDecoder(self.stream_url, self._config.gpu_id)
+            except (TypeError, AttributeError, RuntimeError):
+                width, height = self._dimensions()
+                pixel_format = getattr(self._pynvcodec.PixelFormat, "NV12", None)
+                if pixel_format is None:
+                    raise RuntimeError("Cannot resolve NV12 pixel format for PyNvDecoder")
+                cuda_codec = self._call_demuxer_method("Codec")
+                if cuda_codec is None:
+                    raise RuntimeError("Cannot resolve CUDA codec for PyNvDecoder")
+                members = getattr(self._pynvcodec.CudaVideoCodec, "__members__", {})
+                codec_enum = None
+                for member in members.values():
+                    if getattr(member, "value", None) == cuda_codec:
+                        codec_enum = member
+                        break
+                if codec_enum is None:
+                    raise RuntimeError("CUDA codec value is not supported by PyNvDecoder")
+                try:
+                    return self._pynvcodec.PyNvDecoder(width, height, pixel_format, codec_enum, self._config.gpu_id)
+                except TypeError as exc:
+                    raise RuntimeError("PyNvDecoder width/height constructor is unavailable") from exc
 
     def _dimensions(self) -> tuple[int, int]:
         width = self._call_demuxer_method("Width") or 0

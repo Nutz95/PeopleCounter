@@ -19,4 +19,5 @@
 > Current focus: Observability of the NVDEC/TensorRT stack and keeping the docs/plans synchronized as we add TensorRT specifics (Step 6/7).
  - Update `export_density_to_onnx.py` so the generated engine expects 640×720 density tiles without overlap and matches the GPU batching logic.
  - Design how YOLO tiling overlap metadata is propagated to the fusion layer so the UI can assemble masks seamlessly.
+ - Record the inaugural NVDEC/TensorRT baseline in `plans/nvdec_performance_baseline.md` so we can compare future edits.
 

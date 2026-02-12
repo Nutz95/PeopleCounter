@@ -45,7 +45,7 @@ We have split the workflow into six stages:
 
 1. `./0_build_image.sh` performs the heavy Docker image build (`people-counter:gpu-final`), so you only spend that hour once.
 2. `./1_prepare.sh` layers the apt/pip dependencies on top of the already built image.
-3. `./2_prepare_nvdec.sh` builds and installs VPF + PyNvCodec from source in a **new image layer**, committing `people-counter:gpu-final-nvdec`. NVDEC support is now required to run the `app_v2` orchestrator and the GPU test harness.
+3. `./2_prepare_nvdec.sh` builds and installs VPF + PyNvCodec from source in a **new image layer**, committing `people-counter:gpu-final-nvdec`. NVDEC support is now required to run the `app_v2` orchestrator and the GPU test harness. The NVDEC layer also patches the FFmpeg demuxer so codecs that aren't H.264/HEVC skip the Annex-B bitstream filter, preventing the "unknown filter by name" failure that plagued the MJPEG bridge stream.
 4. `./3_prepare_models.sh` runs `prepare_models.py` inside the prepared image so you can rebuild TensorRT/ONNX assets without re-running the installs.
 5. `./4_run_app.sh --app-version v1 <source>` launches the legacy pipeline from `app_v1/` with the existing worker graph. Use `--app-version v2` to start the new GPU-first orchestration in `app_v2/`, which now decodes via NVDEC, preprocesses on CUDA, executes the TensorRT engines, fuses metadata, and publishes through the Flask server.
 6. `./5_run_tests.sh` compiles `app_v2` and runs `pytest app_v2/tests` inside the NVDEC-ready `people-counter:gpu-final-nvdec` image so each implementation pass runs on the same GPU stack that ships to production.
@@ -88,6 +88,7 @@ docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
 - A `[MASK TIMING]` log line records backend creation and send latencies, breaking the delay into creation, send, and total segments so you can trace any regressions in the pipeline.
 - The metrics payload now carries `density_heatmap_payload` alongside the YOLO mask metadata so the browser can draw density overlays without rewiring the server.
 - Masks are downscaled and aligned to the client canvas before compositing, so overlays only tint the detected zones rather than the entire feed. More architecture detail is in the dedicated doc below.
+- After the NVDEC decoder delivers GPU frames you can capture the first baseline run with `plans/nvdec_performance_baseline.md` and, optionally, set `NVDEC_TEST_STREAM_URL` so `pytest app_v2/tests/test_nvdec_decode.py` verifies the real stream before TensorRT starts producing predictions.
 
 ## Important model notes
 
