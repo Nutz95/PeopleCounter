@@ -305,6 +305,28 @@ def choose_encoder(ffmpeg_path: Path) -> str:
     return encs[0]
 
 
+def choose_bitrate_for_encoder(encoder: str) -> int:
+    """Prompt user for bitrate (kbps) with sensible defaults per encoder."""
+    defaults = {
+        "h264_nvenc": 8000,
+        "h264_qsv": 6000,
+        "h264_vaapi": 6000,
+        "libx264": 4000,
+    }
+    default = defaults.get(encoder, 4000)
+    prompt = f"Target video bitrate in kbps for {encoder} [{default}]: "
+    val = input(prompt).strip()
+    if not val:
+        return default
+    try:
+        kbps = int(val)
+        if kbps <= 0:
+            return default
+        return kbps
+    except ValueError:
+        return default
+
+
 def choose_stream_settings(options: list[tuple[int, int, int]]) -> tuple[int, int, int, bool]:
     if not options:
         print("[!] Aucun mode détecté via FFmpeg, utilisation du fallback 1280x720@30")
@@ -343,6 +365,7 @@ def start_ffmpeg_stream(
     fps: int,
     gop1: bool = False,
     encoder: str = "libx264",
+    bitrate_kbps: int | None = None,
 ) -> subprocess.Popen:
     cmd = [
         str(ffmpeg_path),
@@ -360,15 +383,25 @@ def start_ffmpeg_stream(
         if gop1:
             x264_params.extend(["keyint=1", "min-keyint=1", "scenecut=0"])
         cmd += ["-x264-params", ":".join(x264_params)]
+        if bitrate_kbps:
+            cmd += ["-b:v", f"{bitrate_kbps}k", "-bufsize", f"{bitrate_kbps*2}k"]
     else:
         # Hardware encoders: use encoder name directly. Add GOP if requested.
         cmd += ["-c:v", encoder]
+        if bitrate_kbps:
+            # common approach: set target bitrate and buffer parameters
+            maxrate = int(bitrate_kbps * 1.5)
+            bufsize = int(bitrate_kbps * 2)
+            cmd += ["-b:v", f"{bitrate_kbps}k", "-maxrate", f"{maxrate}k", "-bufsize", f"{bufsize}k"]
         # Special handling per-hardware encoder
         if encoder.startswith("h264_vaapi"):
             # VAAPI requires the frames to be uploaded to the VAAPI device in a supported
             # pixel format (usually nv12). Insert filter to convert and upload.
             # Note: on some systems you may need to pass -vaapi_device /dev/dri/renderD128
             cmd += ["-vf", "format=nv12,hwupload"]
+        if encoder.startswith("h264_nvenc"):
+            # Improve NVENC quality by using VBR HQ and a sensible preset
+            cmd += ["-rc", "vbr_hq", "-preset", "llhq"]
         if gop1:
             # NVIDIA NVENC enforces: Gop Length should be greater than number of B frames + 1
             # Setting GOP=1 with default B-frames will fail. For nvenc, disable B-frames and
@@ -421,6 +454,7 @@ if __name__ == "__main__":
     options = query_device_options(ffmpeg_path, device)
     width, height, fps, gop1 = choose_stream_settings(options)
     encoder = choose_encoder(ffmpeg_path)
+    bitrate_kbps = choose_bitrate_for_encoder(encoder)
     ip = get_ip()
 
     broadcaster = StreamBroadcaster()
@@ -446,7 +480,14 @@ if __name__ == "__main__":
     try:
         while True:
             ffmpeg_proc = start_ffmpeg_stream(
-                ffmpeg_path, device.input_name, width, height, fps, gop1=gop1, encoder=encoder
+                ffmpeg_path,
+                device.input_name,
+                width,
+                height,
+                fps,
+                gop1=gop1,
+                encoder=encoder,
+                bitrate_kbps=bitrate_kbps,
             )
             try:
                 stream_ffmpeg_output(ffmpeg_proc, broadcaster)
