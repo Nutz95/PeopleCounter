@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import cv2
-import socket
 import logging
+import re
+import socket
 import subprocess
 import sys
 from pathlib import Path
 import urllib.request
 import zipfile
+from typing import Optional
 
 # Configuration
 PORT = 5002
-CAMERA_INDEX = 0
 FFMPEG_DOWNLOAD_URL = (
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 )
@@ -37,56 +37,6 @@ def ensure_ffmpeg() -> Path | None:
         print("[!] Impossible de trouver ffmpeg.exe après extraction")
         return None
     return ffmpeg_path
-
-
-def select_resolution() -> tuple[int, int] | None:
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(CAMERA_INDEX)
-
-    if not cap.isOpened():
-        print(f"[!] Erreur: Impossible d'ouvrir la caméra {CAMERA_INDEX}")
-        return None
-
-    candidates = [
-        (3840, 2160, "4K / UltraHD"),
-        (2560, 1440, "2K / QHD"),
-        (1920, 1080, "1080p / FullHD"),
-        (1280, 720,  "720p / HD"),
-        (800, 600,   "SVGA"),
-        (640, 480,   "VGA"),
-    ]
-
-    print("\n[i] Détection des formats supportés par votre caméra...")
-    supported: list[tuple[int, int, str]] = []
-    for w, h, name in candidates:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        res_key = (actual_w, actual_h)
-        if res_key not in [s[:2] for s in supported]:
-            label = next((c[2] for c in candidates if c[0] == actual_w and c[1] == actual_h), f"{actual_w}x{actual_h}")
-            supported.append((actual_w, actual_h, label))
-
-    supported.sort(key=lambda x: x[0], reverse=True)
-    print("\n--- FORMATS DÉTECTÉS ---")
-    for i, (w, h, label) in enumerate(supported, 1):
-        print(f"{i}. {label} ({w}x{h})")
-    print("0. Garder le réglage actuel")
-    choice = input(f"\nChoisissez une option (0-{len(supported)}) [0]: ").strip() or "0"
-
-    if choice != "0" and choice.isdigit() and int(choice) <= len(supported):
-        w, h, name = supported[int(choice)-1]
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-        print(f"[+] Réglage validé sur {name}")
-
-    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"[+] Résolution active : {actual_w}x{actual_h}")
-    cap.release()
-    return actual_w, actual_h
 
 
 def query_dshow_devices(ffmpeg_path: Path) -> list[str]:
@@ -123,7 +73,7 @@ def query_dshow_devices(ffmpeg_path: Path) -> list[str]:
     return devices
 
 
-def choose_device(ffmpeg_path: Path) -> str | None:
+def choose_device(ffmpeg_path: Path) -> Optional[str]:
     devices = query_dshow_devices(ffmpeg_path)
     if not devices:
         print("[!] Aucun périphérique DirectShow détecté")
@@ -141,6 +91,51 @@ def choose_device(ffmpeg_path: Path) -> str | None:
     return devices[0]
 
 
+def query_device_options(ffmpeg_path: Path, device: str) -> list[tuple[int, int, int]]:
+    result = subprocess.run(
+        [
+            str(ffmpeg_path),
+            "-f",
+            "dshow",
+            "-list_options",
+            "true",
+            "-i",
+            f"video={device}",
+        ],
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    pattern = re.compile(r"size=(\d+)x(\d+).*?fps=(\d+)")
+    options: list[tuple[int, int, int]] = []
+    seen = set()
+    for line in result.stderr.splitlines():
+        match = pattern.search(line)
+        if not match:
+            continue
+        width, height, fps = map(int, match.groups())
+        key = (width, height, fps)
+        if key in seen:
+            continue
+        seen.add(key)
+        options.append(key)
+    return options
+
+
+def choose_stream_settings(options: list[tuple[int, int, int]]) -> tuple[int, int, int]:
+    if not options:
+        print("[!] Aucun mode détecté via FFmpeg, utilisation du fallback 1280x720@30")
+        return 1280, 720, 30
+    print("\n--- MODES SUPPORTED PAR LA CAMÉRA ---")
+    for idx, (w, h, fps) in enumerate(options, 1):
+        print(f"{idx}. {w}x{h} @ {fps} fps")
+    choice = input(f"Choisissez un mode (1-{len(options)}) [1]: ").strip() or "1"
+    if choice.isdigit() and 1 <= int(choice) <= len(options):
+        return options[int(choice) - 1]
+    print("[!] Sélection invalide, utilisation du premier mode détecté")
+    return options[0]
+
+
 def get_ip() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -153,11 +148,11 @@ def get_ip() -> str:
     return ip
 
 
-def start_ffmpeg_stream(ffmpeg_path: Path, device: str, width: int, height: int) -> subprocess.Popen:
+def start_ffmpeg_stream(ffmpeg_path: Path, device: str, width: int, height: int, fps: int) -> subprocess.Popen:
     cmd = [
         str(ffmpeg_path),
         "-f", "dshow",
-        "-framerate", "30",
+        "-framerate", str(fps),
         "-video_size", f"{width}x{height}",
         "-i", f"video={device}",
         "-c:v", "libx264",
@@ -176,27 +171,26 @@ if __name__ == "__main__":
     if ffmpeg_path is None:
         sys.exit(1)
 
-    resolution = select_resolution()
-    if resolution is None:
-        sys.exit(1)
-
-    width, height = resolution
-    ip = get_ip()
     device = choose_device(ffmpeg_path)
     if device is None:
         sys.exit(1)
+
+    options = query_device_options(ffmpeg_path, device)
+    width, height, fps = choose_stream_settings(options)
+    ip = get_ip()
 
     print("\n" + "="*60)
     print("      WINDOWS CAMERA BRIDGE POUR DOCKER (H.264 via FFmpeg)")
     print("="*60)
     print(f"\n[+] Flux disponible sur : http://{ip}:{PORT}/video_feed")
     print(f"[+] Périphérique utilisé : {device}")
+    print(f"[+] Mode retenu : {width}x{height} @ {fps} fps")
     print(f"[+] Commande de test : ffprobe http://{ip}:{PORT}/video_feed")
     print(f"\n[!] COMMANDE A COPIER DANS LE TERMINAL WSL :")
     print(f"    ./run_app.sh http://{ip}:{PORT}/video_feed")
     print("\n" + "="*60)
 
-    ffmpeg_proc = start_ffmpeg_stream(ffmpeg_path, device, width, height)
+    ffmpeg_proc = start_ffmpeg_stream(ffmpeg_path, device, width, height, fps)
     try:
         ffmpeg_proc.wait()
     except KeyboardInterrupt:
