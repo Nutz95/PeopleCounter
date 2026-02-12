@@ -311,13 +311,14 @@ def choose_encoder(ffmpeg_path: Path) -> str:
 
 def choose_bitrate_for_encoder(encoder: str) -> int:
     """Prompt user for bitrate (kbps) with sensible defaults per encoder."""
+    # Use 25000 kbps as the default for all encoders unless user overrides
     defaults = {
         "h264_nvenc": 25000,
-        "h264_qsv": 6000,
-        "h264_vaapi": 6000,
-        "libx264": 4000,
+        "h264_qsv": 25000,
+        "h264_vaapi": 25000,
+        "libx264": 25000,
     }
-    default = defaults.get(encoder, 4000)
+    default = defaults.get(encoder, 25000)
     prompt = f"Target video bitrate in kbps for {encoder} [{default}]: "
     val = input(prompt).strip()
     if not val:
