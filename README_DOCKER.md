@@ -19,7 +19,7 @@ docker run --rm --gpus all people-counter:gpu-final python3 -c "import torch, cv
 3. Run the GPU test harness:
 
 ```bash
-./4_run_tests.sh
+./5_run_tests.sh
 ```
 
 It compiles `app_v2` with `python -m compileall` and executes `pytest app_v2/tests` inside the prepared `people-counter:gpu-final` image so the orchestration stays validated after every Python build.

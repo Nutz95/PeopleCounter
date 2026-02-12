@@ -54,9 +54,9 @@ if [[ "$SELECTED_APP_VERSION" != "v1" && "$SELECTED_APP_VERSION" != "v2" ]]; the
     exit 1
 fi
 
-IMAGE_NAME="people-counter:gpu-final"
+IMAGE_NAME="${IMAGE_NAME:-people-counter:gpu-final-nvdec}"
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
-    echo "⚠️ Docker image $IMAGE_NAME not found. Run ./1_prepare.sh to build and prep the image."
+    echo "⚠️ Docker image $IMAGE_NAME not found. Run ./1_prepare.sh then ./2_prepare_nvdec.sh (or set IMAGE_NAME to an existing tag)."
     exit 1
 fi
 
@@ -90,7 +90,7 @@ fi
 # --- CONFIGURATION GPU PAR DÉFAUT ---
 DOCKER_ARGS+=("-e" "YOLO_BACKEND=tensorrt_native")
 DOCKER_ARGS+=("-e" "LWCC_BACKEND=tensorrt")
-DOCKER_ARGS+=("-e" "YOLO_MODEL=yolo26s-seg")
+DOCKER_ARGS+=("-e" "YOLO_MODEL=yolo26m-seg")
 DOCKER_ARGS+=("-e" "YOLO_TILING=1")
 DOCKER_ARGS+=("-e" "DENSITY_TILING=1")
 DOCKER_ARGS+=("-e" "PEOPLE_COUNTER_CUDA_ARCH_LIST=8.6")

@@ -41,17 +41,20 @@ This pulls the correct Docker image, generates any missing models inside the con
 
 ### 4. Run PeopleCounter
 
-We have split the workflow into five stages:
+We have split the workflow into six stages:
 
 1. `./0_build_image.sh` performs the heavy Docker image build (`people-counter:gpu-final`), so you only spend that hour once.
 2. `./1_prepare.sh` layers the apt/pip dependencies on top of the already built image.
-3. `./2_prepare_models.sh` runs `prepare_models.py` inside the prepared image so you can rebuild TensorRT/ONNX assets without re-running the installs.
-4. `./3_run_app.sh --app-version v1 <source>` launches the legacy pipeline from `app_v1/` with the existing worker graph. Use `--app-version v2` to start the new GPU-first orchestration in `app_v2/`.
-5. `./4_run_tests.sh` compiles `app_v2` and runs `pytest app_v2/tests` inside the prepared `people-counter:gpu-final` image so each implementation pass can re-validate the GPU components before deployment.
+3. `./2_prepare_nvdec.sh` (optional) builds and installs VPF + PyNvCodec from source in a **new image layer** and commits `people-counter:gpu-final-nvdec`, so you can add NVDEC support without rebuilding the long OpenCV layers.
+4. `./3_prepare_models.sh` runs `prepare_models.py` inside the prepared image so you can rebuild TensorRT/ONNX assets without re-running the installs.
+5. `./4_run_app.sh --app-version v1 <source>` launches the legacy pipeline from `app_v1/` with the existing worker graph. Use `--app-version v2` to start the new GPU-first orchestration in `app_v2/`.
+6. `./5_run_tests.sh` compiles `app_v2` and runs `pytest app_v2/tests` inside the prepared image so each implementation pass can re-validate the GPU components before deployment.
 
-`run_app.sh` is kept as a lightweight wrapper for backwards compatibility; it now forwards all arguments to `./3_run_app.sh`.
+Use `IMAGE_NAME=people-counter:gpu-final-nvdec` with `./4_run_app.sh` or `./5_run_tests.sh` when running on the optional NVDEC-enabled image.
 
-Pass any additional camera URL or resolution arguments after the profile (e.g., `./3_run_app.sh --app-version v2 --profile rtx_extreme http://...`).
+`run_app.sh` is kept as a lightweight wrapper for backwards compatibility; it now forwards all arguments to `./4_run_app.sh`.
+
+Pass any additional camera URL or resolution arguments after the profile (e.g., `./4_run_app.sh --app-version v2 --profile rtx_extreme http://...`).
 The recommended way to change backends remains modifying `.env` profiles as detailed below.
 
 ### 5. Build the Docker image (optional)

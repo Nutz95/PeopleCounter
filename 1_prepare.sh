@@ -26,4 +26,5 @@ action() {
 
 action
 
-echo "✅ Prepared image $IMAGE_NAME is ready. Run ./2_prepare_models.sh if you need to rebuild models, then ./3_run_app.sh --profile ..."
+echo "✅ Prepared image $IMAGE_NAME is ready."
+echo "   Next: ./2_prepare_nvdec.sh (optional), ./3_prepare_models.sh (optional), then ./4_run_app.sh --profile ..."
