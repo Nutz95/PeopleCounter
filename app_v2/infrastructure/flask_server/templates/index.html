@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>PeopleCounter v2</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">PeopleCounter v2</p>
+      <h1>GPU-first pipeline</h1>
+      <p style="color: var(--muted); margin: 0;">UI minimale (CSS v1). Les endpoints v2 arriveront avec la boucle NVDEC
+        → inférence.</p>
+    </div>
+    <div class="hero-note">
+      <span>Port {{ port }}</span>
+      <span>Docker GPU</span>
+    </div>
+  </header>
+
+  <main class="page-column">
+    <section class="metrics-shell">
+      <div class="metrics-grid">
+        <article class="metric-card wide">
+          <div class="metric-title">Status</div>
+          <div class="metric-value">v2 server ready</div>
+          <div class="metric-footnote">Health: <span id="health">OK</span></div>
+        </article>
+      </div>
+      <div class="instruction-card">
+        <p>Cette page sert uniquement à valider le pipeline statique (templates + app.css) côté v2.</p>
+      </div>
+    </section>
+  </main>
+</body>
+
+</html>

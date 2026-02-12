@@ -16,7 +16,7 @@ action() {
     echo "🧪 Running prep commands inside the container..."
     local docker_args=("--gpus" "all" "-e" "DISPLAY=$DISPLAY" "-v" "$PWD:/app" "-w" "/app")
     local container_id
-    container_id=$(docker create "${docker_args[@]}" "$IMAGE_NAME" bash -c "set -e; apt-get update -qq; apt-get install -y --no-install-recommends git unzip ninja-build build-essential || true; if ! command -v nvcc >/dev/null 2>&1; then echo '⚠️ nvcc introuvable : votre image doit fournir un CUDA 13.x compatible'; fi; pip install --no-cache-dir 'cuda-python>=13.1.0,<14.0'; pip install --no-cache-dir flask screeninfo psutil matplotlib ninja pytest; exit 0")
+    container_id=$(docker create "${docker_args[@]}" "$IMAGE_NAME" bash -c "set -e; apt-get update -qq; apt-get install -y --no-install-recommends git unzip ninja-build build-essential pkg-config cmake || true; if ! command -v nvcc >/dev/null 2>&1; then echo '⚠️ nvcc introuvable : votre image doit fournir un CUDA 13.x compatible'; fi; pip install --no-cache-dir 'cuda-python>=13.1.0,<14.0'; pip install --no-cache-dir flask screeninfo psutil matplotlib ninja pytest; exit 0")
 
     docker start -a "$container_id"
     echo "💾 Committing prep container to $IMAGE_NAME..."

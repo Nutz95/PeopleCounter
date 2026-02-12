@@ -32,4 +32,12 @@ class RTSPFrameSource(FrameSource):
         """Return the next frame_id and raw image payload."""
         if not self.connected:
             raise RuntimeError("Frame source is disconnected")
-        raise NotImplementedError("RTSPFrameSource.next_frame must be implemented to pull from the stream")
+        # The orchestrator owns frame_id assignment via FrameScheduler; we return a decoded GPU frame placeholder.
+        # Until NVDEC bindings are wired, this returns a stub frame stored in the NVDEC ring buffer.
+        slot = self.decoder.decode_next_into_ring(frame_id=0)
+        popped = self.decoder.ring.pop_ready(block=True)
+        if popped is None:
+            raise RuntimeError("No decoded frame available")
+        slot, frame = popped
+        self.decoder.ring.release(slot)
+        return 0, frame

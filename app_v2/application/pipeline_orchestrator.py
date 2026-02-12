@@ -30,6 +30,11 @@ class PipelineOrchestrator:
     def run(self) -> None:
         log_info(LogChannel.GLOBAL, f"Starting app_v2 pipeline with config {self.config}")
         log_info(LogChannel.GLOBAL, "Frame scheduling will track frame IDs until fusion completes.")
+        try:
+            self.publisher.start()
+            log_info(LogChannel.GLOBAL, f"FlaskStreamServer started on {self.publisher.host}:{self.publisher.port}")
+        except Exception as exc:
+            log_warning(LogChannel.GLOBAL, f"FlaskStreamServer failed to start: {exc}")
         self.frame_source.connect()
         try:
             with self.performance_tracker.stage(0, "bootstrap"):
