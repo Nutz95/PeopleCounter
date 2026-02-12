@@ -18,7 +18,8 @@ FFMPEG_DOWNLOAD_URL = (
 )
 FFMPEG_BIN_DIR = Path(__file__).resolve().parent / "bin"
 DEVICE_PATTERN = re.compile(r'"(?P<name>.+)" \((?P<type>[^)]+)\)')
-ALTERNATIVE_NAME_PATTERN = re.compile(r'Alternative name\s+"?(.+?)"?$')
+ALTERNATIVE_NAME_PATTERN = re.compile(r'Alternative name\s+"?(.+?)"?$', re.IGNORECASE)
+logger = logging.getLogger("camera_bridge")
 
 
 @dataclass
@@ -129,6 +130,7 @@ def query_device_options(ffmpeg_path: Path, device: DirectShowDevice) -> list[tu
         text=True,
         check=False,
     )
+    logger.debug("FFmpeg -list_options stderr for %s:\n%s", device.friendly_name, result.stderr)
     pattern = re.compile(r"size=(\d+)x(\d+).*?fps=(\d+)")
     options: list[tuple[int, int, int]] = []
     seen = set()
@@ -183,18 +185,22 @@ def start_ffmpeg_stream(
         "-f", "dshow",
         "-framerate", str(fps),
         "-video_size", f"{width}x{height}",
+        "-rtbufsize", "150M",
         "-i", f"video={device_input}",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-tune", "zerolatency",
         "-f", "mpegts",
+        "-listen", "1",
         f"http://0.0.0.0:{PORT}/video_feed",
     ]
+    logger.info("Launching FFmpeg bridge: %s", " ".join(cmd))
     print("[i] Démarrage de FFmpeg pour streamer le flux H.264 …")
     return subprocess.Popen(cmd)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG, format="[%(levelname)s] %(message)s")
     logging.getLogger("urllib3").setLevel(logging.ERROR)
     ffmpeg_path = ensure_ffmpeg()
     if ffmpeg_path is None:
