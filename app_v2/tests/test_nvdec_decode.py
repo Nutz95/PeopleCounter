@@ -42,7 +42,11 @@ def test_nvdec_decodes_windows_stream() -> None:
         decoder = NvdecDecoder(stream_url, NvdecDecodeConfig(ring_capacity=4))
     except RuntimeError as exc:
         message = str(exc).lower()
-        if "libnvcuvid" in message or "cuda codec" in message or "pyNvdecoder" in message:
+        if (
+            "libnvcuvid" in message
+            or "cuda codec" in message
+            or "pynvdecoder" in message
+        ):
             pytest.skip(f"NVDEC decoder unavailable: {exc}")
         raise
     decoder.start()

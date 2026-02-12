@@ -39,12 +39,18 @@ docker_args=(
     -v "$PWD:/app"
     -w "/app"
 )
+PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-"-s -rs"}"
+NVDEC_DEBUG_LOGS="${NVDEC_DEBUG_LOGS:-1}"
+NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-compute,utility,video}"
+docker_args+=(-e "PYTEST_ADDOPTS=$PYTEST_ADDOPTS")
+docker_args+=(-e "NVDEC_DEBUG_LOGS=$NVDEC_DEBUG_LOGS")
+docker_args+=(-e "NVIDIA_DRIVER_CAPABILITIES=$NVIDIA_DRIVER_CAPABILITIES")
 if [[ -n "${NVDEC_TEST_STREAM_URL:-}" ]]; then
     export NVDEC_TEST_STREAM_URL
     docker_args+=("-e" "NVDEC_TEST_STREAM_URL=$NVDEC_TEST_STREAM_URL")
 fi
 
 docker run "${docker_args[@]}" \
-    "$IMAGE_NAME" bash -c "set -e; if command -v nvidia-smi >/dev/null 2>&1; then echo '[containérisé] nvidia-smi'; nvidia-smi || true; else echo '[containérisé] nvidia-smi absent'; fi; if command -v nvcc >/dev/null 2>&1; then echo '[containérisé] nvcc --version'; nvcc --version || true; else echo '[containérisé] nvcc absent'; fi; python -m compileall app_v2; python -m pytest app_v2/tests"
+    "$IMAGE_NAME" bash -c "set -e; if command -v nvidia-smi >/dev/null 2>&1; then echo '[containérisé] nvidia-smi'; nvidia-smi || true; else echo '[containérisé] nvidia-smi absent'; fi; if command -v nvcc >/dev/null 2>&1; then echo '[containérisé] nvcc --version'; nvcc --version || true; else echo '[containérisé] nvcc absent'; fi; echo '[containérisé] NVDEC_DEBUG_LOGS=$NVDEC_DEBUG_LOGS'; echo '[containérisé] NVIDIA_DRIVER_CAPABILITIES=$NVIDIA_DRIVER_CAPABILITIES'; python -m compileall app_v2; python -m pytest $PYTEST_ADDOPTS app_v2/tests"
 
 echo "✅ Tests completed inside $IMAGE_NAME."

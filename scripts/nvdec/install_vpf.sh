@@ -83,45 +83,11 @@ download_video_codec_sdk() {
     VIDEO_CODEC_SDK_DIR="$DEFAULT_VIDEO_CODEC_SDK_DIR"
 }
 
-copy_nvcuvid_from_sdk() {
-    if ldconfig -p | grep -q libnvcuvid >/dev/null 2>&1; then
-        echo "✅ libnvcuvid already present"
+stage_video_codec_headers() {
+    if [[ -z "$VIDEO_CODEC_SDK_DIR" || ! -d "$VIDEO_CODEC_SDK_DIR" ]]; then
+        echo "⚠️ VIDEO_CODEC_SDK_DIR unavailable; skipping SDK headers copy"
         return 0
     fi
-
-    if [[ -z "$VIDEO_CODEC_SDK_DIR" ]]; then
-        echo "❌ NVIDIA Video Codec SDK directory not available; libnvcuvid is missing"
-        exit 1
-    fi
-
-    if [[ ! -d "$VIDEO_CODEC_SDK_DIR" ]]; then
-        echo "❌ VIDEO_CODEC_SDK_DIR does not point to a directory: $VIDEO_CODEC_SDK_DIR"
-        exit 1
-    fi
-
-    LIB_SRC_DIR=""
-    if [[ -d "$VIDEO_CODEC_SDK_DIR/lib/x64" ]]; then
-        LIB_SRC_DIR="$VIDEO_CODEC_SDK_DIR/lib/x64"
-    elif [[ -d "$VIDEO_CODEC_SDK_DIR/Lib/linux/stubs/x86_64" ]]; then
-        LIB_SRC_DIR="$VIDEO_CODEC_SDK_DIR/Lib/linux/stubs/x86_64"
-    else
-        echo "❌ Video Codec SDK directory lacks a lib/x64 or Lib/linux/stubs/x86_64 folder"
-        exit 1
-    fi
-
-    echo "📦 Copying libnvcuvid from Video Codec SDK..."
-    shopt -s nullglob
-    lib_files=("$LIB_SRC_DIR"/libnvcuvid.so*)
-    shopt -u nullglob
-
-    if [[ ${#lib_files[@]} -eq 0 ]]; then
-        echo "❌ libnvcuvid files not found under $LIB_SRC_DIR"
-        exit 1
-    fi
-
-    for f in "${lib_files[@]}"; do
-        cp -a "$f" "$CUDA_HOME/lib64/"
-    done
 
     HEADER_SRC_DIR=""
     if [[ -d "$VIDEO_CODEC_SDK_DIR/include" ]]; then
@@ -130,14 +96,29 @@ copy_nvcuvid_from_sdk() {
         HEADER_SRC_DIR="$VIDEO_CODEC_SDK_DIR/Interface"
     fi
 
+    if [[ -z "$HEADER_SRC_DIR" ]]; then
+        echo "⚠️ No SDK header directory found under $VIDEO_CODEC_SDK_DIR"
+        return 0
+    fi
+
     for header in nvcuvid.h nvEncodeAPI.h cuviddec.h; do
-        if [[ -n "$HEADER_SRC_DIR" && -f "$HEADER_SRC_DIR/$header" ]]; then
+        if [[ -f "$HEADER_SRC_DIR/$header" ]]; then
             cp -a "$HEADER_SRC_DIR/$header" "$CUDA_HOME/include/"
         fi
     done
+    echo "✅ Video Codec SDK headers staged into $CUDA_HOME/include"
+}
 
-    ldconfig
-    echo "✅ libnvcuvid is now available in $CUDA_HOME/lib64"
+require_runtime_nvcuvid() {
+    if ldconfig -p | grep -q libnvcuvid >/dev/null 2>&1; then
+        echo "✅ Runtime libnvcuvid detected"
+        return 0
+    fi
+    echo "❌ Runtime libnvcuvid not detected in this container."
+    echo "   Do not copy SDK stub libs into CUDA lib64; they are not runtime-capable for decode."
+    echo "   Re-run the NVDEC build container with NVIDIA video capability enabled:"
+    echo "   NVIDIA_DRIVER_CAPABILITIES=compute,utility,video ./2_prepare_nvdec.sh"
+    exit 1
 }
 
 download_video_codec_sdk
@@ -153,7 +134,8 @@ else
     echo "   If build fails on nvcuvid/nvEncodeAPI headers, install Video Codec SDK headers manually."
 fi
 
-copy_nvcuvid_from_sdk
+stage_video_codec_headers
+require_runtime_nvcuvid
 
 $PYTHON_BIN -m pip install --no-cache-dir --upgrade pip setuptools wheel scikit-build pybind11 "numpy<2.3"
 

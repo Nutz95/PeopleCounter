@@ -15,7 +15,14 @@ fi
 
 echo "🧪 Building NVDEC/VPF layer from image: $IMAGE_NAME"
 
-docker_args=("--gpus" "all" "-e" "DISPLAY=$DISPLAY" "-v" "$PWD:/app" "-w" "/app")
+NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-compute,utility,video}"
+docker_args=(
+    "--gpus" "all"
+    "-e" "DISPLAY=$DISPLAY"
+    "-e" "NVIDIA_DRIVER_CAPABILITIES=$NVIDIA_DRIVER_CAPABILITIES"
+    "-v" "$PWD:/app"
+    "-w" "/app"
+)
 container_id=$(docker create "${docker_args[@]}" "$IMAGE_NAME" bash -c "set -e; chmod +x /app/scripts/nvdec/install_vpf.sh; /app/scripts/nvdec/install_vpf.sh")
 
 cleanup() {
