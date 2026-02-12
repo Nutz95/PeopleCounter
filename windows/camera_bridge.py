@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import logging
+import queue
 import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import urllib.request
 import zipfile
-from typing import Optional
+from typing import BinaryIO, Optional
 
 # Configuration
 PORT = 5002
@@ -21,6 +24,79 @@ FFMPEG_BIN_DIR = Path(__file__).resolve().parent / "bin"
 DEVICE_PATTERN = re.compile(r'"(?P<name>.+)" \((?P<type>[^)]+)\)')
 ALTERNATIVE_NAME_PATTERN = re.compile(r'Alternative name\s+"?(.+?)"?$', re.IGNORECASE)
 logger = logging.getLogger("camera_bridge")
+
+
+class StreamBroadcaster:
+    def __init__(self) -> None:
+        self._clients: list[queue.Queue[bytes | None]] = []
+        self._lock = threading.Lock()
+
+    def register(self) -> queue.Queue[bytes | None]:
+        q: queue.Queue[bytes | None] = queue.Queue(maxsize=64)
+        with self._lock:
+            self._clients.append(q)
+        return q
+
+    def unregister(self, q: queue.Queue[bytes | None]) -> None:
+        with self._lock:
+            if q in self._clients:
+                self._clients.remove(q)
+
+    def broadcast(self, chunk: bytes) -> None:
+        with self._lock:
+            clients = list(self._clients)
+        for q in clients:
+            try:
+                q.put(chunk, block=False)
+            except queue.Full:
+                continue
+
+    def notify_stream_ended(self) -> None:
+        with self._lock:
+            clients = list(self._clients)
+            self._clients.clear()
+        for q in clients:
+            q.put(None)
+
+
+class StreamRequestHandler(BaseHTTPRequestHandler):
+    broadcaster: StreamBroadcaster
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        if self.path != "/video_feed":
+            self.send_response(404)
+            self.end_headers()
+            return
+        queue_ref = self.broadcaster.register()
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp2t")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            while True:
+                chunk = queue_ref.get()
+                if chunk is None:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    break
+        finally:
+            self.broadcaster.unregister(queue_ref)
+
+
+def drain_ffmpeg_stderr(pipe: Optional[BinaryIO]) -> None:
+    if pipe is None:
+        return
+    for line in pipe:
+        try:
+            decoded = line.decode(errors="ignore").strip()
+        except AttributeError:
+            decoded = str(line).strip()
+        logger.debug("[ffmpeg] %s", decoded)
 
 
 @dataclass
@@ -189,12 +265,32 @@ def start_ffmpeg_stream(
         "-preset", "veryfast",
         "-tune", "zerolatency",
         "-f", "mpegts",
-        "-listen", "1",
-        f"http://0.0.0.0:{PORT}/video_feed",
+        "-",
     ]
     logger.info("Launching FFmpeg bridge: %s", " ".join(cmd))
     print("[i] Démarrage de FFmpeg pour streamer le flux H.264 …")
-    return subprocess.Popen(cmd)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+    )
+    threading.Thread(target=drain_ffmpeg_stderr, args=(proc.stderr,), daemon=True).start()
+    return proc
+
+
+def stream_ffmpeg_output(ffmpeg_proc: subprocess.Popen, broadcaster: StreamBroadcaster) -> None:
+    stdout = ffmpeg_proc.stdout
+    if stdout is None:
+        return
+    try:
+        while True:
+            chunk = stdout.read(64 * 1024)
+            if not chunk:
+                break
+            broadcaster.broadcast(chunk)
+    finally:
+        stdout.close()
 
 
 if __name__ == "__main__":
@@ -211,6 +307,13 @@ if __name__ == "__main__":
     options = query_device_options(ffmpeg_path, device)
     width, height, fps = choose_stream_settings(options)
     ip = get_ip()
+
+    broadcaster = StreamBroadcaster()
+    StreamRequestHandler.broadcaster = broadcaster
+    http_server = ThreadingHTTPServer(("0.0.0.0", PORT), StreamRequestHandler)
+    server_thread = threading.Thread(target=http_server.serve_forever, daemon=True)
+    server_thread.start()
+    logger.info("HTTP broadcaster listening on port %s", PORT)
 
     print("\n" + "="*60)
     print("      WINDOWS CAMERA BRIDGE POUR DOCKER (H.264 via FFmpeg)")
@@ -229,14 +332,18 @@ if __name__ == "__main__":
         while True:
             ffmpeg_proc = start_ffmpeg_stream(ffmpeg_path, device.input_name, width, height, fps)
             try:
-                ffmpeg_proc.wait()
+                stream_ffmpeg_output(ffmpeg_proc, broadcaster)
             except KeyboardInterrupt:
                 ffmpeg_proc.terminate()
                 ffmpeg_proc.wait()
                 break
-            if ffmpeg_proc.returncode == 0:
+            return_code = ffmpeg_proc.wait()
+            broadcaster.notify_stream_ended()
+            if return_code == 0:
                 break
-            logger.warning("FFmpeg exited (code=%s); restarting in 1s", ffmpeg_proc.returncode)
+            logger.warning("FFmpeg exited (code=%s); restarting in 1s", return_code)
             time.sleep(1)
-    except KeyboardInterrupt:
-        pass
+    finally:
+        http_server.shutdown()
+        http_server.server_close()
+        server_thread.join(timeout=1)
