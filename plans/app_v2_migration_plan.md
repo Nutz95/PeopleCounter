@@ -21,3 +21,21 @@
  - Design how YOLO tiling overlap metadata is propagated to the fusion layer so the UI can assemble masks seamlessly.
  - Record the inaugural NVDEC/TensorRT baseline in `plans/nvdec_performance_baseline.md` so we can compare future edits.
 
+## Processing Chain Migration Status (Color)
+
+- 🟢 **Done**
+	- NVDEC decoding path produces GPU-native `GpuFrame` through `NvdecDecoder` and `GpuRingBuffer`.
+	- Preprocess component split introduced: `InputSpecRegistry`, `GpuPreprocessPlanner`, `GpuPreprocessor`, and `PreprocessOutput`.
+	- Default preprocess specs supported for `yolo_global` (single 640x640 letterbox) and `yolo_tiles` (640x640 tiling, overlap default `0.2`).
+	- Backward compatibility preserved through `CudaPreprocessor` wrapper so `PipelineOrchestrator` keeps its existing flow.
+
+- 🟡 **Tested / In progress**
+	- Unit coverage added for preprocess planning behavior (`yolo_global`, `yolo_tiles`).
+	- Integration skeleton added for `NVDEC -> preprocess` with runtime skips when stream URL or `PyNvCodec` is unavailable.
+	- Ring buffer long-run stress loop added to validate slot recycling over many producer/consumer cycles.
+
+- 🔴 **Pending**
+	- Replace placeholder preprocess payload replication with real GPU transform kernels (letterbox/tiling tensors).
+	- Model-specific routing in orchestrator/preprocess handoff to avoid passing unrelated flattened inputs to each model.
+	- End-to-end validation with real TensorRT model outputs and fusion impact under sustained throughput.
+
