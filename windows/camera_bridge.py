@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import re
 import socket
@@ -287,6 +288,9 @@ def detect_encoders(ffmpeg_path: Path) -> list[str]:
             encs.add(m.group(1))
     preferred = ["h264_nvenc", "h264_qsv", "h264_vaapi", "h264_amf", "libx264"]
     result_list = [e for e in preferred if e in encs]
+    # On Windows, VAAPI is generally not available/usable; filter it out to avoid runtime errors
+    if os.name == "nt":
+        result_list = [e for e in result_list if not e.startswith("h264_vaapi")]
     if not result_list:
         # fallback to libx264
         return ["libx264"]
@@ -308,7 +312,7 @@ def choose_encoder(ffmpeg_path: Path) -> str:
 def choose_bitrate_for_encoder(encoder: str) -> int:
     """Prompt user for bitrate (kbps) with sensible defaults per encoder."""
     defaults = {
-        "h264_nvenc": 8000,
+        "h264_nvenc": 25000,
         "h264_qsv": 6000,
         "h264_vaapi": 6000,
         "libx264": 4000,
