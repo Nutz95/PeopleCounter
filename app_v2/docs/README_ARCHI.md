@@ -12,11 +12,11 @@ Ce document décrit l’architecture cible de `app_v2` et l’état d’avanceme
 
 ```mermaid
 flowchart LR
-    FrameSource["FrameSource"]:::done --> NVDEC["NVDEC decode\n(GPU surface)"]:::done
+    FrameSource["FrameSource"]:::done --> NVDEC["NVDEC decode<br/>(GPU surface)"]:::done
     NVDEC --> Scheduler["FrameScheduler"]:::done
     Scheduler --> Preprocessor["GpuPreprocessor"]:::done
-    Preprocessor --> TRT["TensorRT infer\n(YOLO global/tiles)"]:::partial
-    TRT --> Aggregator["ResultAggregator\n+ FusionStrategy"]:::done
+    Preprocessor --> TRT["TensorRT infer<br/>(YOLO global/tiles)"]:::partial
+    TRT --> Aggregator["ResultAggregator<br/>+ FusionStrategy"]:::done
     Aggregator --> Publisher["FlaskStreamServer"]:::done
     Publisher --> UI["Web UI"]:::partial
 
@@ -29,14 +29,14 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    Surface["NVDEC Surface\nNV12 en mémoire GPU"]:::done --> Ring["GpuRingBuffer"]:::done
-    Ring --> Bridge["nv12_cuda_bridge\n(cudaMemcpy2DAsync + NV12->RGB)"]:::done
-    Bridge --> SourceTensor["RGB HWC U8\n(tensor GPU)"]:::done
-    SourceTensor --> Letterbox["Letterbox kernel\n(keep aspect ratio + pad)"]:::done
-    SourceTensor --> Tiling["Tiling kernel\n(crop + overlap)"]:::done
-    Letterbox --> Pool["GpuTensorPool\n(acquire/release)"]:::done
+    Surface["NVDEC Surface<br/>NV12 en mémoire GPU"]:::done --> Ring["GpuRingBuffer"]:::done
+    Ring --> Bridge["nv12_cuda_bridge<br/>(cudaMemcpy2DAsync + NV12->RGB)"]:::done
+    Bridge --> SourceTensor["RGB HWC U8<br/>(tensor GPU)"]:::done
+    SourceTensor --> Letterbox["Letterbox kernel<br/>(keep aspect ratio + pad)"]:::done
+    SourceTensor --> Tiling["Tiling kernel<br/>(crop + overlap)"]:::done
+    Letterbox --> Pool["GpuTensorPool<br/>(acquire/release)"]:::done
     Tiling --> Pool
-    Pool --> ModelInputs["Inputs model-scoped\nRGB NCHW FP16"]:::done
+    Pool --> ModelInputs["Inputs model-scoped<br/>RGB NCHW FP16"]:::done
 
     classDef done fill:#b7e1cd,color:#000,stroke:#2e7d32,stroke-width:1px;
     classDef partial fill:#ffd9b3,color:#000,stroke:#ef6c00,stroke-width:1px;
@@ -50,9 +50,9 @@ flowchart TD
     Registry["InputSpecRegistry"]:::done --> Planner["GpuPreprocessPlanner"]:::done
     Planner --> Tasks["PreprocessTask(s)"]:::done
     Tasks --> KernelDispatch["run_letterbox_kernel / run_tiling_kernel"]:::done
-    KernelDispatch --> SaturationPolicy["PoolSaturationPolicy\n(BlockingSaturationPolicy)"]:::done
+    KernelDispatch --> SaturationPolicy["PoolSaturationPolicy<br/>(BlockingSaturationPolicy)"]:::done
     SaturationPolicy --> TensorPool["GpuTensorPool"]:::done
-    TensorPool --> Telemetry["FrameTelemetry\n(stage timings + pool metrics)"]:::done
+    TensorPool --> Telemetry["FrameTelemetry<br/>(stage timings + pool metrics)"]:::done
     Telemetry --> Payload["Result payload telemetry"]:::done
 
     classDef done fill:#b7e1cd,color:#000,stroke:#2e7d32,stroke-width:1px;
