@@ -1,104 +1,19 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Callable
-from dataclasses import dataclass
-from threading import Condition, Lock
-from time import monotonic
-from typing import Any, Protocol
+from threading import Condition
+from typing import Any
+
+from app_v2.infrastructure.gpu_tensor_pool.blocking_saturation_policy import BlockingSaturationPolicy
+from app_v2.infrastructure.gpu_tensor_pool.gpu_tensor_lease import GpuTensorLease
+from app_v2.infrastructure.gpu_tensor_pool.pool_saturation_policy import PoolSaturationPolicy
+from app_v2.infrastructure.gpu_tensor_pool.tensor_pool_key import TensorPoolKey
+from app_v2.infrastructure.gpu_tensor_pool.tensor_pool_stats import TensorPoolStats
 
 try:
     import torch
 except Exception:  # pragma: no cover
     torch = None  # type: ignore[assignment]
-
-
-@dataclass(frozen=True, slots=True)
-class TensorPoolKey:
-    shape: tuple[int, ...]
-    dtype: str
-    memory_format: str
-    stream: int
-    device: str
-
-
-@dataclass(frozen=True, slots=True)
-class TensorPoolStats:
-    hits: int
-    misses: int
-    allocations: int
-    in_use: int
-    available: int
-    waits: int
-    wait_ms: float
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "hits": self.hits,
-            "misses": self.misses,
-            "allocations": self.allocations,
-            "in_use": self.in_use,
-            "available": self.available,
-            "waits": self.waits,
-            "wait_ms": self.wait_ms,
-        }
-
-
-class PoolSaturationPolicy(Protocol):
-    """Defines how `GpuTensorPool` behaves when a key reaches capacity."""
-
-    def wait_for_availability(
-        self,
-        *,
-        cond: Condition,
-        timeout_s: float | None,
-        on_wait_sample: Callable[[float], None],
-    ) -> bool:
-        """Return True when caller should retry, False to abort acquisition."""
-
-
-class BlockingSaturationPolicy:
-    """Simple backpressure policy that blocks until a tensor becomes available."""
-
-    def wait_for_availability(
-        self,
-        *,
-        cond: Condition,
-        timeout_s: float | None,
-        on_wait_sample: Callable[[float], None],
-    ) -> bool:
-        started = monotonic()
-        cond.wait(timeout=timeout_s)
-        waited_ms = max(0.0, (monotonic() - started) * 1000.0)
-        on_wait_sample(waited_ms)
-        if timeout_s is not None and waited_ms >= timeout_s * 1000.0:
-            return False
-        return True
-
-
-class GpuTensorLease:
-    """Lease wrapper that returns tensors to the pool."""
-
-    def __init__(self, token: int, key: TensorPoolKey, tensor: Any, releaser: Callable[[int], bool]) -> None:
-        self._token = token
-        self.key = key
-        self.tensor = tensor
-        self._releaser = releaser
-        self._released = False
-        self._lock = Lock()
-
-    @property
-    def token(self) -> int:
-        return self._token
-
-    def release(self) -> bool:
-        with self._lock:
-            if self._released:
-                return False
-            released = self._releaser(self._token)
-            if released:
-                self._released = True
-            return released
 
 
 class GpuTensorPool:
@@ -131,15 +46,16 @@ class GpuTensorPool:
         *,
         shape: tuple[int, ...],
         dtype: Any,
-        memory_format: str,
+        memory_format: Any,
         stream: int,
         device: str = "cuda",
         timeout_s: float | None = None,
     ) -> GpuTensorLease:
+        normalized_memory_format = getattr(memory_format, "value", memory_format)
         key = TensorPoolKey(
             shape=tuple(int(v) for v in shape),
             dtype=str(dtype),
-            memory_format=memory_format,
+            memory_format=str(normalized_memory_format),
             stream=int(stream),
             device=str(device),
         )

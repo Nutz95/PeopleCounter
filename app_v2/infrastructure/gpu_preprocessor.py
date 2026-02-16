@@ -8,7 +8,7 @@ from app_v2.core.frame_telemetry import FrameTelemetry
 from app_v2.core.preprocessor_types import GpuTensor, PreprocessOutput
 from app_v2.core.preprocessor import Preprocessor
 from app_v2.infrastructure.gpu_tensor_pool import GpuTensorPool
-from app_v2.kernels.preprocess import run_letterbox_kernel, run_tiling_kernel
+from app_v2.kernels.preprocess import resolve_frame_source_tensor, run_letterbox_kernel, run_tiling_kernel
 
 
 class GpuPreprocessor(Preprocessor):
@@ -38,6 +38,7 @@ class GpuPreprocessor(Preprocessor):
         telemetry: FrameTelemetry | None = getattr(frame, "telemetry", None)
         if telemetry:
             telemetry.mark_stage_start("preprocess")
+        source_tensor = resolve_frame_source_tensor(frame)
         for spec in self._registry.all_specs():
             model_stage = f"preprocess_model_{spec.model_name}"
             if telemetry:
@@ -51,9 +52,9 @@ class GpuPreprocessor(Preprocessor):
                 if telemetry:
                     telemetry.mark_stage_start(kernel_stage)
                 tensor = (
-                    run_letterbox_kernel(frame, task, stream=stream_id, pool=self._pool)
+                    run_letterbox_kernel(frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor)
                     if spec.mode == "global"
-                    else run_tiling_kernel(frame, task, stream=stream_id, pool=self._pool)
+                    else run_tiling_kernel(frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor)
                 )
                 if telemetry:
                     telemetry.mark_stage_end(kernel_stage)

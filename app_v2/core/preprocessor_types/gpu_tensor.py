@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Callable
 from typing import Any
+
+from app_v2.core.preprocessor_types.tensor_memory_format import TensorMemoryFormat
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,7 +16,7 @@ class GpuTensor:
     height: int
     buffer_size: int
     device_ptr: int | None
-    memory_format: str = "RGB_NCHW_FP16"
+    memory_format: TensorMemoryFormat = TensorMemoryFormat.RGB_NCHW_FP16
     tensor_ref: Any | None = None
     lease_ref: Any | None = None
 

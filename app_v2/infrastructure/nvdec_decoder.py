@@ -176,12 +176,25 @@ class NvdecDecoder:
         if not callable(method):
             return None
         try:
-            return method(*args)
+            value = method(*args)
+            return self._normalize_surface_value(value)
         except TypeError:
             try:
-                return method()
+                value = method()
+                return self._normalize_surface_value(value)
             except Exception:
                 return None
+
+    @staticmethod
+    def _normalize_surface_value(value: Any) -> int | None:
+        if isinstance(value, int):
+            return value
+        gpu_mem = getattr(value, "GpuMem", None)
+        if callable(gpu_mem):
+            maybe_ptr = gpu_mem()
+            if isinstance(maybe_ptr, int):
+                return maybe_ptr
+        return None
 
     def _surface_timestamp(self, surface: Any) -> int:
         for attr in ("Pts", "PresentationTimeStamp", "TimeStamp", "PtsAbs"):

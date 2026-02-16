@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from app_v2.config.test_config import load_test_config
+from app_v2.core.preprocessor_types import TensorMemoryFormat
 from app_v2.infrastructure.gpu_preprocessor import GpuPreprocessor
 from app_v2.infrastructure.nvdec_decoder import NvdecDecodeConfig, NvdecDecoder
 
@@ -94,7 +95,7 @@ def test_nvdec_to_gpu_preprocess_global_and_tiles() -> None:
         assert telemetry_snapshot.get("frame_id") == float(1)
         assert len(output.model_inputs["yolo_global"]) == 1
         assert len(output.model_inputs["yolo_tiles"]) >= 1
-        assert output.model_inputs["yolo_global"][0].memory_format == "RGB_NCHW_FP16"
+        assert output.model_inputs["yolo_global"][0].memory_format == TensorMemoryFormat.RGB_NCHW_FP16
 
         flattened_global = output.flatten_inputs("yolo_global")
         flattened_tiles = output.flatten_inputs("yolo_tiles")
@@ -110,6 +111,7 @@ def test_nvdec_to_gpu_preprocess_global_and_tiles() -> None:
             releaser = getattr(tensor, "release", None)
             if callable(releaser):
                 releaser()
+        assert "preprocess_nv12_bridge_ms" in telemetry_snapshot
         assert "tensor_pool_hits" in telemetry_snapshot
         assert "tensor_pool_allocations" in telemetry_snapshot
 
