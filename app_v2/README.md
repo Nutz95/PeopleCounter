@@ -19,6 +19,7 @@ PeopleCounter v2 is a GPU-first rewrite that targets TensorRT-only inference wit
 
 - Architecture overview and progress diagrams: `app_v2/docs/README_ARCHI.md`
 - Detailed preprocess pipeline and metrics: `app_v2/docs/README_PREPROCESS.md`
+- Performance analysis (FPS, delay, overlay lag): `app_v2/docs/README_PERFORMANCE_ANALYSIS.md`
 
 ## Getting started
 
