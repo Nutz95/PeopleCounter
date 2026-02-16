@@ -22,12 +22,15 @@ class GpuPreprocessor(Preprocessor):
     ) -> None:
         self._registry = registry or InputSpecRegistry()
         self._planner = planner or GpuPreprocessPlanner()
+        self._pool_is_external = tensor_pool is not None
         self._pool = tensor_pool or GpuTensorPool()
         self._stream_by_model: dict[str, int] = {}
 
     def configure(self, metadata: dict[str, Any]) -> None:
         self._registry.configure(metadata)
         self._stream_by_model = self._build_stream_map(metadata)
+        if not self._pool_is_external:
+            self._pool = self._build_pool(metadata)
 
     def build_output(self, frame_id: int, frame: Any) -> PreprocessOutput:
         frame_width = int(getattr(frame, "width"))
@@ -88,3 +91,11 @@ class GpuPreprocessor(Preprocessor):
             else:
                 mapping[str(model_name)] = 0
         return mapping
+
+    @staticmethod
+    def _build_pool(metadata: dict[str, Any]) -> GpuTensorPool:
+        pool_config = metadata.get("tensor_pool", {})
+        if not isinstance(pool_config, dict):
+            return GpuTensorPool(max_per_key=64)
+        max_per_key = int(pool_config.get("max_per_key", 64))
+        return GpuTensorPool(max_per_key=max_per_key)

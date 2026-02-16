@@ -15,6 +15,11 @@ PeopleCounter v2 is a GPU-first rewrite that targets TensorRT-only inference wit
 - `config/log.yaml` controls the filtered logger channels (`GLOBAL`, `YOLO`, `DENSITY`, `NVDEC`). Toggle `NVDEC_DEBUG_LOGS` (or flip the `nvdec` flag in the same YAML) when you want to see decode diagnostics without overflowing the final console.
 - `plans/app_v2_migration_plan.md` tracks the remaining scaffolding and documentation updates so the rewrite stays in sync.
 
+## Documentation
+
+- Architecture overview and progress diagrams: `app_v2/docs/README_ARCHI.md`
+- Detailed preprocess pipeline and metrics: `app_v2/docs/README_PREPROCESS.md`
+
 ## Getting started
 
 1. Run `./1_prepare.sh` at the repo root to build and prepopulate the Docker image (`people-counter:gpu-final`).
@@ -29,5 +34,6 @@ PeopleCounter v2 is a GPU-first rewrite that targets TensorRT-only inference wit
 
 ### Debugging & testing
 
-- Set `NVDEC_TEST_STREAM_URL` (or edit `app_v2/config/test_config.yaml`) to your Windows bridge RTSP endpoint when you want to validate the real decoder; `pytest app_v2/tests/test_nvdec_decode.py` will consume that stream and assert on the GPU-resident NV12 surfaces.
+- Set `NVDEC_TEST_STREAM_URL` (or edit `app_v2/config/test_config.yaml`) to your Windows bridge RTSP endpoint when you want to validate the real decoder; `pytest app_v2/tests/integration/nvdec/test_nvdec_decode.py` will consume that stream and assert on the GPU-resident NV12 surfaces.
 - Use `plans/nvdec_performance_baseline.md` as the capture sheet for your first timing run so the early `PerformanceTracker` metrics and `nvidia-smi` snapshots can serve as a reference when TensorRT strips in the true prediction payloads.
+- Use `app_v2/tests/integration/pipeline/test_pipeline_metrics_integration.py` as the evolving integration baseline for end-to-end stage timings and tensor-pool metrics.

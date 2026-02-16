@@ -23,6 +23,9 @@ streams:
   yolo: 1
   density: 2
 
+tensor_pool:
+  max_per_key: 64
+
 preprocess:
   yolo_global:
     target_width: 640
