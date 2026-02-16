@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from app_v2.core.frame_telemetry import FrameTelemetry
 from app_v2.infrastructure.gpu_ring_buffer import GpuFrame, GpuPixelFormat, GpuRingBuffer
 from logger.filtered_logger import LogChannel, debug as log_debug, info as log_info, warning as log_warning
 
@@ -59,10 +60,13 @@ class NvdecDecoder:
             raise RuntimeError("NVDEC ring buffer acquire timed out")
 
         try:
+            telemetry = FrameTelemetry(frame_id=frame_id)
+            telemetry.mark_stage_start("nvdec")
             surface = self._decode_surface()
+            telemetry.mark_stage_end("nvdec")
             if surface is None:
                 raise RuntimeError("NVDEC decoder failed to produce a surface")
-            frame = self._surface_to_gpu_frame(surface, frame_id, timestamp_ns)
+            frame = self._surface_to_gpu_frame(surface, frame_id, timestamp_ns, telemetry)
             self._ring.commit(slot, frame)
             log_debug(LogChannel.NVDEC, f"Decoded frame {frame_id} into slot {slot}")
             return slot
@@ -145,7 +149,7 @@ class NvdecDecoder:
                 return False
         return False
 
-    def _surface_to_gpu_frame(self, surface: Any, frame_id: int, timestamp_ns: int | None) -> GpuFrame:
+    def _surface_to_gpu_frame(self, surface: Any, frame_id: int, timestamp_ns: int | None, telemetry: FrameTelemetry | None) -> GpuFrame:
         width = self._call_surface_method(surface, "Width") or self._width
         height = self._call_surface_method(surface, "Height") or self._height
         device_ptr_y = self._call_surface_method(surface, "PlanePtr", 0)
@@ -164,6 +168,7 @@ class NvdecDecoder:
             pitch=pitch,
             timestamp_ns=timestamp,
             frame_id=frame_id,
+            telemetry=telemetry,
         )
 
     def _call_surface_method(self, surface: Any, method_name: str, *args: Any) -> int | None:

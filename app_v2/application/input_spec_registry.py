@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app_v2.core.preprocess_types import InputSpec
+from app_v2.core.preprocessor_types import InputSpec
 
 
 class InputSpecRegistry:

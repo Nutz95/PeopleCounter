@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app_v2.application.gpu_preprocess_planner import GpuPreprocessPlanner
-from app_v2.core.preprocess_types import InputSpec
+from app_v2.core.preprocessor_types import InputSpec
 
 
 def test_gpu_preprocess_planner_global_plan() -> None:

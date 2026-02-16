@@ -6,6 +6,7 @@ from typing import Any
 
 from app_v2.core.fusion_strategy import FusionStrategy
 from app_v2.core.result_publisher import ResultPublisher
+from app_v2.core.frame_telemetry import FrameTelemetry
 from logger.filtered_logger import LogChannel, info as log_info
 
 
@@ -16,6 +17,7 @@ class ResultAggregator:
         self.fusion_strategy = fusion_strategy
         self.publisher = publisher
         self._buffers: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        self._telemetry: dict[int, FrameTelemetry] = {}
 
     def collect(self, frame_id: int, payload: dict[str, Any]) -> None:
         """Store partial payloads and publish when fusion strategy says so."""
@@ -24,9 +26,17 @@ class ResultAggregator:
         if self.fusion_strategy.should_publish(frame_id, [frame_id for _ in collected]):
             merged = self.fusion_strategy.merge(collected)
             payload = merged if isinstance(merged, Sequence) else [merged]
-            self.publisher.publish(frame_id, payload)
+            telemetry = self._telemetry.pop(frame_id, None)
+            payload_list = list(payload)
+            if telemetry:
+                payload_list.append({"telemetry": telemetry.snapshot()})
+            self.publisher.publish(frame_id, payload_list)
             log_info(
                 LogChannel.GLOBAL,
-                f"Published frame {frame_id} with {len(payload)} payloads via {self.fusion_strategy.strategy_type.value}",
+                f"Published frame {frame_id} with {len(payload_list)} payloads via {self.fusion_strategy.strategy_type.value}",
             )
             self._buffers.pop(frame_id, None)
+
+    def attach_telemetry(self, frame_id: int, telemetry: FrameTelemetry | None) -> None:
+        if telemetry:
+            self._telemetry[frame_id] = telemetry

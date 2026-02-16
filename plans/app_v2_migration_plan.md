@@ -27,6 +27,7 @@
 	- NVDEC decoding path produces GPU-native `GpuFrame` through `NvdecDecoder` and `GpuRingBuffer`.
 	- Preprocess component split introduced: `InputSpecRegistry`, `GpuPreprocessPlanner`, `GpuPreprocessor`, and `PreprocessOutput`.
 	- Default preprocess specs supported for `yolo_global` (single 640x640 letterbox) and `yolo_tiles` (640x640 tiling, overlap default `0.2`) now live in `config/pipeline.yaml` `preprocess` entries.
+	- Preprocess kernels live under `app_v2/kernels`, and `GpuPreprocessor` now calls them while telemetry captures GPU timings per frame.
 	- Backward compatibility preserved through `CudaPreprocessor` wrapper so `PipelineOrchestrator` keeps its existing flow.
 
 - 🟡 **Tested / In progress**

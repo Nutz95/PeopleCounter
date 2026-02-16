@@ -82,6 +82,9 @@ def test_nvdec_to_gpu_preprocess_global_and_tiles() -> None:
 
         assert "yolo_global" in output.plans
         assert "yolo_tiles" in output.plans
+        assert output.telemetry is not None
+        telemetry_snapshot = output.telemetry.snapshot()
+        assert telemetry_snapshot.get("frame_id") == float(1)
         assert len(output.model_inputs["yolo_global"]) == 1
         assert len(output.model_inputs["yolo_tiles"]) >= 1
 

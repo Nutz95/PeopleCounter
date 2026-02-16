@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from math import ceil
 
-from app_v2.core.preprocess_types import InputSpec, PreprocessPlan, PreprocessTask
+from app_v2.core.preprocessor_types import InputSpec, PreprocessPlan, PreprocessTask
 
 
 class GpuPreprocessPlanner:

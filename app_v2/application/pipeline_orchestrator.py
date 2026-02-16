@@ -56,7 +56,9 @@ class PipelineOrchestrator:
                 frame_id = self.scheduler.schedule(None)
                 with self.performance_tracker.stage(frame_id, "nvdec"):
                     frame = self.frame_source.next_frame(frame_id)
-                processed = self.preprocessor.process(frame_id, frame)
+                output = self.preprocessor.build_output(frame_id, frame)
+                self.aggregator.attach_telemetry(frame_id, output.telemetry)
+                processed = output.flatten_inputs()
                 for model in self._models:
                     with self.performance_tracker.stage(frame_id, model.name):
                         prediction = model.infer(frame_id, processed)
@@ -82,6 +84,8 @@ class PipelineOrchestrator:
         return self._frame_counter < self.max_frames
 
     def _start_publisher(self) -> None:
+        if not hasattr(self.publisher, "start"):
+            return
         try:
             self.publisher.start()
             log_info(LogChannel.GLOBAL, f"FlaskStreamServer started on {self.publisher.host}:{self.publisher.port}")

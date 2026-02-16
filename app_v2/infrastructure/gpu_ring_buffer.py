@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from threading import Condition
 from typing import Deque, Tuple
+from app_v2.core.frame_telemetry import FrameTelemetry
 
 
 class GpuPixelFormat(str, Enum):
@@ -35,6 +36,7 @@ class GpuFrame:
 
     timestamp_ns: int | None = None
     frame_id: int | None = None
+    telemetry: FrameTelemetry | None = None
 
     def is_nv12(self) -> bool:
         return self.pixel_format == GpuPixelFormat.NV12

@@ -39,7 +39,7 @@ docker_args=(
     -v "$PWD:/app"
     -w "/app"
 )
-PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-"-s -rs"}"
+PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-"-s -rs -W ignore:.*pynvml.*deprecated.*:FutureWarning"}"
 NVDEC_DEBUG_LOGS="${NVDEC_DEBUG_LOGS:-1}"
 NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-compute,utility,video}"
 docker_args+=(-e "PYTEST_ADDOPTS=$PYTEST_ADDOPTS")
