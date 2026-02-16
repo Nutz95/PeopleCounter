@@ -52,6 +52,13 @@ def _pipeline_like_config() -> dict[str, Any]:
 
 
 def test_nvdec_to_gpu_preprocess_global_and_tiles() -> None:
+    try:
+        import torch
+    except ModuleNotFoundError:
+        pytest.skip("PyTorch must be installed to exercise GPU preprocess integration")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required to exercise GPU preprocess integration")
+
     stream_url = _resolve_stream_url()
     if stream_url is None:
         pytest.skip("Set NVDEC_TEST_STREAM_URL to exercise NVDEC->preprocess integration")
@@ -87,6 +94,7 @@ def test_nvdec_to_gpu_preprocess_global_and_tiles() -> None:
         assert telemetry_snapshot.get("frame_id") == float(1)
         assert len(output.model_inputs["yolo_global"]) == 1
         assert len(output.model_inputs["yolo_tiles"]) >= 1
+        assert output.model_inputs["yolo_global"][0].memory_format == "RGB_NCHW_FP16"
 
         flattened_global = output.flatten_inputs("yolo_global")
         flattened_tiles = output.flatten_inputs("yolo_tiles")
@@ -94,9 +102,16 @@ def test_nvdec_to_gpu_preprocess_global_and_tiles() -> None:
         assert len(flattened_global) == 1
         assert len(flattened_tiles) >= 1
         assert len(flattened_all) == len(flattened_global) + len(flattened_tiles)
+        assert output.release_all() == len(flattened_all)
 
         compat_inputs = preprocessor.process(frame_id=1, frame=frame)
         assert len(compat_inputs) == len(flattened_all)
+        for tensor in compat_inputs:
+            releaser = getattr(tensor, "release", None)
+            if callable(releaser):
+                releaser()
+        assert "tensor_pool_hits" in telemetry_snapshot
+        assert "tensor_pool_allocations" in telemetry_snapshot
 
         decoder.ring.release(slot)
     finally:

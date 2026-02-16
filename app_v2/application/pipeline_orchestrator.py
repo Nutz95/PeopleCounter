@@ -58,8 +58,9 @@ class PipelineOrchestrator:
                     frame = self.frame_source.next_frame(frame_id)
                 output = self.preprocessor.build_output(frame_id, frame)
                 self.aggregator.attach_telemetry(frame_id, output.telemetry)
-                processed = output.flatten_inputs()
+                self.aggregator.attach_release_hook(frame_id, output.release_all)
                 for model in self._models:
+                    processed = output.flatten_inputs(model.name)
                     with self.performance_tracker.stage(frame_id, model.name):
                         prediction = model.infer(frame_id, processed)
                         self.processing_graph.register(model.name, {"frame_id": frame_id})

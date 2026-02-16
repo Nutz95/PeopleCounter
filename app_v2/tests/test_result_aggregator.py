@@ -32,3 +32,19 @@ def test_result_aggregator_appends_telemetry() -> None:
     assert publisher.published, "Aggregator should publish at least one payload"
     _, payload = publisher.published[0]
     assert any("telemetry" in entry for entry in payload)
+
+
+def test_result_aggregator_runs_release_hooks_on_publish() -> None:
+    frame_id = 11
+    publisher = DummyPublisher()
+    aggregator = ResultAggregator(SimpleFusionStrategy(), publisher)
+
+    released = {"count": 0}
+
+    def _release() -> None:
+        released["count"] += 1
+
+    aggregator.attach_release_hook(frame_id, _release)
+    aggregator.collect(frame_id, {"model": "yolo_global"})
+
+    assert released["count"] == 1

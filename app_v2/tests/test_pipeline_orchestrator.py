@@ -5,7 +5,9 @@ from collections.abc import Sequence
 from typing import Any
 
 from app_v2.application.pipeline_orchestrator import PipelineOrchestrator
+from app_v2.core.preprocessor_types import PreprocessOutput
 from app_v2.core.frame_source import FrameSource
+from app_v2.core.inference_model import InferenceModel
 from app_v2.core.result_publisher import ResultPublisher
 from app_v2.infrastructure.gpu_ring_buffer import GpuFrame, GpuPixelFormat
 
@@ -46,12 +48,73 @@ class DummyFrameSource(FrameSource):
         )
 
 
+class DummyPreprocessor:
+    def configure(self, metadata: dict[str, Any]) -> None:
+        del metadata
+
+    def build_output(self, frame_id: int, frame: Any) -> PreprocessOutput:
+        del frame
+        return PreprocessOutput(
+            frame_id=frame_id,
+            plans={},
+            model_inputs={
+                "yolo_global": ("g0",),
+                "yolo_tiles": ("t0", "t1"),
+            },
+        )
+
+
+class SpyModel(InferenceModel):
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._stream_id = 0
+        self.calls: list[list[Any]] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def stream_id(self) -> int:
+        return self._stream_id
+
+    def warm_up(self, batch_size: int) -> None:
+        del batch_size
+
+    def infer(self, frame_id: int, inputs: Sequence[Any]) -> dict[str, Any]:
+        del frame_id
+        captured = list(inputs)
+        self.calls.append(captured)
+        return {"model": self._name}
+
+    def close(self) -> None:
+        return
+
+
 def test_pipeline_orchestrator_runs_one_cycle() -> None:
     frame_source = DummyFrameSource(total_frames=1)
     publisher = DummyPublisher()
     orchestrator = PipelineOrchestrator(frame_source=frame_source, max_frames=1, publisher=publisher)
+    orchestrator.preprocessor = DummyPreprocessor()
+    orchestrator._models = [SpyModel("yolo_global")]
 
     orchestrator.run()
 
     assert frame_source.frames_consumed == 1
     assert publisher.published, "Pipeline should publish at least one payload"
+
+
+def test_pipeline_orchestrator_routes_inputs_by_model_name() -> None:
+    frame_source = DummyFrameSource(total_frames=1)
+    publisher = DummyPublisher()
+    orchestrator = PipelineOrchestrator(frame_source=frame_source, max_frames=1, publisher=publisher)
+    orchestrator.preprocessor = DummyPreprocessor()
+
+    global_model = SpyModel("yolo_global")
+    tiles_model = SpyModel("yolo_tiles")
+    orchestrator._models = [global_model, tiles_model]
+
+    orchestrator.run()
+
+    assert global_model.calls == [["g0"]]
+    assert tiles_model.calls == [["t0", "t1"]]

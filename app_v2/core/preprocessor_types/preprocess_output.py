@@ -25,3 +25,12 @@ class PreprocessOutput:
         for key in sorted(self.model_inputs.keys()):
             flattened.extend(self.model_inputs[key])
         return flattened
+
+    def release_all(self) -> int:
+        """Release all pooled tensor leases associated with this output."""
+        released = 0
+        for tensor in self.flatten_inputs():
+            releaser = getattr(tensor, "release", None)
+            if callable(releaser) and releaser():
+                released += 1
+        return released

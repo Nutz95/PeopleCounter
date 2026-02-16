@@ -18,6 +18,7 @@ class ResultAggregator:
         self.publisher = publisher
         self._buffers: dict[int, list[dict[str, Any]]] = defaultdict(list)
         self._telemetry: dict[int, FrameTelemetry] = {}
+        self._release_hooks: dict[int, list[Any]] = defaultdict(list)
 
     def collect(self, frame_id: int, payload: dict[str, Any]) -> None:
         """Store partial payloads and publish when fusion strategy says so."""
@@ -31,6 +32,7 @@ class ResultAggregator:
             if telemetry:
                 payload_list.append({"telemetry": telemetry.snapshot()})
             self.publisher.publish(frame_id, payload_list)
+            self._run_release_hooks(frame_id)
             log_info(
                 LogChannel.GLOBAL,
                 f"Published frame {frame_id} with {len(payload_list)} payloads via {self.fusion_strategy.strategy_type.value}",
@@ -40,3 +42,12 @@ class ResultAggregator:
     def attach_telemetry(self, frame_id: int, telemetry: FrameTelemetry | None) -> None:
         if telemetry:
             self._telemetry[frame_id] = telemetry
+
+    def attach_release_hook(self, frame_id: int, hook: Any) -> None:
+        if callable(hook):
+            self._release_hooks[frame_id].append(hook)
+
+    def _run_release_hooks(self, frame_id: int) -> None:
+        hooks = self._release_hooks.pop(frame_id, [])
+        for hook in hooks:
+            hook()
