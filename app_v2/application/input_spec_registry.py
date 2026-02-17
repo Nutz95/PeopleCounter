@@ -21,16 +21,19 @@ class InputSpecRegistry:
     def configure(self, metadata: dict[str, Any]) -> None:
         models = metadata.get("models", {})
         preprocess_cfg = metadata.get("preprocess")
+        preprocess_branches = metadata.get("preprocess_branches", {})
         if preprocess_cfg is None:
             raise ValueError("preprocess configuration is required")
         if not isinstance(preprocess_cfg, dict):
             raise ValueError("preprocess entries must be a mapping")
+        if preprocess_branches is not None and not isinstance(preprocess_branches, dict):
+            raise ValueError("preprocess_branches must be a mapping when provided")
 
         self._specs = {}
         for model_name, spec_cfg in preprocess_cfg.items():
             self._validate_entry(model_name, spec_cfg)
             spec = self._build_spec(model_name, spec_cfg)
-            if self._is_enabled(models, model_name):
+            if self._is_enabled(models, model_name) and self._is_branch_enabled(preprocess_branches, model_name):
                 self._specs[model_name] = spec
 
     def all_specs(self) -> tuple[InputSpec, ...]:
@@ -44,6 +47,23 @@ class InputSpecRegistry:
         if not isinstance(model_cfg, dict):
             return False
         return bool(model_cfg.get("enabled", False))
+
+    def _is_branch_enabled(self, preprocess_branches: dict[str, Any], model_name: str) -> bool:
+        branch_key = self._branch_key(model_name)
+        if branch_key is None:
+            return True
+        return bool(preprocess_branches.get(branch_key, True))
+
+    @staticmethod
+    def _branch_key(model_name: str) -> str | None:
+        normalized = str(model_name)
+        if normalized == "yolo_global":
+            return "yolo_global_preprocess"
+        if normalized.startswith("yolo_tiles"):
+            return "yolo_tiles_preprocess"
+        if normalized.startswith("density") or normalized.startswith("lwcc"):
+            return "density_preprocess"
+        return None
 
     def _validate_entry(self, model_name: str, spec_cfg: Any) -> None:
         if not isinstance(spec_cfg, dict):

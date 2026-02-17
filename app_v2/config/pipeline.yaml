@@ -21,7 +21,15 @@ density:
 streams:
   transfer: 0
   yolo: 1
+  yolo_global_preprocess: 3
+  yolo_tiles_preprocess: 4
   density: 2
+  density_preprocess: 5
+
+preprocess_branches:
+  yolo_global_preprocess: true
+  yolo_tiles_preprocess: true
+  density_preprocess: true
 
 tensor_pool:
   max_per_key: 64

@@ -31,9 +31,22 @@ def _resolve_stream_url() -> str | None:
 
 def _pipeline_like_config() -> dict[str, Any]:
     return {
+        "fusion_strategy": "ASYNC_OVERLAY",
         "models": {
             "yolo_global": {"enabled": True},
             "yolo_tiles": {"enabled": True},
+        },
+        "streams": {
+            "yolo": 1,
+            "density": 2,
+            "yolo_global_preprocess": 3,
+            "yolo_tiles_preprocess": 4,
+            "density_preprocess": 5,
+        },
+        "preprocess_branches": {
+            "yolo_global_preprocess": True,
+            "yolo_tiles_preprocess": True,
+            "density_preprocess": True,
         },
         "preprocess": {
             "yolo_global": {
@@ -112,6 +125,9 @@ def test_nvdec_to_gpu_preprocess_global_and_tiles() -> None:
             if callable(releaser):
                 releaser()
         assert "preprocess_nv12_bridge_ms" in telemetry_snapshot
+        assert "preprocess_model_sum_ms" in telemetry_snapshot
+        assert "preprocess_model_max_ms" in telemetry_snapshot
+        assert "preprocess_critical_path_ms" in telemetry_snapshot
         assert "tensor_pool_hits" in telemetry_snapshot
         assert "tensor_pool_allocations" in telemetry_snapshot
 

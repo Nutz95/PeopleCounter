@@ -113,5 +113,22 @@ gantt
 - `preprocess_ms`
 - `preprocess_model_yolo_global_ms`
 - `preprocess_model_yolo_tiles_ms`
+- `preprocess_model_sum_ms`
+- `preprocess_model_max_ms`
+- `preprocess_critical_path_ms`
+- `preprocess_serial_overhead_ms`
+- `preprocess_parallel_efficiency`
+- `preprocess_stream_model_yolo_global`
+- `preprocess_stream_model_yolo_tiles`
 - `tensor_pool_wait_ms`
 - (à ajouter ensuite) `inference_*_ms`, `publish_ms`, `fusion_wait_ms`
+
+## 9) Interprétation rapide des nouvelles métriques preprocess
+
+- `preprocess_model_sum_ms`: somme des branches preprocess modèle.
+- `preprocess_model_max_ms`: branche dominante (borne basse du chemin critique preprocess modèle).
+- `preprocess_critical_path_ms`: approximation du chemin critique preprocess (`bridge + max(modèles)`).
+- `preprocess_serial_overhead_ms`: coût résiduel (synchronisations/overhead CPU) = `preprocess_ms - preprocess_critical_path_ms`.
+- `preprocess_parallel_efficiency`: ratio `sum/max`; plus il grimpe, plus le risque de sérialisation cachée augmente.
+
+Les clés `preprocess_stream_model_*` permettent de vérifier que les branches sont bien routées sur des streams logiques distincts.

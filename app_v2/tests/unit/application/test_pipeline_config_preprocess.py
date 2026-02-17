@@ -6,6 +6,17 @@ from app_v2.config import load_pipeline_config
 
 def test_pipeline_preprocess_configuration_is_valid() -> None:
     config = load_pipeline_config()
+    streams = config.get("streams")
+    assert isinstance(streams, dict) and streams, "streams block must exist in pipeline config"
+    for key in ("yolo_global_preprocess", "yolo_tiles_preprocess", "density_preprocess"):
+        assert key in streams, f"streams.{key} must be configured"
+
+    preprocess_branches = config.get("preprocess_branches")
+    assert isinstance(preprocess_branches, dict), "preprocess_branches block must exist in pipeline config"
+    for key in ("yolo_global_preprocess", "yolo_tiles_preprocess", "density_preprocess"):
+        assert key in preprocess_branches, f"preprocess_branches.{key} must be configured"
+        assert isinstance(preprocess_branches[key], bool), f"preprocess_branches.{key} must be boolean"
+
     tensor_pool = config.get("tensor_pool")
     assert isinstance(tensor_pool, dict), "tensor_pool block must exist in pipeline config"
     assert int(tensor_pool.get("max_per_key", 0)) > 0, "tensor_pool.max_per_key must be > 0"

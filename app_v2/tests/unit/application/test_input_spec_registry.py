@@ -65,3 +65,55 @@ def test_input_spec_registry_needs_preprocess_block() -> None:
     registry = InputSpecRegistry()
     with pytest.raises(ValueError, match="preprocess configuration is required"):
         registry.configure(metadata)
+
+
+def test_input_spec_registry_honors_preprocess_branch_toggles() -> None:
+    metadata: dict[str, Any] = {
+        "models": {
+            "yolo_global": {"enabled": True},
+            "yolo_tiles": {"enabled": True},
+        },
+        "preprocess_branches": {
+            "yolo_global_preprocess": True,
+            "yolo_tiles_preprocess": False,
+        },
+        "preprocess": {
+            "yolo_global": {
+                "target_width": 640,
+                "target_height": 640,
+                "mode": "global",
+                "overlap": 0.0,
+            },
+            "yolo_tiles": {
+                "target_width": 640,
+                "target_height": 640,
+                "mode": "tiles",
+                "overlap": 0.2,
+            },
+        },
+    }
+
+    registry = InputSpecRegistry()
+    registry.configure(metadata)
+
+    assert registry.by_model("yolo_global") is not None
+    assert registry.by_model("yolo_tiles") is None
+
+
+def test_input_spec_registry_rejects_invalid_preprocess_branches_type() -> None:
+    metadata: dict[str, Any] = {
+        "models": {"yolo_global": {"enabled": True}},
+        "preprocess_branches": ["not", "a", "mapping"],
+        "preprocess": {
+            "yolo_global": {
+                "target_width": 640,
+                "target_height": 640,
+                "mode": "global",
+                "overlap": 0.0,
+            }
+        },
+    }
+
+    registry = InputSpecRegistry()
+    with pytest.raises(ValueError, match="preprocess_branches must be a mapping"):
+        registry.configure(metadata)

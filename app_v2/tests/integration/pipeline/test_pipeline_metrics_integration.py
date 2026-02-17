@@ -30,6 +30,7 @@ def _resolve_stream_url() -> str | None:
 
 def _pipeline_like_config() -> dict[str, Any]:
     return {
+        "fusion_strategy": "ASYNC_OVERLAY",
         "models": {
             "yolo_global": {"enabled": True},
             "yolo_tiles": {"enabled": True},
@@ -38,6 +39,14 @@ def _pipeline_like_config() -> dict[str, Any]:
             "transfer": 0,
             "yolo": 1,
             "density": 2,
+            "yolo_global_preprocess": 3,
+            "yolo_tiles_preprocess": 4,
+            "density_preprocess": 5,
+        },
+        "preprocess_branches": {
+            "yolo_global_preprocess": True,
+            "yolo_tiles_preprocess": True,
+            "density_preprocess": True,
         },
         "tensor_pool": {
             "max_per_key": 64,
@@ -99,6 +108,10 @@ def test_pipeline_metrics_snapshot_includes_stage_timings_and_pool_stats() -> No
             "preprocess_nv12_bridge_ms",
             "preprocess_model_yolo_global_ms",
             "preprocess_model_yolo_tiles_ms",
+            "preprocess_model_sum_ms",
+            "preprocess_model_max_ms",
+            "preprocess_critical_path_ms",
+            "preprocess_serial_overhead_ms",
             "tensor_pool_allocations",
             "tensor_pool_in_use",
             "tensor_pool_wait_ms",
@@ -110,9 +123,15 @@ def test_pipeline_metrics_snapshot_includes_stage_timings_and_pool_stats() -> No
             if key.endswith("_ms"):
                 assert float(value) >= 0.0, f"Telemetry timing must be >= 0 for {key}"
 
-        budget_report = evaluate_perf_budget(snapshot)
+        assert "preprocess_stream_model_yolo_global" in snapshot
+        assert "preprocess_stream_model_yolo_tiles" in snapshot
+        assert snapshot["preprocess_model_max_ms"] <= snapshot["preprocess_model_sum_ms"]
+        assert snapshot["preprocess_critical_path_ms"] <= snapshot["preprocess_ms"]
+
+        budget_report = evaluate_perf_budget(snapshot, fusion_strategy=_pipeline_like_config().get("fusion_strategy"))
         if budget_report.mode != "off":
             print("perf_budget_checked:", budget_report.checked)
+            print("perf_budget_summary:", budget_report.summary)
             if budget_report.violations:
                 print("perf_budget_violations:", budget_report.violations)
             if budget_report.should_fail:
