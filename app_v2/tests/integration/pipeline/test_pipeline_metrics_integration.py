@@ -159,7 +159,7 @@ def test_pipeline_metrics_snapshot_includes_stage_timings_and_pool_stats() -> No
             print("perf_budget_checked:", budget_report.checked)
             print("perf_budget_summary:", budget_report.summary)
             print("perf_budget_table:\n" + render_perf_budget_table(budget_report))
-            report_file = write_perf_budget_html_report(budget_report)
+            report_file = write_perf_budget_html_report(budget_report, report_name="pipeline_preprocess_metrics")
             print("perf_budget_html_report:", str(report_file))
             if budget_report.violations:
                 print("perf_budget_violations:", budget_report.violations)
@@ -207,17 +207,21 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
             pytest.skip(f"NVDEC frame source unavailable: {exc}")
         raise
 
-    orchestrator = PipelineOrchestrator(frame_source=source, max_frames=1, publisher=publisher)
+    orchestrator = PipelineOrchestrator(frame_source=source, max_frames=3, publisher=publisher)
     orchestrator.run()
 
     assert publisher.published, "Pipeline should publish at least one payload"
 
     telemetry_snapshot: dict[str, Any] | None = None
+    telemetry_frame_id: int = -1
     yolo_payloads: list[dict[str, Any]] = []
     for _, payload in publisher.published:
         for item in payload:
             if "telemetry" in item and isinstance(item["telemetry"], dict):
-                telemetry_snapshot = item["telemetry"]
+                current_frame = int(float(item["telemetry"].get("frame_id", -1)))
+                if current_frame >= telemetry_frame_id:
+                    telemetry_snapshot = item["telemetry"]
+                    telemetry_frame_id = current_frame
             if item.get("model") in {"yolo_global", "yolo_tiles"}:
                 yolo_payloads.append(item)
 
@@ -232,12 +236,12 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
         assert key in telemetry_snapshot, f"Missing e2e telemetry key: {key}"
 
     assert yolo_payloads, "Expected at least one YOLO payload"
-    assert any("yolo_inference_ms" in item for item in yolo_payloads), "Expected yolo_inference_ms in YOLO payload"
+    assert any("inference_ms" in item for item in yolo_payloads), "Expected inference_ms in YOLO payload"
 
     budget_report = evaluate_perf_budget(telemetry_snapshot, fusion_strategy=orchestrator.config.get("fusion_strategy"))
     if budget_report.mode != "off":
         print("e2e_perf_budget_checked:", budget_report.checked)
         print("e2e_perf_budget_summary:", budget_report.summary)
         print("e2e_perf_budget_table:\n" + render_perf_budget_table(budget_report))
-        report_file = write_perf_budget_html_report(budget_report)
+        report_file = write_perf_budget_html_report(budget_report, report_name="pipeline_e2e_metrics")
         print("e2e_perf_budget_html_report:", str(report_file))

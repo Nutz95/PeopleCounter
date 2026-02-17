@@ -107,7 +107,7 @@ class ResultAggregator:
         per_model: dict[str, float] = {}
         values: list[float] = []
         for item in payload:
-            metric_value = item.get("yolo_inference_ms", item.get("inference_ms"))
+            metric_value = item.get("inference_ms")
             if not isinstance(metric_value, (int, float)):
                 continue
             value = float(metric_value)

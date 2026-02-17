@@ -268,10 +268,15 @@ def render_perf_budget_html(report: PerfBudgetReport) -> str:
 """
 
 
-def write_perf_budget_html_report(report: PerfBudgetReport, output_dir: Path | None = None) -> Path:
+def write_perf_budget_html_report(
+    report: PerfBudgetReport,
+    output_dir: Path | None = None,
+    report_name: str = "perf_budget_report",
+) -> Path:
     target_dir = output_dir or (Path(__file__).resolve().parent / "artifacts")
     target_dir.mkdir(parents=True, exist_ok=True)
-    output_file = target_dir / "perf_budget_report.html"
+    safe_name = report_name.strip().replace(" ", "_") or "perf_budget_report"
+    output_file = target_dir / f"{safe_name}.html"
     output_file.write_text(render_perf_budget_html(report), encoding="utf-8")
     return output_file
 

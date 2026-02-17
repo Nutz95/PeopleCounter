@@ -55,7 +55,7 @@ class YoloTilingTRT(InferenceModel):
                 "person_class_id": int(self._inference_params.get("person_class_id", 0)),
                 "class_whitelist": list(self._inference_params.get("class_whitelist", [0])),
                 "tile_count": len(inputs),
-                "yolo_inference_ms": float(infer_ms),
+                "inference_ms": float(infer_ms),
             }
         finally:
             self._context.release_stream(stream_key)
