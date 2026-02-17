@@ -234,7 +234,7 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
 
     orchestrator = PipelineOrchestrator(
         frame_source=source,
-        max_frames=3,
+        max_frames=8,
         publisher=publisher,
         fusion_strategy=PublishAfterThree(),
     )
@@ -282,7 +282,7 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
     telemetry_snapshot["inference_model_sum_ms"] = sum(by_model.values())
     telemetry_snapshot["inference_model_max_ms"] = max(by_model.values()) if by_model else 0.0
 
-    warmup_frames = 1
+    warmup_frames = 5
     history_metrics = [
         "nvdec_ms",
         "preprocess_ms",

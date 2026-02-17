@@ -40,3 +40,51 @@
 	- Model-specific routing in orchestrator/preprocess handoff to avoid passing unrelated flattened inputs to each model.
 	- End-to-end validation with real TensorRT model outputs and fusion impact under sustained throughput.
 
+## Update — 2026-02-17 (E2E perf checkpoint)
+
+### What is validated now
+
+- Full app_v2 suite is green in Docker (`42 passed`) using `./5_run_tests.sh --app-version v2`.
+- E2E report generation now includes:
+  - preprocess decomposition,
+  - YOLO global vs YOLO tiles inference comparison,
+  - multi-frame statistics (avg, p50, p90, max, N),
+  - stage histograms.
+- E2E integration test warmup is now configured to skip the first **5 frames** before computing history stats.
+
+### Current bottleneck summary
+
+- Decode and preprocess are now mostly within expected envelopes.
+- Main latency pressure is in:
+  - `inference_model_yolo_global_ms`,
+  - `inference_model_yolo_tiles_ms`,
+  - `fusion_wait_ms` / `overlay_lag_ms`,
+  - and therefore `end_to_end_ms`.
+
+### Action plan (next iterations)
+
+1. **Per-model TRT profiling pass (short-term)**
+	- Capture TensorRT execution timeline for YOLO global and YOLO tiles independently.
+	- Record effective input shapes, optimization profile selection, and enqueue/execute timings.
+	- Verify no hidden synchronization points around stream boundaries.
+
+2. **YOLO tiles strategy optimization**
+	- Add configurable tiles downsampling/stride policy and compare accuracy/perf tradeoff.
+	- Evaluate reduced tile count and/or adaptive tile selection from motion/ROI heuristics.
+	- Keep current strict shape guard enabled.
+
+3. **Fusion backpressure reduction**
+	- Instrument queue depths and waiting reasons at fusion boundaries.
+	- Confirm publish cadence and ensure no avoidable blocking on late branches.
+	- Evaluate strategy-specific timeout/partial-publish policy in controlled benchmark mode.
+
+4. **Engine-level optimization track**
+	- Rebuild YOLO engines with verified precision/profile settings for 640x640 throughput.
+	- Compare baseline across at least two calibrated TensorRT builds and retain best config.
+	- Document reproducible build flags and expected perf envelope.
+
+5. **Architecture hardening for sustained throughput**
+	- Finalize model-specific preprocess routing end-to-end (no irrelevant tensors per model).
+	- Expand perf regression checks to include p90/p95 thresholds over steady-state windows.
+	- Keep reports split by scenario (`preprocess` vs `e2e`) for clean diagnostics.
+
