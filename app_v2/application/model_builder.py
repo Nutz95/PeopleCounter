@@ -10,6 +10,7 @@ from app_v2.infrastructure.tensorrt_engine_loader import TensorRTEngineLoader
 from app_v2.infrastructure.tensorrt_execution_context import TensorRTExecutionContext
 from app_v2.infrastructure.yolo_global_trt import YoloGlobalTRT
 from app_v2.infrastructure.yolo_tiling_trt import YoloTilingTRT
+from app_v2.infrastructure.yolo_tiling_parallel_trt import YoloTilingParallelTRT
 from app_v2.infrastructure.stream_pool import SimpleStreamPool
 from logger.filtered_logger import LogChannel, warning as log_warning
 
@@ -42,6 +43,11 @@ class ModelBuilder:
         trt_options = self._config.get("trt_execution", {})
         if not isinstance(trt_options, dict):
             trt_options = {}
+        
+        parallel_tiles_config = self._config.get("yolo_tiles_parallel", {})
+        parallel_tiles_enabled = bool(parallel_tiles_config.get("enabled", False))
+        parallel_tiles_groups = int(parallel_tiles_config.get("groups", 2))
+        
         for model_name in self._controller.enabled_models():
             engine_path = self._controller.get_engine_path(model_name)
             if engine_path is None:
@@ -53,13 +59,31 @@ class ModelBuilder:
                 continue
             model_cls, stream_key = registry_entry
             stream_id = stream_ids.get(stream_key, 0)
-            loader = TensorRTEngineLoader(engine_path, profiles={})
-            context = TensorRTExecutionContext(loader, self._stream_pool, options=trt_options)
-            if model_name.startswith("yolo"):
+            
+            # Special handling for yolo_tiles with parallel split enabled
+            if model_name == "yolo_tiles" and parallel_tiles_enabled:
+                contexts = []
+                for group_idx in range(parallel_tiles_groups):
+                    loader = TensorRTEngineLoader(engine_path, profiles={})
+                    context = TensorRTExecutionContext(loader, self._stream_pool, options=trt_options)
+                    contexts.append(context)
                 params = self._resolve_model_inference_params(model_name)
-                models.append(model_cls(context, stream_id, inference_params=params))
+                models.append(
+                    YoloTilingParallelTRT(
+                        contexts=contexts,
+                        stream_id=stream_id,
+                        groups=parallel_tiles_groups,
+                        inference_params=params,
+                    )
+                )
             else:
-                models.append(model_cls(context, stream_id))
+                loader = TensorRTEngineLoader(engine_path, profiles={})
+                context = TensorRTExecutionContext(loader, self._stream_pool, options=trt_options)
+                if model_name.startswith("yolo"):
+                    params = self._resolve_model_inference_params(model_name)
+                    models.append(model_cls(context, stream_id, inference_params=params))
+                else:
+                    models.append(model_cls(context, stream_id))
         return models
 
     def _resolve_model_inference_params(self, model_name: str) -> dict[str, Any]:

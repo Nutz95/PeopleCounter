@@ -98,12 +98,28 @@ docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
 - PyTorch exports target Opset 18 so that Ultralytics stays compatible with TensorRT conversion and the automatic converter doesn’t downgrade the model.
 - OpenVINO IR artifacts are stored under `models/openvino/`; the conversion pipeline has moved to `convert_pth_to_openvino.py` in case you want to re-export from different backends.
 
+## Performance Optimization
+
+- **[PERFORMANCE_OPTIMIZATION.md](PERFORMANCE_OPTIMIZATION.md)** : Complete guide for YOLO inference optimization in app_v2 including:
+  - INT8 quantization workflow (2-4× speedup expected)
+  - Parallel tile splitting analysis (30% gain with 2 groups, scaling limitations explained)
+  - Detailed profiling metrics and calibration instructions
+  - Step-by-step optimization strategy
+
+**Current baseline (yolo26n-seg FP16)**:
+- `yolo_global`: ~6.3ms ✅
+- `yolo_tiles`: ~33ms 🔴 (target: ≤10ms)
+- With split x2: ~23ms 🟡 (30% gain)
+
+**Recommended path**: INT8 quantization first (use `./3b_prepare_int8_engines.sh`), then consider parallel split if needed.
+
 ## See also
 
 - [README_DOCKER.md](README_DOCKER.md) : Docker build, runtime, and profiling documentation (includes the latest architecture diagrams for the containerized pipeline).
 - [app_v2/README.md](app_v2/README.md) : Clean architecture overview for the v2 orchestrator.
 - [README_ARCHITECTURE.md](README_ARCHITECTURE.md) : In-depth architecture, masking/metrics/tiling flows, mermaid diagrams, and `.env` reference for the legacy stack.
 - [plans/app_v2_migration_plan.md](plans/app_v2_migration_plan.md) : Tracks the remaining v2 scaffolding, configs, and docs updates so the clean rewrite stays on schedule.
+- [plans/tiling_adaptatif_analysis.md](plans/tiling_adaptatif_analysis.md) : Deep analysis of adaptive tiling approach (cost/benefit, risks, why it's not recommended for this use-case).
 - [windows/setup_and_run.bat](windows/setup_and_run.bat) : Windows helper to spin up the camera bridge that exports the MJPEG stream consumed by WSL.
 
 The main README remains the entry point: it should invite contributors to try the project, link to the Docker guide for profiles, the architecture doc for the deep dive, and reference the plans that must be kept synchronized.

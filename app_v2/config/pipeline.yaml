@@ -15,6 +15,10 @@ trt_execution:
   enabled: true
   strict_shape_check: true
 
+yolo_tiles_parallel:
+  enabled: false
+  groups: 2
+
 inference_streams:
   yolo: true
   density: true

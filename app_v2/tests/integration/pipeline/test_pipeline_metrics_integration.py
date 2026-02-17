@@ -246,6 +246,7 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
     telemetry_frame_id: int = -1
     telemetry_by_frame: dict[int, dict[str, Any]] = {}
     inference_by_frame: dict[int, dict[str, float]] = defaultdict(dict)
+    inference_breakdown_by_frame: dict[int, dict[str, dict[str, float]]] = defaultdict(lambda: defaultdict(dict))
     yolo_payloads: list[dict[str, Any]] = []
     for published_frame_id, payload in publisher.published:
         for item in payload:
@@ -262,6 +263,11 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
                 if isinstance(model_name, str) and isinstance(infer_ms, (int, float)):
                     per_frame = inference_by_frame[published_frame_id]
                     per_frame[model_name] = max(per_frame.get(model_name, 0.0), float(infer_ms))
+                    breakdown = inference_breakdown_by_frame[published_frame_id][model_name]
+                    breakdown["prepare_batch_ms"] = float(item.get("prepare_batch_ms", 0.0))
+                    breakdown["enqueue_ms"] = float(item.get("enqueue_ms", 0.0))
+                    breakdown["stream_sync_ms"] = float(item.get("stream_sync_ms", 0.0))
+                    breakdown["decode_ms"] = float(item.get("decode_ms", 0.0))
 
     assert telemetry_snapshot is not None, "Expected telemetry in published payload"
     for key in [
@@ -304,6 +310,14 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
         "inference_model_max_ms",
         "inference_model_yolo_global_ms",
         "inference_model_yolo_tiles_ms",
+        "inference_prepare_batch_yolo_global_ms",
+        "inference_prepare_batch_yolo_tiles_ms",
+        "inference_enqueue_yolo_global_ms",
+        "inference_enqueue_yolo_tiles_ms",
+        "inference_stream_sync_yolo_global_ms",
+        "inference_stream_sync_yolo_tiles_ms",
+        "inference_decode_yolo_global_ms",
+        "inference_decode_yolo_tiles_ms",
         "end_to_end_ms",
     ]
     history: dict[str, list[float]] = defaultdict(list)
@@ -316,6 +330,19 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
         sample["inference_model_yolo_tiles_ms"] = float(model_values.get("yolo_tiles", 0.0))
         sample["inference_model_sum_ms"] = float(sample["inference_model_yolo_global_ms"]) + float(sample["inference_model_yolo_tiles_ms"])
         sample["inference_model_max_ms"] = max(float(sample["inference_model_yolo_global_ms"]), float(sample["inference_model_yolo_tiles_ms"]))
+        
+        breakdown = inference_breakdown_by_frame.get(frame_id, {})
+        if "yolo_global" in breakdown:
+            sample["inference_prepare_batch_yolo_global_ms"] = breakdown["yolo_global"].get("prepare_batch_ms", 0.0)
+            sample["inference_enqueue_yolo_global_ms"] = breakdown["yolo_global"].get("enqueue_ms", 0.0)
+            sample["inference_stream_sync_yolo_global_ms"] = breakdown["yolo_global"].get("stream_sync_ms", 0.0)
+            sample["inference_decode_yolo_global_ms"] = breakdown["yolo_global"].get("decode_ms", 0.0)
+        if "yolo_tiles" in breakdown:
+            sample["inference_prepare_batch_yolo_tiles_ms"] = breakdown["yolo_tiles"].get("prepare_batch_ms", 0.0)
+            sample["inference_enqueue_yolo_tiles_ms"] = breakdown["yolo_tiles"].get("enqueue_ms", 0.0)
+            sample["inference_stream_sync_yolo_tiles_ms"] = breakdown["yolo_tiles"].get("stream_sync_ms", 0.0)
+            sample["inference_decode_yolo_tiles_ms"] = breakdown["yolo_tiles"].get("decode_ms", 0.0)
+        
         for key in history_metrics:
             value = sample.get(key)
             if isinstance(value, (int, float)):

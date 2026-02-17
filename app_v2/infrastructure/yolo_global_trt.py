@@ -43,7 +43,9 @@ class YoloGlobalTRT(InferenceModel):
                     "params": dict(self._inference_params),
                 }
             )
+            decode_start_ns = time.perf_counter_ns()
             decoded = self._decoder.process(frame_id, raw_outputs)
+            decode_ms = (time.perf_counter_ns() - decode_start_ns) / 1_000_000.0
             infer_ms = (time.perf_counter_ns() - start_ns) / 1_000_000.0
             return {
                 "frame_id": frame_id,
@@ -56,6 +58,10 @@ class YoloGlobalTRT(InferenceModel):
                 "class_whitelist": list(self._inference_params.get("class_whitelist", [0])),
                 "input_count": len(inputs),
                 "inference_ms": float(infer_ms),
+                "prepare_batch_ms": float(raw_outputs.get("prepare_batch_ms", 0.0)),
+                "enqueue_ms": float(raw_outputs.get("enqueue_ms", 0.0)),
+                "stream_sync_ms": float(raw_outputs.get("stream_sync_ms", 0.0)),
+                "decode_ms": float(decode_ms),
             }
         finally:
             self._context.release_stream(stream_key)
