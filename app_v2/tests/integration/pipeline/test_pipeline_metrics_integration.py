@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import time
+from collections import defaultdict
 from typing import Any
 
 import pytest
@@ -243,11 +244,13 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
 
     telemetry_snapshot: dict[str, Any] | None = None
     telemetry_frame_id: int = -1
+    telemetry_by_frame: dict[int, dict[str, Any]] = {}
     yolo_payloads: list[dict[str, Any]] = []
     for _, payload in publisher.published:
         for item in payload:
             if "telemetry" in item and isinstance(item["telemetry"], dict):
                 current_frame = int(float(item["telemetry"].get("frame_id", -1)))
+                telemetry_by_frame[current_frame] = dict(item["telemetry"])
                 if current_frame >= telemetry_frame_id:
                     telemetry_snapshot = item["telemetry"]
                     telemetry_frame_id = current_frame
@@ -279,12 +282,43 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
     telemetry_snapshot["inference_model_sum_ms"] = sum(by_model.values())
     telemetry_snapshot["inference_model_max_ms"] = max(by_model.values()) if by_model else 0.0
 
+    warmup_frames = 1
+    history_metrics = [
+        "nvdec_ms",
+        "preprocess_ms",
+        "preprocess_nv12_bridge_ms",
+        "preprocess_serial_overhead_ms",
+        "inference_model_sum_ms",
+        "inference_model_max_ms",
+        "inference_model_yolo_global_ms",
+        "inference_model_yolo_tiles_ms",
+        "end_to_end_ms",
+    ]
+    history: dict[str, list[float]] = defaultdict(list)
+    ordered_frames = sorted(frame for frame in telemetry_by_frame.keys() if frame >= 0)
+    steady_frames = ordered_frames[warmup_frames:]
+    for frame_id in steady_frames:
+        sample = dict(telemetry_by_frame[frame_id])
+        sample["inference_model_yolo_global_ms"] = by_model.get("yolo_global", 0.0)
+        sample["inference_model_yolo_tiles_ms"] = by_model.get("yolo_tiles", 0.0)
+        sample["inference_model_sum_ms"] = float(sample["inference_model_yolo_global_ms"]) + float(sample["inference_model_yolo_tiles_ms"])
+        sample["inference_model_max_ms"] = max(float(sample["inference_model_yolo_global_ms"]), float(sample["inference_model_yolo_tiles_ms"]))
+        for key in history_metrics:
+            value = sample.get(key)
+            if isinstance(value, (int, float)):
+                history[key].append(float(value))
+
     budget_report = evaluate_perf_budget(telemetry_snapshot, fusion_strategy=orchestrator.config.get("fusion_strategy"))
     if budget_report.mode != "off":
         print("e2e_perf_budget_checked:", budget_report.checked)
         print("e2e_perf_budget_summary:", budget_report.summary)
         print("e2e_perf_budget_table:\n" + render_perf_budget_table(budget_report))
-        report_file = write_perf_budget_html_report(budget_report, report_name="pipeline_e2e_metrics")
+        report_file = write_perf_budget_html_report(
+            budget_report,
+            report_name="pipeline_e2e_metrics",
+            history=history,
+            warmup_frames=warmup_frames,
+        )
         print("e2e_perf_budget_html_report:", str(report_file))
 
 

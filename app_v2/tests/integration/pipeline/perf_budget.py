@@ -13,8 +13,8 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "nvdec_ms": 35.0,
         "preprocess_nv12_bridge_ms": 15.0,
         "preprocess_ms": 32.0,
-        "preprocess_model_yolo_global_ms": 6.0,
-        "preprocess_model_yolo_tiles_ms": 8.0,
+        "preprocess_model_yolo_global_ms": 1.0,
+        "preprocess_model_yolo_tiles_ms": 1.0,
         "preprocess_model_max_ms": 12.0,
         "preprocess_model_sum_ms": 20.0,
         "preprocess_critical_path_ms": 27.0,
@@ -32,8 +32,8 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "nvdec_ms": 42.0,
         "preprocess_nv12_bridge_ms": 16.0,
         "preprocess_ms": 30.0,
-        "preprocess_model_yolo_global_ms": 6.0,
-        "preprocess_model_yolo_tiles_ms": 9.0,
+        "preprocess_model_yolo_global_ms": 1.0,
+        "preprocess_model_yolo_tiles_ms": 1.0,
         "preprocess_model_max_ms": 12.0,
         "preprocess_model_sum_ms": 20.0,
         "preprocess_critical_path_ms": 27.0,
@@ -51,8 +51,8 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "nvdec_ms": 35.0,
         "preprocess_nv12_bridge_ms": 15.0,
         "preprocess_ms": 28.0,
-        "preprocess_model_yolo_global_ms": 6.0,
-        "preprocess_model_yolo_tiles_ms": 9.0,
+        "preprocess_model_yolo_global_ms": 1.0,
+        "preprocess_model_yolo_tiles_ms": 1.0,
         "preprocess_model_max_ms": 11.0,
         "preprocess_model_sum_ms": 18.0,
         "preprocess_critical_path_ms": 25.0,
@@ -134,6 +134,43 @@ def _recommendations(report: PerfBudgetReport) -> list[str]:
     return tips
 
 
+def _percentile(values: list[float], ratio: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = int(round((len(ordered) - 1) * ratio))
+    position = max(0, min(position, len(ordered) - 1))
+    return float(ordered[position])
+
+
+def _build_histogram_svg(values: list[float], title: str, width: int = 360, height: int = 120) -> str:
+    if not values:
+        return f"<div class='hist-card'><div class='label'>{title}</div><div class='label'>No data</div></div>"
+    bins = 8
+    min_v = min(values)
+    max_v = max(values)
+    span = max(max_v - min_v, 1e-6)
+    counts = [0 for _ in range(bins)]
+    for value in values:
+        index = int((value - min_v) / span * (bins - 1))
+        counts[max(0, min(index, bins - 1))] += 1
+    max_count = max(counts) if counts else 1
+    bar_w = (width - 20) / bins
+    rects: list[str] = []
+    for idx, count in enumerate(counts):
+        h = ((height - 30) * (count / max_count)) if max_count > 0 else 0
+        x = 10 + idx * bar_w
+        y = height - 20 - h
+        rects.append(f"<rect x='{x:.1f}' y='{y:.1f}' width='{bar_w - 3:.1f}' height='{h:.1f}' fill='#2563eb' opacity='0.85'/>")
+    return (
+        "<div class='hist-card'>"
+        f"<div class='label'>{title}</div>"
+        f"<svg viewBox='0 0 {width} {height}' width='100%' height='{height}' role='img' aria-label='Histogram {title}'>"
+        + "".join(rects)
+        + "</svg></div>"
+    )
+
+
 def render_perf_budget_table(report: PerfBudgetReport) -> str:
     """Render a markdown table with color-coded budget health for quick perf review."""
     rows = [
@@ -153,7 +190,11 @@ def render_perf_budget_table(report: PerfBudgetReport) -> str:
     return "\n".join(rows)
 
 
-def render_perf_budget_html(report: PerfBudgetReport) -> str:
+def render_perf_budget_html(
+    report: PerfBudgetReport,
+    history: Mapping[str, list[float]] | None = None,
+    warmup_frames: int = 0,
+) -> str:
     target_period_ms = float(report.summary.get("target_period_ms", 33.3333333333))
     rows: list[str] = []
     bar_rows: list[str] = []
@@ -203,6 +244,40 @@ def render_perf_budget_html(report: PerfBudgetReport) -> str:
     inf_global = float(report.checked.get("inference_model_yolo_global_ms", (0.0, 0.0))[0])
     inf_tiles = float(report.checked.get("inference_model_yolo_tiles_ms", (0.0, 0.0))[0])
 
+    hist = history or {}
+    stat_keys = [
+        "nvdec_ms",
+        "preprocess_ms",
+        "preprocess_nv12_bridge_ms",
+        "preprocess_serial_overhead_ms",
+        "inference_model_sum_ms",
+        "end_to_end_ms",
+    ]
+    stat_rows: list[str] = []
+    for key in stat_keys:
+        values = [float(v) for v in hist.get(key, [])]
+        if not values:
+            continue
+        stat_rows.append(
+            "<tr>"
+            f"<td><code>{key}</code></td>"
+            f"<td>{sum(values) / len(values):.3f}</td>"
+            f"<td>{_percentile(values, 0.50):.3f}</td>"
+            f"<td>{_percentile(values, 0.90):.3f}</td>"
+            f"<td>{max(values):.3f}</td>"
+            f"<td>{len(values)}</td>"
+            "</tr>"
+        )
+
+    histograms = "".join(
+        [
+            _build_histogram_svg([float(v) for v in hist.get("nvdec_ms", [])], "NVDEC"),
+            _build_histogram_svg([float(v) for v in hist.get("preprocess_ms", [])], "Preprocess"),
+            _build_histogram_svg([float(v) for v in hist.get("inference_model_sum_ms", [])], "Inference sum"),
+            _build_histogram_svg([float(v) for v in hist.get("end_to_end_ms", [])], "End-to-end"),
+        ]
+    )
+
     return f"""<!doctype html>
 <html lang="fr">
 <head>
@@ -235,6 +310,8 @@ def render_perf_budget_html(report: PerfBudgetReport) -> str:
         .reco {{ margin-top: 16px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; background: #fff; }}
         .group {{ margin-top: 16px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; background: #fff; }}
         .group ul {{ margin: 8px 0 0 18px; }}
+        .hist-grid {{ display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 12px; margin-top: 10px; }}
+        .hist-card {{ border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; background: #fff; }}
     </style>
 </head>
 <body>
@@ -269,6 +346,7 @@ def render_perf_budget_html(report: PerfBudgetReport) -> str:
             <li>└─ <b>preprocess_serial_overhead_ms</b> = {serial_overhead:.3f} ms</li>
         </ul>
         <div class="label">Écart de décomposition (doit rester proche de 0): {decomposition_gap:.3f} ms</div>
+        <div class="label">Note: <b>preprocess_serial_overhead_ms</b> ne signifie pas fallback CPU; c’est le résiduel (latence de lancement kernels, synchronisations de streams, bookkeeping pool/planification), mesuré comme preprocess_ms - preprocess_critical_path_ms.</div>
     </div>
     <div class="group">
         <div class="label">Comparaison inférence YOLO</div>
@@ -291,6 +369,23 @@ def render_perf_budget_html(report: PerfBudgetReport) -> str:
         <div class="label">Recommandations automatiques</div>
         <ul>{reco_items}</ul>
     </div>
+        <div class="group">
+                <div class="label">Statistiques multi-frames (post-warmup: {warmup_frames} frame(s))</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Métrique</th>
+                            <th>Moyenne (ms)</th>
+                            <th>P50 (ms)</th>
+                            <th>P90 (ms)</th>
+                            <th>Max (ms)</th>
+                            <th>N</th>
+                        </tr>
+                    </thead>
+                    <tbody>{"".join(stat_rows) if stat_rows else "<tr><td colspan='6'>No history</td></tr>"}</tbody>
+                </table>
+                <div class="hist-grid">{histograms}</div>
+        </div>
 </body>
 </html>
 """
@@ -300,12 +395,14 @@ def write_perf_budget_html_report(
     report: PerfBudgetReport,
     output_dir: Path | None = None,
     report_name: str = "perf_budget_report",
+    history: Mapping[str, list[float]] | None = None,
+    warmup_frames: int = 0,
 ) -> Path:
     target_dir = output_dir or (Path(__file__).resolve().parent / "artifacts")
     target_dir.mkdir(parents=True, exist_ok=True)
     safe_name = report_name.strip().replace(" ", "_") or "perf_budget_report"
     output_file = target_dir / f"{safe_name}.html"
-    output_file.write_text(render_perf_budget_html(report), encoding="utf-8")
+    output_file.write_text(render_perf_budget_html(report, history=history, warmup_frames=warmup_frames), encoding="utf-8")
     return output_file
 
 
