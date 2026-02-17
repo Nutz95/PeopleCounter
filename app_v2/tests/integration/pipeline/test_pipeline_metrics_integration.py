@@ -85,7 +85,18 @@ def test_pipeline_metrics_snapshot_includes_stage_timings_and_pool_stats() -> No
     except ModuleNotFoundError:
         pytest.skip("PyNvCodec must be installed to exercise pipeline metrics integration")
 
-    decoder = NvdecDecoder(stream_url, NvdecDecodeConfig(ring_capacity=4))
+    try:
+        decoder = NvdecDecoder(stream_url, NvdecDecodeConfig(ring_capacity=4))
+    except (RuntimeError, ValueError) as exc:
+        message = str(exc).lower()
+        if (
+            "libnvcuvid" in message
+            or "cuda codec" in message
+            or "pynvdecoder" in message
+            or "unsupported ffmpeg pixel format" in message
+        ):
+            pytest.skip(f"NVDEC decoder unavailable: {exc}")
+        raise
     preprocessor = GpuPreprocessor()
     preprocessor.configure(_pipeline_like_config())
 

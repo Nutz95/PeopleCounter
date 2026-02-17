@@ -18,6 +18,9 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "preprocess_model_sum_ms": 20.0,
         "preprocess_critical_path_ms": 27.0,
         "preprocess_serial_overhead_ms": 8.0,
+        "fusion_wait_ms": 20.0,
+        "overlay_lag_ms": 10.0,
+        "end_to_end_ms": 130.0,
         "tensor_pool_wait_ms": 2.0,
     },
     FusionStrategyType.ASYNC_OVERLAY.value: {
@@ -30,6 +33,9 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "preprocess_model_sum_ms": 20.0,
         "preprocess_critical_path_ms": 27.0,
         "preprocess_serial_overhead_ms": 8.0,
+        "fusion_wait_ms": 8.0,
+        "overlay_lag_ms": 25.0,
+        "end_to_end_ms": 110.0,
         "tensor_pool_wait_ms": 2.0,
     },
     FusionStrategyType.RAW_STREAM_WITH_METADATA.value: {
@@ -42,6 +48,9 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "preprocess_model_sum_ms": 18.0,
         "preprocess_critical_path_ms": 25.0,
         "preprocess_serial_overhead_ms": 8.0,
+        "fusion_wait_ms": 5.0,
+        "overlay_lag_ms": 40.0,
+        "end_to_end_ms": 95.0,
         "tensor_pool_wait_ms": 2.0,
     },
 }

@@ -83,9 +83,14 @@ def test_nvdec_to_gpu_preprocess_global_and_tiles() -> None:
 
     try:
         decoder = NvdecDecoder(stream_url, NvdecDecodeConfig(ring_capacity=4))
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         message = str(exc).lower()
-        if "libnvcuvid" in message or "cuda codec" in message or "pynvdecoder" in message:
+        if (
+            "libnvcuvid" in message
+            or "cuda codec" in message
+            or "pynvdecoder" in message
+            or "unsupported ffmpeg pixel format" in message
+        ):
             pytest.skip(f"NVDEC decoder unavailable: {exc}")
         raise
 

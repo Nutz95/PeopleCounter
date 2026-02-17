@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from app_v2.application.frame_scheduler import FrameScheduler
 from app_v2.application.inference_stream_controller import InferenceStreamController
 from app_v2.application.model_builder import ModelBuilder
@@ -63,6 +65,8 @@ class PipelineOrchestrator:
                     processed = output.flatten_inputs(model.name)
                     with self.performance_tracker.stage(frame_id, model.name):
                         prediction = model.infer(frame_id, processed)
+                        if isinstance(prediction, dict):
+                            prediction["_inference_done_ns"] = int(time.time_ns())
                         self.processing_graph.register(model.name, {"frame_id": frame_id})
                         self.aggregator.collect(frame_id, prediction)
                 self.scheduler.acknowledge(frame_id)

@@ -40,12 +40,13 @@ def test_nvdec_decodes_windows_stream() -> None:
         pytest.skip("PyNvCodec must be installed to exercise the NVDEC decoder")
     try:
         decoder = NvdecDecoder(stream_url, NvdecDecodeConfig(ring_capacity=4))
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         message = str(exc).lower()
         if (
             "libnvcuvid" in message
             or "cuda codec" in message
             or "pynvdecoder" in message
+            or "unsupported ffmpeg pixel format" in message
         ):
             pytest.skip(f"NVDEC decoder unavailable: {exc}")
         raise

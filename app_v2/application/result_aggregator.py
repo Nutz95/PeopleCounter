@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+import time
 from typing import Any
 
 from app_v2.core.fusion_strategy import FusionStrategy
@@ -19,17 +20,21 @@ class ResultAggregator:
         self._buffers: dict[int, list[dict[str, Any]]] = defaultdict(list)
         self._telemetry: dict[int, FrameTelemetry] = {}
         self._release_hooks: dict[int, list[Any]] = defaultdict(list)
+        self._collect_started_ns: dict[int, int] = {}
 
     def collect(self, frame_id: int, payload: dict[str, Any]) -> None:
         """Store partial payloads and publish when fusion strategy says so."""
+        self._collect_started_ns.setdefault(frame_id, time.time_ns())
         self._buffers[frame_id].append(payload)
         collected = self._buffers[frame_id]
         if self.fusion_strategy.should_publish(frame_id, [frame_id for _ in collected]):
             merged = self.fusion_strategy.merge(collected)
             payload = merged if isinstance(merged, Sequence) else [merged]
             telemetry = self._telemetry.pop(frame_id, None)
-            payload_list = list(payload)
+            publish_ns = time.time_ns()
+            payload_list = [self._strip_internal_metrics(entry) for entry in list(payload)]
             if telemetry:
+                telemetry.add_metrics(self._build_publication_metrics(frame_id, list(payload), publish_ns, telemetry))
                 payload_list.append({"telemetry": telemetry.snapshot()})
             self.publisher.publish(frame_id, payload_list)
             self._run_release_hooks(frame_id)
@@ -38,6 +43,7 @@ class ResultAggregator:
                 f"Published frame {frame_id} with {len(payload_list)} payloads via {self.fusion_strategy.strategy_type.value}",
             )
             self._buffers.pop(frame_id, None)
+            self._collect_started_ns.pop(frame_id, None)
 
     def attach_telemetry(self, frame_id: int, telemetry: FrameTelemetry | None) -> None:
         if telemetry:
@@ -51,3 +57,40 @@ class ResultAggregator:
         hooks = self._release_hooks.pop(frame_id, [])
         for hook in hooks:
             hook()
+
+    def _build_publication_metrics(
+        self,
+        frame_id: int,
+        payload: Sequence[dict[str, Any]],
+        publish_ns: int,
+        telemetry: FrameTelemetry,
+    ) -> dict[str, float]:
+        collect_started_ns = self._collect_started_ns.get(frame_id, publish_ns)
+        fusion_wait_ms = max(0.0, (publish_ns - collect_started_ns) / 1_000_000.0)
+
+        model_done_ns: list[int] = []
+        for item in payload:
+            value = item.get("_inference_done_ns")
+            if isinstance(value, int):
+                model_done_ns.append(value)
+        overlay_lag_ms = 0.0
+        if model_done_ns:
+            overlay_lag_ms = max(0.0, (max(model_done_ns) - min(model_done_ns)) / 1_000_000.0)
+
+        snapshot = telemetry.snapshot()
+        frame_timestamp_ns = snapshot.get("frame_timestamp_ns")
+        end_to_end_ms = 0.0
+        if isinstance(frame_timestamp_ns, (int, float)):
+            end_to_end_ms = max(0.0, (publish_ns - int(frame_timestamp_ns)) / 1_000_000.0)
+
+        return {
+            "fusion_wait_ms": fusion_wait_ms,
+            "overlay_lag_ms": overlay_lag_ms,
+            "end_to_end_ms": end_to_end_ms,
+        }
+
+    @staticmethod
+    def _strip_internal_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+        sanitized = dict(payload)
+        sanitized.pop("_inference_done_ns", None)
+        return sanitized
