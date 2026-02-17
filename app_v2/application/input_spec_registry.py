@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app_v2.core.preprocessor_types import InputSpec
+from app_v2.core.preprocessor_types import InputSpec, PreprocessMode
 
 
 class InputSpecRegistry:
@@ -80,9 +80,7 @@ class InputSpecRegistry:
         if target_width <= 0 or target_height <= 0:
             raise ValueError("target dimensions must be positive integers")
         overlap = float(spec_cfg["overlap"])
-        mode = str(spec_cfg["mode"])
-        if not mode:
-            raise ValueError("mode cannot be empty")
+        mode = self._parse_mode(spec_cfg["mode"])
         return InputSpec(
             model_name=model_name,
             target_width=target_width,
@@ -90,3 +88,13 @@ class InputSpecRegistry:
             mode=mode,
             overlap=overlap,
         )
+
+    @staticmethod
+    def _parse_mode(value: Any) -> PreprocessMode:
+        mode_value = str(value).strip().lower()
+        if not mode_value:
+            raise ValueError("mode cannot be empty")
+        try:
+            return PreprocessMode(mode_value)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported preprocess mode: {value}") from exc

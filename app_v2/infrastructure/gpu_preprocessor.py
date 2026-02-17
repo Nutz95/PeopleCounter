@@ -5,8 +5,20 @@ from typing import Any, Sequence
 from app_v2.application.gpu_preprocess_planner import GpuPreprocessPlanner
 from app_v2.application.input_spec_registry import InputSpecRegistry
 from app_v2.core.frame_telemetry import FrameTelemetry
-from app_v2.core.preprocessor_types import GpuTensor, PreprocessOutput
+from app_v2.core.preprocessor_types import GpuTensor, PreprocessMode, PreprocessOutput
 from app_v2.core.preprocessor import Preprocessor
+from app_v2.core.telemetry_keys import (
+    FRAME_TIMESTAMP_NS,
+    PREPROCESS_CRITICAL_PATH_MS,
+    PREPROCESS_MODEL_MAX_MS,
+    PREPROCESS_MODEL_SUM_MS,
+    PREPROCESS_PARALLEL_EFFICIENCY,
+    PREPROCESS_SERIAL_OVERHEAD_MS,
+    preprocess_model_metric_key,
+    preprocess_model_stage_name,
+    preprocess_stream_cuda_model_key,
+    preprocess_stream_model_key,
+)
 from app_v2.infrastructure.gpu_tensor_pool import GpuTensorPool
 from app_v2.infrastructure.preprocess_stream_manager import PreprocessStreamManager
 from app_v2.kernels.preprocess import resolve_frame_source_tensor, run_letterbox_kernel, run_tiling_kernel
@@ -46,16 +58,16 @@ class GpuPreprocessor(Preprocessor):
             telemetry.mark_stage_start("preprocess")
             frame_timestamp_ns = getattr(frame, "timestamp_ns", None)
             if frame_timestamp_ns is not None:
-                telemetry.add_metrics({"frame_timestamp_ns": int(frame_timestamp_ns)})
+                telemetry.add_metrics({FRAME_TIMESTAMP_NS: int(frame_timestamp_ns)})
         source_tensor = resolve_frame_source_tensor(frame)
         for spec in self._registry.all_specs():
-            model_stage = f"preprocess_model_{spec.model_name}"
+            model_stage = preprocess_model_stage_name(spec.model_name)
             stream_id = self._stream_manager.stream_for_model(spec.model_name)
             used_streams.add(stream_id)
-            stream_metrics[f"preprocess_stream_model_{spec.model_name}"] = float(stream_id)
+            stream_metrics[preprocess_stream_model_key(spec.model_name)] = float(stream_id)
             cuda_stream_handle = self._stream_manager.stream_handle(stream_id)
             if cuda_stream_handle is not None:
-                stream_metrics[f"preprocess_stream_cuda_model_{spec.model_name}"] = float(cuda_stream_handle)
+                stream_metrics[preprocess_stream_cuda_model_key(spec.model_name)] = float(cuda_stream_handle)
             if telemetry:
                 telemetry.mark_stage_start(model_stage)
             plan = self._planner.build_plan(frame_width, frame_height, spec)
@@ -68,7 +80,7 @@ class GpuPreprocessor(Preprocessor):
                         telemetry.mark_stage_start(kernel_stage)
                     tensor = (
                         run_letterbox_kernel(frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor)
-                        if spec.mode == "global"
+                        if spec.mode is PreprocessMode.GLOBAL
                         else run_tiling_kernel(frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor)
                     )
                     if telemetry:
@@ -104,7 +116,7 @@ class GpuPreprocessor(Preprocessor):
         snapshot = telemetry.snapshot()
         model_metrics: list[float] = []
         for model_name in model_inputs.keys():
-            model_key = f"preprocess_model_{model_name}_ms"
+            model_key = preprocess_model_metric_key(model_name)
             if model_key in snapshot:
                 model_metrics.append(float(snapshot[model_key]))
 
@@ -129,10 +141,10 @@ class GpuPreprocessor(Preprocessor):
 
         telemetry.add_metrics(
             {
-                "preprocess_model_sum_ms": model_sum,
-                "preprocess_model_max_ms": model_max,
-                "preprocess_critical_path_ms": critical_path,
-                "preprocess_serial_overhead_ms": serial_overhead,
-                "preprocess_parallel_efficiency": model_sum / model_max if model_max > 0.0 else 0.0,
+                PREPROCESS_MODEL_SUM_MS: model_sum,
+                PREPROCESS_MODEL_MAX_MS: model_max,
+                PREPROCESS_CRITICAL_PATH_MS: critical_path,
+                PREPROCESS_SERIAL_OVERHEAD_MS: serial_overhead,
+                PREPROCESS_PARALLEL_EFFICIENCY: model_sum / model_max if model_max > 0.0 else 0.0,
             }
         )

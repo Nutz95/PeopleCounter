@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app_v2.application.gpu_preprocess_planner import GpuPreprocessPlanner
-from app_v2.core.preprocessor_types import InputSpec
+from app_v2.core.preprocessor_types import InputSpec, PreprocessMode
 
 
 def test_gpu_preprocess_planner_global_plan() -> None:
@@ -10,7 +10,7 @@ def test_gpu_preprocess_planner_global_plan() -> None:
         model_name="yolo_global",
         target_width=640,
         target_height=640,
-        mode="global",
+        mode=PreprocessMode.GLOBAL,
         overlap=0.0,
     )
 
@@ -32,7 +32,7 @@ def test_gpu_preprocess_planner_tiling_plan_has_multiple_tasks() -> None:
         model_name="yolo_tiles",
         target_width=640,
         target_height=640,
-        mode="tiles",
+        mode=PreprocessMode.TILES,
         overlap=0.2,
     )
 

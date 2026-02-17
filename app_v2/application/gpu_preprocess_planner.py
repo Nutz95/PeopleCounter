@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from math import ceil
 
-from app_v2.core.preprocessor_types import InputSpec, PreprocessPlan, PreprocessTask
+from app_v2.core.preprocessor_types import InputSpec, PreprocessMode, PreprocessPlan, PreprocessTask
 
 
 class GpuPreprocessPlanner:
     """Generates preprocess plans (global/tiled) for configured model specs."""
 
     def build_plan(self, frame_width: int, frame_height: int, spec: InputSpec) -> PreprocessPlan:
-        if spec.mode == "global":
+        if spec.mode is PreprocessMode.GLOBAL:
             task = PreprocessTask(
                 model_name=spec.model_name,
                 task_index=0,
@@ -26,10 +26,10 @@ class GpuPreprocessPlanner:
                 frame_width=frame_width,
                 frame_height=frame_height,
                 tasks=(task,),
-                metadata={"mode": "global", "task_count": 1},
+                metadata={"mode": PreprocessMode.GLOBAL.value, "task_count": 1},
             )
 
-        if spec.mode == "tiles":
+        if spec.mode is PreprocessMode.TILES:
             return self._build_tiling_plan(frame_width, frame_height, spec)
 
         raise ValueError(f"Unsupported preprocess mode: {spec.mode}")
@@ -68,7 +68,7 @@ class GpuPreprocessPlanner:
             frame_height=frame_height,
             tasks=tuple(tasks),
             metadata={
-                "mode": "tiles",
+                "mode": PreprocessMode.TILES.value,
                 "task_count": len(tasks),
                 "rows": rows,
                 "cols": cols,

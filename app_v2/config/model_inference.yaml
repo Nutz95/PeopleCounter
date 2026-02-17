@@ -1,0 +1,17 @@
+yolo_global:
+  person_class_id: 0
+  confidence_threshold: 0.25
+  nms_iou_threshold: 0.45
+  segmentation_threshold: 0.50
+  max_detections: 300
+  class_whitelist:
+    - 0
+
+yolo_tiles:
+  person_class_id: 0
+  confidence_threshold: 0.25
+  nms_iou_threshold: 0.45
+  segmentation_threshold: 0.50
+  max_detections: 300
+  class_whitelist:
+    - 0

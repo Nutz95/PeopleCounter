@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from app_v2.application.input_spec_registry import InputSpecRegistry
+from app_v2.core.preprocessor_types import PreprocessMode
 
 
 def test_input_spec_registry_builds_specs_from_config() -> None:
@@ -38,13 +39,13 @@ def test_input_spec_registry_builds_specs_from_config() -> None:
     assert global_spec is not None
     assert global_spec.target_width == 800
     assert global_spec.target_height == 800
-    assert global_spec.mode == "global"
+    assert global_spec.mode is PreprocessMode.GLOBAL
     assert global_spec.overlap == 0.0
 
     assert tiles_spec is not None
     assert tiles_spec.target_width == 640
     assert tiles_spec.target_height == 640
-    assert tiles_spec.mode == "tiles"
+    assert tiles_spec.mode is PreprocessMode.TILES
     assert tiles_spec.overlap == 0.25
 
 
@@ -116,4 +117,22 @@ def test_input_spec_registry_rejects_invalid_preprocess_branches_type() -> None:
 
     registry = InputSpecRegistry()
     with pytest.raises(ValueError, match="preprocess_branches must be a mapping"):
+        registry.configure(metadata)
+
+
+def test_input_spec_registry_rejects_invalid_mode_value() -> None:
+    metadata: dict[str, Any] = {
+        "models": {"yolo_global": {"enabled": True}},
+        "preprocess": {
+            "yolo_global": {
+                "target_width": 640,
+                "target_height": 640,
+                "mode": "invalid-mode",
+                "overlap": 0.0,
+            }
+        },
+    }
+
+    registry = InputSpecRegistry()
+    with pytest.raises(ValueError, match="Unsupported preprocess mode"):
         registry.configure(metadata)

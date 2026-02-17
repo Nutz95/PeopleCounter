@@ -7,6 +7,7 @@ import yaml
 
 
 _CONFIG_FILE = Path(__file__).parent / "pipeline.yaml"
+_MODEL_INFERENCE_CONFIG_FILE = Path(__file__).parent / "model_inference.yaml"
 
 
 def load_pipeline_config() -> dict[str, Any]:
@@ -15,3 +16,11 @@ def load_pipeline_config() -> dict[str, Any]:
         raise FileNotFoundError(f"Missing pipeline config: {_CONFIG_FILE}")
     with _CONFIG_FILE.open("r", encoding="utf-8") as stream:
         return yaml.safe_load(stream)
+
+
+def load_model_inference_config() -> dict[str, Any]:
+    """Load model-specific inference parameters (thresholds, class filters, etc.)."""
+    if not _MODEL_INFERENCE_CONFIG_FILE.exists():
+        return {}
+    with _MODEL_INFERENCE_CONFIG_FILE.open("r", encoding="utf-8") as stream:
+        return yaml.safe_load(stream) or {}
