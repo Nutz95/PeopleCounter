@@ -75,18 +75,4 @@ class TensorRTEngineLoader:
         candidate = Path(engine_path)
         if not candidate.is_absolute():
             candidate = Path(__file__).resolve().parents[2] / candidate
-        if candidate.exists():
-            return candidate
-
-        alias_map = {
-            "yolo_global.engine": "yolo26n.engine",
-            "yolo_tiles.engine": "yolo26n.engine",
-            "density.engine": "dm_count_qnrf.engine",
-        }
-        alias_name = alias_map.get(Path(engine_path).name)
-        if alias_name is None:
-            return candidate
-        alias_candidate = candidate.parent / alias_name
-        if alias_candidate.exists():
-            return alias_candidate
         return candidate

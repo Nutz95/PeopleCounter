@@ -21,6 +21,11 @@ def test_pipeline_preprocess_configuration_is_valid() -> None:
     assert isinstance(tensor_pool, dict), "tensor_pool block must exist in pipeline config"
     assert int(tensor_pool.get("max_per_key", 0)) > 0, "tensor_pool.max_per_key must be > 0"
 
+    trt_execution = config.get("trt_execution")
+    assert isinstance(trt_execution, dict), "trt_execution block must exist in pipeline config"
+    assert isinstance(trt_execution.get("enabled", False), bool), "trt_execution.enabled must be boolean"
+    assert isinstance(trt_execution.get("strict_shape_check", True), bool), "trt_execution.strict_shape_check must be boolean"
+
     preprocess = config.get("preprocess")
     assert isinstance(preprocess, dict) and preprocess, "preprocess block must exist in pipeline config"
 

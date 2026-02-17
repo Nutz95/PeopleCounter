@@ -44,7 +44,7 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "inference_model_max_ms": 20.0,
         "fusion_wait_ms": 8.0,
         "overlay_lag_ms": 25.0,
-        "end_to_end_ms": 110.0,
+        "end_to_end_ms": 33.0,
         "tensor_pool_wait_ms": 2.0,
     },
     FusionStrategyType.RAW_STREAM_WITH_METADATA.value: {
@@ -63,7 +63,7 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "inference_model_max_ms": 16.0,
         "fusion_wait_ms": 5.0,
         "overlay_lag_ms": 40.0,
-        "end_to_end_ms": 95.0,
+        "end_to_end_ms": 33.0,
         "tensor_pool_wait_ms": 2.0,
     },
 }
@@ -194,6 +194,15 @@ def render_perf_budget_html(report: PerfBudgetReport) -> str:
     sparkline = " ".join(spark_points)
     reco_items = "".join(f"<li>{tip}</li>" for tip in _recommendations(report))
 
+    preprocess_total = float(report.checked.get("preprocess_ms", (0.0, 0.0))[0])
+    bridge = float(report.checked.get("preprocess_nv12_bridge_ms", (0.0, 0.0))[0])
+    critical_model = float(report.checked.get("preprocess_model_max_ms", (0.0, 0.0))[0])
+    serial_overhead = float(report.checked.get("preprocess_serial_overhead_ms", (0.0, 0.0))[0])
+    decomposition_gap = preprocess_total - (bridge + critical_model + serial_overhead)
+
+    inf_global = float(report.checked.get("inference_model_yolo_global_ms", (0.0, 0.0))[0])
+    inf_tiles = float(report.checked.get("inference_model_yolo_tiles_ms", (0.0, 0.0))[0])
+
     return f"""<!doctype html>
 <html lang="fr">
 <head>
@@ -224,6 +233,8 @@ def render_perf_budget_html(report: PerfBudgetReport) -> str:
         .bar-fill.bad {{ background: #ef4444; }}
         .spark {{ margin-top: 16px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; }}
         .reco {{ margin-top: 16px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; background: #fff; }}
+        .group {{ margin-top: 16px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; background: #fff; }}
+        .group ul {{ margin: 8px 0 0 18px; }}
     </style>
 </head>
 <body>
@@ -248,6 +259,23 @@ def render_perf_budget_html(report: PerfBudgetReport) -> str:
         <div class="card"><div class="label">Target FPS</div><div class="value">{float(report.summary.get("target_fps", 30.0)):.1f}</div></div>
         <div class="card"><div class="label">Critical path (ms)</div><div class="value">{float(report.summary.get("critical_path_ms", 0.0)):.3f}</div></div>
         <div class="card"><div class="label">FPS margin (ms)</div><div class="value">{float(report.summary.get("fps_margin_ms", 0.0)):.3f}</div></div>
+    </div>
+    <div class="group">
+        <div class="label">Décomposition preprocess</div>
+        <ul>
+            <li><b>preprocess_ms</b> = {preprocess_total:.3f} ms</li>
+            <li>├─ <b>preprocess_nv12_bridge_ms</b> = {bridge:.3f} ms</li>
+            <li>├─ <b>preprocess_model_max_ms</b> (branche critique parallèle) = {critical_model:.3f} ms</li>
+            <li>└─ <b>preprocess_serial_overhead_ms</b> = {serial_overhead:.3f} ms</li>
+        </ul>
+        <div class="label">Écart de décomposition (doit rester proche de 0): {decomposition_gap:.3f} ms</div>
+    </div>
+    <div class="group">
+        <div class="label">Comparaison inférence YOLO</div>
+        <ul>
+            <li><b>inference_model_yolo_global_ms</b> = {inf_global:.3f} ms</li>
+            <li><b>inference_model_yolo_tiles_ms</b> = {inf_tiles:.3f} ms</li>
+        </ul>
     </div>
     <div class="spark">
         <div class="label">Sparkline utilisation budgets (%)</div>

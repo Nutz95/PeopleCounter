@@ -9,6 +9,8 @@ import pytest
 
 from app_v2.config.test_config import load_test_config
 from app_v2.application.pipeline_orchestrator import PipelineOrchestrator
+from app_v2.core.fusion_strategy import FusionStrategy
+from app_v2.enums import FusionStrategyType
 from app_v2.core.result_publisher import ResultPublisher
 from app_v2.infrastructure.gpu_preprocessor import GpuPreprocessor
 from app_v2.infrastructure.nvdec_decoder import NvdecDecodeConfig, NvdecDecoder
@@ -30,6 +32,18 @@ class CapturePublisher(ResultPublisher):
         self.published.append((frame_id, payload))
 
 
+class PublishAfterThree(FusionStrategy):
+    def __init__(self) -> None:
+        super().__init__(FusionStrategyType.STRICT_SYNC)
+
+    def should_publish(self, frame_id: int, collected_ids: list[int]) -> bool:
+        del frame_id
+        return len(collected_ids) >= 3
+
+    def merge(self, payloads: list[Any]) -> list[Any]:
+        return list(payloads)
+
+
 def _normalize_stream_url(value: Any) -> str | None:
     url = value or ""
     url = str(url).strip()
@@ -49,6 +63,10 @@ def _pipeline_like_config() -> dict[str, Any]:
         "models": {
             "yolo_global": {"enabled": True},
             "yolo_tiles": {"enabled": True},
+        },
+        "trt_execution": {
+            "enabled": True,
+            "strict_shape_check": True,
         },
         "streams": {
             "transfer": 0,
@@ -117,8 +135,14 @@ def test_pipeline_metrics_snapshot_includes_stage_timings_and_pool_stats() -> No
 
     decoder.start()
     try:
-        decoder.decode_next_into_ring(frame_id=1, timestamp_ns=int(time.time_ns()))
-        popped = decoder.ring.pop_ready(timeout_s=5)
+        popped = None
+        for fid in range(1, 4):
+            decoder.decode_next_into_ring(frame_id=fid, timestamp_ns=int(time.time_ns()))
+            popped = decoder.ring.pop_ready(timeout_s=5)
+            assert popped is not None
+            if fid < 3:
+                warm_slot, _ = popped
+                decoder.ring.release(warm_slot)
         assert popped is not None
         slot, frame = popped
 
@@ -207,7 +231,12 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
             pytest.skip(f"NVDEC frame source unavailable: {exc}")
         raise
 
-    orchestrator = PipelineOrchestrator(frame_source=source, max_frames=3, publisher=publisher)
+    orchestrator = PipelineOrchestrator(
+        frame_source=source,
+        max_frames=3,
+        publisher=publisher,
+        fusion_strategy=PublishAfterThree(),
+    )
     orchestrator.run()
 
     assert publisher.published, "Pipeline should publish at least one payload"
@@ -238,6 +267,18 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
     assert yolo_payloads, "Expected at least one YOLO payload"
     assert any("inference_ms" in item for item in yolo_payloads), "Expected inference_ms in YOLO payload"
 
+    by_model: dict[str, float] = {}
+    for item in yolo_payloads:
+        model_name = item.get("model")
+        infer_ms = item.get("inference_ms")
+        if isinstance(model_name, str) and isinstance(infer_ms, (int, float)):
+            by_model[model_name] = max(by_model.get(model_name, 0.0), float(infer_ms))
+
+    telemetry_snapshot["inference_model_yolo_global_ms"] = by_model.get("yolo_global", 0.0)
+    telemetry_snapshot["inference_model_yolo_tiles_ms"] = by_model.get("yolo_tiles", 0.0)
+    telemetry_snapshot["inference_model_sum_ms"] = sum(by_model.values())
+    telemetry_snapshot["inference_model_max_ms"] = max(by_model.values()) if by_model else 0.0
+
     budget_report = evaluate_perf_budget(telemetry_snapshot, fusion_strategy=orchestrator.config.get("fusion_strategy"))
     if budget_report.mode != "off":
         print("e2e_perf_budget_checked:", budget_report.checked)
@@ -245,3 +286,44 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
         print("e2e_perf_budget_table:\n" + render_perf_budget_table(budget_report))
         report_file = write_perf_budget_html_report(budget_report, report_name="pipeline_e2e_metrics")
         print("e2e_perf_budget_html_report:", str(report_file))
+
+
+def test_pipeline_e2e_real_stream_trt_opt_in_shape_guard() -> None:
+    stream_url = _resolve_stream_url()
+    if stream_url is None:
+        pytest.skip("Set NVDEC_TEST_STREAM_URL to exercise TRT opt-in e2e integration")
+
+    previous_value = os.environ.get("PEOPLE_COUNTER_ENABLE_TRT_EXECUTION")
+    os.environ["PEOPLE_COUNTER_ENABLE_TRT_EXECUTION"] = "1"
+    publisher = CapturePublisher()
+    try:
+        source = RTSPFrameSource(stream_url)
+    except (RuntimeError, ValueError) as exc:
+        message = str(exc).lower()
+        if "unsupported ffmpeg pixel format" in message or "pynvdecoder" in message:
+            pytest.skip(f"NVDEC frame source unavailable: {exc}")
+        raise
+
+    try:
+        orchestrator = PipelineOrchestrator(
+            frame_source=source,
+            max_frames=1,
+            publisher=publisher,
+            fusion_strategy=PublishAfterThree(),
+        )
+        orchestrator.run()
+    finally:
+        if previous_value is None:
+            os.environ.pop("PEOPLE_COUNTER_ENABLE_TRT_EXECUTION", None)
+        else:
+            os.environ["PEOPLE_COUNTER_ENABLE_TRT_EXECUTION"] = previous_value
+
+    assert publisher.published, "Expected at least one publish in TRT opt-in run"
+    flattened = [entry for _, payload in publisher.published for entry in payload if isinstance(entry, dict)]
+    model_entries = [entry for entry in flattened if entry.get("model") in {"yolo_global", "yolo_tiles"}]
+    assert model_entries, "Expected YOLO entries in TRT opt-in run"
+    for entry in model_entries:
+        prediction = entry.get("prediction")
+        if isinstance(prediction, dict):
+            status = prediction.get("status")
+            assert status in {"ok", "gpu_unavailable"}

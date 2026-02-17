@@ -22,14 +22,18 @@ if TYPE_CHECKING:
 class TensorRTExecutionContext:
     """Wraps TensorRT execution contexts and their associated CUDA streams."""
 
-    def __init__(self, engine_loader: "TensorRTEngineLoader", stream_pool: Any) -> None:
+    def __init__(self, engine_loader: "TensorRTEngineLoader", stream_pool: Any, options: Dict[str, Any] | None = None) -> None:
         self.engine_loader = engine_loader
         self.stream_pool = stream_pool
+        self.options = dict(options or {})
         self.bound_tensors: Dict[str, int] = {}
         self._bound_streams: Dict[str, Any] = {}
         self._metadata = self.engine_loader.load()
         self._context: Any | None = None
-        self._trt_enabled = os.environ.get("PEOPLE_COUNTER_ENABLE_TRT_EXECUTION", "0").strip() == "1"
+        env_enabled = os.environ.get("PEOPLE_COUNTER_ENABLE_TRT_EXECUTION")
+        cfg_enabled = bool(self.options.get("enabled", False))
+        self._trt_enabled = (env_enabled.strip() == "1") if isinstance(env_enabled, str) else cfg_enabled
+        self._strict_shape_check = bool(self.options.get("strict_shape_check", True))
         engine = self.engine_loader.engine
         if self._trt_enabled and engine is not None:
             self._context = engine.create_execution_context()
@@ -46,24 +50,30 @@ class TensorRTExecutionContext:
     def execute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Run the TensorRT inference and return raw outputs."""
         if not self._trt_enabled:
-            return {"status": "fallback", "inputs": inputs, "reason": "trt execution disabled (set PEOPLE_COUNTER_ENABLE_TRT_EXECUTION=1)"}
+            return {"status": "gpu_unavailable", "inputs": inputs, "reason": "trt execution disabled by config"}
         if self._context is None or trt is None or torch is None or not torch.cuda.is_available():
-            return {"status": "fallback", "inputs": inputs, "reason": self._metadata.get("reason", "no context")}
+            return {"status": "gpu_unavailable", "inputs": inputs, "reason": self._metadata.get("reason", "no context")}
 
         stream = next(iter(self._bound_streams.values()), None)
         stream_ctx = torch.cuda.stream(stream) if hasattr(stream, "cuda_stream") else nullcontext()
         with stream_ctx:
             prepared_inputs = self._prepare_input_tensors(inputs)
             if not prepared_inputs:
-                return {"status": "fallback", "inputs": inputs, "reason": "no input tensors"}
+                return {"status": "gpu_unavailable", "inputs": inputs, "reason": "no input tensors"}
 
             input_names = [name for name in self._tensor_names(mode=trt.TensorIOMode.INPUT)]
             output_names = [name for name in self._tensor_names(mode=trt.TensorIOMode.OUTPUT)]
             if not input_names or not output_names:
-                return {"status": "fallback", "inputs": inputs, "reason": "engine missing io tensors"}
+                return {"status": "gpu_unavailable", "inputs": inputs, "reason": "engine missing io tensors"}
 
             input_tensor = prepared_inputs[0]
             input_name = input_names[0]
+            if self._strict_shape_check and not self._is_input_shape_compatible(input_name, input_tensor):
+                return {
+                    "status": "gpu_unavailable",
+                    "inputs": inputs,
+                    "reason": f"input shape incompatible for {input_name}: {tuple(int(x) for x in input_tensor.shape)}",
+                }
             self._context.set_input_shape(input_name, tuple(int(x) for x in input_tensor.shape))
             self._context.set_tensor_address(input_name, int(input_tensor.data_ptr()))
 
@@ -73,7 +83,7 @@ class TensorRTExecutionContext:
                 shape = tuple(int(x) for x in self._context.get_tensor_shape(output_name))
                 if not shape or any(dim <= 0 for dim in shape):
                     return {
-                        "status": "fallback",
+                        "status": "gpu_unavailable",
                         "inputs": inputs,
                         "reason": f"unresolved output shape for {output_name}: {shape}",
                     }
@@ -87,7 +97,7 @@ class TensorRTExecutionContext:
             stream_handle = int(getattr(stream, "cuda_stream", 0))
             ok = bool(self._context.execute_async_v3(stream_handle))
             if not ok:
-                return {"status": "fallback", "inputs": inputs, "reason": "execute_async_v3 failed"}
+                return {"status": "gpu_unavailable", "inputs": inputs, "reason": "execute_async_v3 failed"}
             if hasattr(stream, "synchronize"):
                 stream.synchronize()
 
@@ -98,6 +108,31 @@ class TensorRTExecutionContext:
                 "input_shape": tuple(int(x) for x in input_tensor.shape),
                 "engine_path": self._metadata.get("path"),
             }
+
+    def _is_input_shape_compatible(self, input_name: str, tensor: Any) -> bool:
+        engine = self.engine_loader.engine
+        if engine is None:
+            return False
+        try:
+            profile_shapes = engine.get_tensor_profile_shape(input_name, 0)
+        except Exception:
+            return True
+        if not isinstance(profile_shapes, tuple) or len(profile_shapes) != 3:
+            return True
+        min_shape, _opt_shape, max_shape = profile_shapes
+        if not min_shape or not max_shape:
+            return True
+        dims = tuple(int(x) for x in tensor.shape)
+        if len(dims) != len(min_shape):
+            return False
+        for value, lo, hi in zip(dims, min_shape, max_shape):
+            low = int(lo)
+            high = int(hi)
+            if low > 0 and value < low:
+                return False
+            if high > 0 and value > high:
+                return False
+        return True
 
     def _prepare_input_tensors(self, payload: Dict[str, Any]) -> list[Any]:
         raw_inputs = payload.get("inputs", [])

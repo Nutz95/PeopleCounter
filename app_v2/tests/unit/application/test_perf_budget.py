@@ -74,3 +74,19 @@ def test_write_perf_budget_html_report_creates_file(tmp_path: Path) -> None:
     file_path = write_perf_budget_html_report(report, output_dir=tmp_path)
     assert file_path.exists()
     assert file_path.name == "perf_budget_report.html"
+
+
+def test_write_perf_budget_html_report_uses_custom_name(tmp_path: Path) -> None:
+    report = evaluate_perf_budget(
+        {
+            "preprocess_ms": 12.0,
+            "preprocess_model_sum_ms": 5.0,
+            "preprocess_model_max_ms": 4.0,
+            "nvdec_ms": 10.0,
+        },
+        fusion_strategy=FusionStrategyType.ASYNC_OVERLAY.value,
+    )
+
+    file_path = write_perf_budget_html_report(report, output_dir=tmp_path, report_name="e2e-report")
+    assert file_path.exists()
+    assert file_path.name == "e2e-report.html"

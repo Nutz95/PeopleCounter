@@ -76,9 +76,9 @@ def test_result_aggregator_adds_fusion_lag_and_end_to_end_metrics() -> None:
     now_ns = int(time.time_ns())
     aggregator.collect(
         frame_id,
-        {"model": "yolo_global", "_inference_done_ns": now_ns - 3_000_000, "yolo_inference_ms": 12.5},
+        {"model": "yolo_global", "_inference_done_ns": now_ns - 3_000_000, "inference_ms": 12.5},
     )
-    aggregator.collect(frame_id, {"model": "yolo_tiles", "_inference_done_ns": now_ns, "yolo_inference_ms": 8.0})
+    aggregator.collect(frame_id, {"model": "yolo_tiles", "_inference_done_ns": now_ns, "inference_ms": 8.0})
 
     assert publisher.published, "Aggregator should publish payload with telemetry"
     _, payload = publisher.published[-1]

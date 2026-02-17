@@ -3,13 +3,17 @@ fusion_strategy: ASYNC_OVERLAY
 models:
   yolo_global:
     enabled: true
-    engine: models/tensorrt/yolo_global.engine
+    engine: models/tensorrt/yolo26m-seg.engine
   yolo_tiles:
     enabled: true
-    engine: models/tensorrt/yolo_tiles.engine
+    engine: models/tensorrt/yolo26m-seg.engine
   density:
     enabled: true
-    engine: models/tensorrt/density.engine
+    engine: models/tensorrt/dm_count_qnrf.engine
+
+trt_execution:
+  enabled: true
+  strict_shape_check: true
 
 inference_streams:
   yolo: true

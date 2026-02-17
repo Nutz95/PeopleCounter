@@ -38,8 +38,8 @@ def test_yolo_global_trt_infer_includes_metrics_and_person_filter() -> None:
     assert result["person_class_id"] == 0
     assert result["class_whitelist"] == [0]
     assert result["input_count"] == 1
-    assert "yolo_inference_ms" in result
-    assert float(result["yolo_inference_ms"]) >= 0.0
+    assert "inference_ms" in result
+    assert float(result["inference_ms"]) >= 0.0
     assert ctx.bound == ["model:yolo_global"]
     assert ctx.released == ["model:yolo_global"]
 
@@ -59,7 +59,7 @@ def test_yolo_tiles_trt_infer_includes_metrics_and_tile_count() -> None:
     assert result["person_class_id"] == 0
     assert result["class_whitelist"] == [0]
     assert result["tile_count"] == 3
-    assert "yolo_inference_ms" in result
-    assert float(result["yolo_inference_ms"]) >= 0.0
+    assert "inference_ms" in result
+    assert float(result["inference_ms"]) >= 0.0
     assert ctx.bound == ["model:yolo_tiles"]
     assert ctx.released == ["model:yolo_tiles"]
