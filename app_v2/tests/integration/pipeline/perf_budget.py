@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -105,6 +106,85 @@ def render_perf_budget_table(report: PerfBudgetReport) -> str:
             f" | `{metric_key}` | {value:.3f} | {limit:.3f} | {utilization_pct:.1f}% | {impact_pct:.1f}% |"
         )
     return "\n".join(rows)
+
+
+def render_perf_budget_html(report: PerfBudgetReport) -> str:
+        target_period_ms = float(report.summary.get("target_period_ms", 33.3333333333))
+        rows: list[str] = []
+        for metric_key in sorted(report.checked.keys()):
+                value, limit = report.checked[metric_key]
+                utilization_pct = (value / limit * 100.0) if limit > 0.0 else 0.0
+                impact_pct = (value / target_period_ms * 100.0) if target_period_ms > 0.0 else 0.0
+                badge = _status_badge(value, limit)
+                css_class = "ok" if badge == "🟢" else "warn" if badge == "🟠" else "bad"
+                rows.append(
+                        "<tr>"
+                        f"<td class='{css_class}'>{badge}</td>"
+                        f"<td><code>{metric_key}</code></td>"
+                        f"<td>{value:.3f}</td>"
+                        f"<td>{limit:.3f}</td>"
+                        f"<td>{utilization_pct:.1f}%</td>"
+                        f"<td>{impact_pct:.1f}%</td>"
+                        "</tr>"
+                )
+
+        return f"""<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8" />
+    <title>PeopleCounter - Performance Budget Report</title>
+    <style>
+        body {{ font-family: Inter, Segoe UI, Arial, sans-serif; margin: 24px; color: #1f2937; }}
+        h1 {{ margin-bottom: 6px; }}
+        .meta {{ color: #6b7280; margin-bottom: 20px; }}
+        table {{ border-collapse: collapse; width: 100%; }}
+        th, td {{ border: 1px solid #e5e7eb; padding: 8px 10px; text-align: right; }}
+        th:nth-child(1), td:nth-child(1), th:nth-child(2), td:nth-child(2) {{ text-align: left; }}
+        th {{ background: #f9fafb; }}
+        .ok {{ color: #047857; font-weight: 600; }}
+        .warn {{ color: #b45309; font-weight: 600; }}
+        .bad {{ color: #b91c1c; font-weight: 600; }}
+        code {{ background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }}
+        .summary {{ margin-top: 16px; display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 10px; }}
+        .card {{ border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; background: #ffffff; }}
+        .label {{ color: #6b7280; font-size: 12px; }}
+        .value {{ font-size: 18px; font-weight: 700; }}
+    </style>
+</head>
+<body>
+    <h1>Performance Budget Report</h1>
+    <div class="meta">Strategy: <b>{report.fusion_strategy}</b> | Mode: <b>{report.mode}</b></div>
+    <table>
+        <thead>
+            <tr>
+                <th>Statut</th>
+                <th>Métrique</th>
+                <th>Valeur (ms)</th>
+                <th>Budget (ms)</th>
+                <th>Utilisation</th>
+                <th>Impact 4K@30</th>
+            </tr>
+        </thead>
+        <tbody>
+            {"\n      ".join(rows)}
+        </tbody>
+    </table>
+    <div class="summary">
+        <div class="card"><div class="label">Target FPS</div><div class="value">{float(report.summary.get("target_fps", 30.0)):.1f}</div></div>
+        <div class="card"><div class="label">Critical path (ms)</div><div class="value">{float(report.summary.get("critical_path_ms", 0.0)):.3f}</div></div>
+        <div class="card"><div class="label">FPS margin (ms)</div><div class="value">{float(report.summary.get("fps_margin_ms", 0.0)):.3f}</div></div>
+    </div>
+</body>
+</html>
+"""
+
+
+def write_perf_budget_html_report(report: PerfBudgetReport, output_dir: Path | None = None) -> Path:
+        target_dir = output_dir or (Path(__file__).resolve().parent / "artifacts")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        output_file = target_dir / "perf_budget_report.html"
+        output_file.write_text(render_perf_budget_html(report), encoding="utf-8")
+        return output_file
 
 
 def perf_budget_mode() -> str:

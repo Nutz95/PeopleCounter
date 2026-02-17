@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Sequence
 
 from app_v2.core.inference_model import InferenceModel
+from app_v2.infrastructure.yolo_decoder import YoloDecoder
 
 
 class YoloTilingTRT(InferenceModel):
@@ -13,6 +15,7 @@ class YoloTilingTRT(InferenceModel):
         self._stream_id = stream_id
         self._name = "yolo_tiles"
         self._inference_params = dict(inference_params or {})
+        self._decoder = YoloDecoder(person_class_id=int(self._inference_params.get("person_class_id", 0)))
 
     @property
     def name(self) -> str:
@@ -27,16 +30,34 @@ class YoloTilingTRT(InferenceModel):
         pass
 
     def infer(self, frame_id: int, inputs: Sequence[Any]) -> dict[str, Any]:
-        """Flatten the tiled output buffer so the decoder can read it."""
-        return {
-            "frame_id": frame_id,
-            "prediction": None,
-            "segmentation": None,
-            "inference_params": self._inference_params,
-            "person_class_id": self._inference_params.get("person_class_id", 0),
-            "class_whitelist": self._inference_params.get("class_whitelist", [0]),
-            "tile_count": len(inputs),
-        }
+        """Execute tiled inference and return decoded placeholders + metrics."""
+        stream_key = f"model:{self._name}"
+        start_ns = time.perf_counter_ns()
+        self._context.bind_stream(stream_key)
+        try:
+            raw_outputs = self._context.execute(
+                {
+                    "frame_id": frame_id,
+                    "inputs": list(inputs),
+                    "model": self._name,
+                    "params": dict(self._inference_params),
+                }
+            )
+            decoded = self._decoder.process(frame_id, raw_outputs)
+            infer_ms = (time.perf_counter_ns() - start_ns) / 1_000_000.0
+            return {
+                "frame_id": frame_id,
+                "prediction": raw_outputs,
+                "segmentation": raw_outputs.get("segmentation") if isinstance(raw_outputs, dict) else None,
+                "detections": decoded.get("detections", []),
+                "inference_params": self._inference_params,
+                "person_class_id": int(self._inference_params.get("person_class_id", 0)),
+                "class_whitelist": list(self._inference_params.get("class_whitelist", [0])),
+                "tile_count": len(inputs),
+                "yolo_inference_ms": float(infer_ms),
+            }
+        finally:
+            self._context.release_stream(stream_key)
 
     def close(self) -> None:
         """Release the CUDA resources held by this tiling model."""

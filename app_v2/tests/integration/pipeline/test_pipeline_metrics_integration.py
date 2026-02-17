@@ -10,7 +10,11 @@ import pytest
 from app_v2.config.test_config import load_test_config
 from app_v2.infrastructure.gpu_preprocessor import GpuPreprocessor
 from app_v2.infrastructure.nvdec_decoder import NvdecDecodeConfig, NvdecDecoder
-from app_v2.tests.integration.pipeline.perf_budget import evaluate_perf_budget, render_perf_budget_table
+from app_v2.tests.integration.pipeline.perf_budget import (
+    evaluate_perf_budget,
+    render_perf_budget_table,
+    write_perf_budget_html_report,
+)
 
 CONFIG = load_test_config()
 
@@ -144,6 +148,8 @@ def test_pipeline_metrics_snapshot_includes_stage_timings_and_pool_stats() -> No
             print("perf_budget_checked:", budget_report.checked)
             print("perf_budget_summary:", budget_report.summary)
             print("perf_budget_table:\n" + render_perf_budget_table(budget_report))
+            report_file = write_perf_budget_html_report(budget_report)
+            print("perf_budget_html_report:", str(report_file))
             if budget_report.violations:
                 print("perf_budget_violations:", budget_report.violations)
             if budget_report.should_fail:
