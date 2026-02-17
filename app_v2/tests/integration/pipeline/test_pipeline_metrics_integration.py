@@ -245,8 +245,9 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
     telemetry_snapshot: dict[str, Any] | None = None
     telemetry_frame_id: int = -1
     telemetry_by_frame: dict[int, dict[str, Any]] = {}
+    inference_by_frame: dict[int, dict[str, float]] = defaultdict(dict)
     yolo_payloads: list[dict[str, Any]] = []
-    for _, payload in publisher.published:
+    for published_frame_id, payload in publisher.published:
         for item in payload:
             if "telemetry" in item and isinstance(item["telemetry"], dict):
                 current_frame = int(float(item["telemetry"].get("frame_id", -1)))
@@ -256,6 +257,11 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
                     telemetry_frame_id = current_frame
             if item.get("model") in {"yolo_global", "yolo_tiles"}:
                 yolo_payloads.append(item)
+                infer_ms = item.get("inference_ms")
+                model_name = item.get("model")
+                if isinstance(model_name, str) and isinstance(infer_ms, (int, float)):
+                    per_frame = inference_by_frame[published_frame_id]
+                    per_frame[model_name] = max(per_frame.get(model_name, 0.0), float(infer_ms))
 
     assert telemetry_snapshot is not None, "Expected telemetry in published payload"
     for key in [
@@ -269,18 +275,24 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
 
     assert yolo_payloads, "Expected at least one YOLO payload"
     assert any("inference_ms" in item for item in yolo_payloads), "Expected inference_ms in YOLO payload"
+    status_values = [
+        item.get("prediction", {}).get("status")
+        for item in yolo_payloads
+        if isinstance(item.get("prediction"), dict)
+    ]
+    if status_values:
+        assert all(status == "ok" for status in status_values), f"Unexpected inference status values: {status_values}"
 
-    by_model: dict[str, float] = {}
-    for item in yolo_payloads:
-        model_name = item.get("model")
-        infer_ms = item.get("inference_ms")
-        if isinstance(model_name, str) and isinstance(infer_ms, (int, float)):
-            by_model[model_name] = max(by_model.get(model_name, 0.0), float(infer_ms))
+    latest_frame_inference = inference_by_frame.get(telemetry_frame_id, {})
 
-    telemetry_snapshot["inference_model_yolo_global_ms"] = by_model.get("yolo_global", 0.0)
-    telemetry_snapshot["inference_model_yolo_tiles_ms"] = by_model.get("yolo_tiles", 0.0)
-    telemetry_snapshot["inference_model_sum_ms"] = sum(by_model.values())
-    telemetry_snapshot["inference_model_max_ms"] = max(by_model.values()) if by_model else 0.0
+    telemetry_snapshot["inference_model_yolo_global_ms"] = float(latest_frame_inference.get("yolo_global", 0.0))
+    telemetry_snapshot["inference_model_yolo_tiles_ms"] = float(latest_frame_inference.get("yolo_tiles", 0.0))
+    telemetry_snapshot["inference_model_sum_ms"] = float(
+        telemetry_snapshot["inference_model_yolo_global_ms"] + telemetry_snapshot["inference_model_yolo_tiles_ms"]
+    )
+    telemetry_snapshot["inference_model_max_ms"] = float(
+        max(telemetry_snapshot["inference_model_yolo_global_ms"], telemetry_snapshot["inference_model_yolo_tiles_ms"])
+    )
 
     warmup_frames = 5
     history_metrics = [
@@ -299,8 +311,9 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
     steady_frames = ordered_frames[warmup_frames:]
     for frame_id in steady_frames:
         sample = dict(telemetry_by_frame[frame_id])
-        sample["inference_model_yolo_global_ms"] = by_model.get("yolo_global", 0.0)
-        sample["inference_model_yolo_tiles_ms"] = by_model.get("yolo_tiles", 0.0)
+        model_values = inference_by_frame.get(frame_id, {})
+        sample["inference_model_yolo_global_ms"] = float(model_values.get("yolo_global", 0.0))
+        sample["inference_model_yolo_tiles_ms"] = float(model_values.get("yolo_tiles", 0.0))
         sample["inference_model_sum_ms"] = float(sample["inference_model_yolo_global_ms"]) + float(sample["inference_model_yolo_tiles_ms"])
         sample["inference_model_max_ms"] = max(float(sample["inference_model_yolo_global_ms"]), float(sample["inference_model_yolo_tiles_ms"]))
         for key in history_metrics:

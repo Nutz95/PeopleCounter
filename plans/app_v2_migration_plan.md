@@ -61,6 +61,12 @@
   - `fusion_wait_ms` / `overlay_lag_ms`,
   - and therefore `end_to_end_ms`.
 
+### Metric collection correction (important)
+
+- E2E inference report aggregation was corrected to use **per-frame values** (steady-state) instead of a **max over all frames** that over-weighted warmup spikes.
+- Warmup is now skipped for the first 5 frames in the e2e history view.
+- Integration assertions now check YOLO prediction statuses so `gpu_unavailable` regressions are surfaced quickly.
+
 ### Action plan (next iterations)
 
 1. **Per-model TRT profiling pass (short-term)**

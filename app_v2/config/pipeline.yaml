@@ -3,10 +3,10 @@ fusion_strategy: ASYNC_OVERLAY
 models:
   yolo_global:
     enabled: true
-    engine: models/tensorrt/yolo26m-seg.engine
+    engine: models/tensorrt/yolo26n-seg.engine
   yolo_tiles:
     enabled: true
-    engine: models/tensorrt/yolo26m-seg.engine
+    engine: models/tensorrt/yolo26n-seg.engine
   density:
     enabled: true
     engine: models/tensorrt/dm_count_qnrf.engine
