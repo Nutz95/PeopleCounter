@@ -74,8 +74,11 @@ def test_result_aggregator_adds_fusion_lag_and_end_to_end_metrics() -> None:
     aggregator.attach_telemetry(frame_id, telemetry)
 
     now_ns = int(time.time_ns())
-    aggregator.collect(frame_id, {"model": "yolo_global", "_inference_done_ns": now_ns - 3_000_000})
-    aggregator.collect(frame_id, {"model": "yolo_tiles", "_inference_done_ns": now_ns})
+    aggregator.collect(
+        frame_id,
+        {"model": "yolo_global", "_inference_done_ns": now_ns - 3_000_000, "yolo_inference_ms": 12.5},
+    )
+    aggregator.collect(frame_id, {"model": "yolo_tiles", "_inference_done_ns": now_ns, "yolo_inference_ms": 8.0})
 
     assert publisher.published, "Aggregator should publish payload with telemetry"
     _, payload = publisher.published[-1]
@@ -85,6 +88,11 @@ def test_result_aggregator_adds_fusion_lag_and_end_to_end_metrics() -> None:
     assert "fusion_wait_ms" in snapshot
     assert "overlay_lag_ms" in snapshot
     assert "end_to_end_ms" in snapshot
+    assert "inference_model_yolo_global_ms" in snapshot
+    assert "inference_model_yolo_tiles_ms" in snapshot
+    assert "inference_model_sum_ms" in snapshot
+    assert "inference_model_max_ms" in snapshot
     assert float(snapshot["fusion_wait_ms"]) >= 0.0
     assert float(snapshot["overlay_lag_ms"]) >= 0.0
     assert float(snapshot["end_to_end_ms"]) >= 0.0
+    assert float(snapshot["inference_model_sum_ms"]) >= float(snapshot["inference_model_max_ms"])

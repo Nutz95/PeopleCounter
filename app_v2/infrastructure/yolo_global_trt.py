@@ -47,6 +47,7 @@ class YoloGlobalTRT(InferenceModel):
             infer_ms = (time.perf_counter_ns() - start_ns) / 1_000_000.0
             return {
                 "frame_id": frame_id,
+                "model": self._name,
                 "prediction": raw_outputs,
                 "segmentation": raw_outputs.get("segmentation") if isinstance(raw_outputs, dict) else None,
                 "detections": decoded.get("detections", []),

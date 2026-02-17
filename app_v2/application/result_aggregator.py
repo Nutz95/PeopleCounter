@@ -8,6 +8,15 @@ from typing import Any
 from app_v2.core.fusion_strategy import FusionStrategy
 from app_v2.core.result_publisher import ResultPublisher
 from app_v2.core.frame_telemetry import FrameTelemetry
+from app_v2.core.telemetry_keys import (
+    END_TO_END_MS,
+    FRAME_TIMESTAMP_NS,
+    FUSION_WAIT_MS,
+    INFERENCE_MODEL_MAX_MS,
+    INFERENCE_MODEL_SUM_MS,
+    OVERLAY_LAG_MS,
+    inference_model_metric_key,
+)
 from logger.filtered_logger import LogChannel, info as log_info
 
 
@@ -78,16 +87,40 @@ class ResultAggregator:
             overlay_lag_ms = max(0.0, (max(model_done_ns) - min(model_done_ns)) / 1_000_000.0)
 
         snapshot = telemetry.snapshot()
-        frame_timestamp_ns = snapshot.get("frame_timestamp_ns")
+        frame_timestamp_ns = snapshot.get(FRAME_TIMESTAMP_NS)
         end_to_end_ms = 0.0
         if isinstance(frame_timestamp_ns, (int, float)):
             end_to_end_ms = max(0.0, (publish_ns - int(frame_timestamp_ns)) / 1_000_000.0)
 
-        return {
-            "fusion_wait_ms": fusion_wait_ms,
-            "overlay_lag_ms": overlay_lag_ms,
-            "end_to_end_ms": end_to_end_ms,
+        inference_metrics = self._collect_inference_metrics(payload)
+
+        metrics: dict[str, float] = {
+            FUSION_WAIT_MS: fusion_wait_ms,
+            OVERLAY_LAG_MS: overlay_lag_ms,
+            END_TO_END_MS: end_to_end_ms,
         }
+        metrics.update(inference_metrics)
+        return metrics
+
+    @staticmethod
+    def _collect_inference_metrics(payload: Sequence[dict[str, Any]]) -> dict[str, float]:
+        per_model: dict[str, float] = {}
+        values: list[float] = []
+        for item in payload:
+            metric_value = item.get("yolo_inference_ms", item.get("inference_ms"))
+            if not isinstance(metric_value, (int, float)):
+                continue
+            value = float(metric_value)
+            values.append(value)
+            model_name = item.get("model")
+            if isinstance(model_name, str) and model_name:
+                key = inference_model_metric_key(model_name)
+                per_model[key] = max(per_model.get(key, 0.0), value)
+
+        if values:
+            per_model[INFERENCE_MODEL_SUM_MS] = sum(values)
+            per_model[INFERENCE_MODEL_MAX_MS] = max(values)
+        return per_model
 
     @staticmethod
     def _strip_internal_metrics(payload: dict[str, Any]) -> dict[str, Any]:

@@ -34,6 +34,7 @@ def test_yolo_global_trt_infer_includes_metrics_and_person_filter() -> None:
     result = model.infer(frame_id=7, inputs=["tensor0"])
 
     assert result["frame_id"] == 7
+    assert result["model"] == "yolo_global"
     assert result["person_class_id"] == 0
     assert result["class_whitelist"] == [0]
     assert result["input_count"] == 1
@@ -54,6 +55,7 @@ def test_yolo_tiles_trt_infer_includes_metrics_and_tile_count() -> None:
     result = model.infer(frame_id=9, inputs=["t0", "t1", "t2"])
 
     assert result["frame_id"] == 9
+    assert result["model"] == "yolo_tiles"
     assert result["person_class_id"] == 0
     assert result["class_whitelist"] == [0]
     assert result["tile_count"] == 3

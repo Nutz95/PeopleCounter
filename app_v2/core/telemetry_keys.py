@@ -14,6 +14,9 @@ FUSION_WAIT_MS = "fusion_wait_ms"
 OVERLAY_LAG_MS = "overlay_lag_ms"
 END_TO_END_MS = "end_to_end_ms"
 FRAME_TIMESTAMP_NS = "frame_timestamp_ns"
+INFERENCE_MODEL_STAGE_PREFIX = "inference_model_"
+INFERENCE_MODEL_SUM_MS = "inference_model_sum_ms"
+INFERENCE_MODEL_MAX_MS = "inference_model_max_ms"
 
 
 def preprocess_model_stage_name(model_name: str) -> str:
@@ -30,3 +33,7 @@ def preprocess_stream_model_key(model_name: str) -> str:
 
 def preprocess_stream_cuda_model_key(model_name: str) -> str:
     return f"{PREPROCESS_STREAM_CUDA_MODEL_PREFIX}{model_name}"
+
+
+def inference_model_metric_key(model_name: str) -> str:
+    return f"{INFERENCE_MODEL_STAGE_PREFIX}{model_name}_ms"

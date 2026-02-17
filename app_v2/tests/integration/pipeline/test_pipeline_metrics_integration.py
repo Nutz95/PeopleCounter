@@ -8,8 +8,11 @@ from typing import Any
 import pytest
 
 from app_v2.config.test_config import load_test_config
+from app_v2.application.pipeline_orchestrator import PipelineOrchestrator
+from app_v2.core.result_publisher import ResultPublisher
 from app_v2.infrastructure.gpu_preprocessor import GpuPreprocessor
 from app_v2.infrastructure.nvdec_decoder import NvdecDecodeConfig, NvdecDecoder
+from app_v2.infrastructure.rtsp_frame_source import RTSPFrameSource
 from app_v2.tests.integration.pipeline.perf_budget import (
     evaluate_perf_budget,
     render_perf_budget_table,
@@ -17,6 +20,14 @@ from app_v2.tests.integration.pipeline.perf_budget import (
 )
 
 CONFIG = load_test_config()
+
+
+class CapturePublisher(ResultPublisher):
+    def __init__(self) -> None:
+        self.published: list[tuple[int, list[dict[str, Any]]]] = []
+
+    def publish(self, frame_id: int, payload: list[dict[str, Any]]) -> None:
+        self.published.append((frame_id, payload))
 
 
 def _normalize_stream_url(value: Any) -> str | None:
@@ -163,3 +174,70 @@ def test_pipeline_metrics_snapshot_includes_stage_timings_and_pool_stats() -> No
         decoder.ring.release(slot)
     finally:
         decoder.stop()
+
+
+def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
+    try:
+        import torch
+    except ModuleNotFoundError:
+        pytest.skip("PyTorch must be installed to run e2e inference integration")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required to run e2e inference integration")
+
+    stream_url = _resolve_stream_url()
+    if stream_url is None:
+        pytest.skip("Set NVDEC_TEST_STREAM_URL to exercise e2e inference integration")
+
+    try:
+        importlib.import_module("PyNvCodec")
+    except ModuleNotFoundError:
+        pytest.skip("PyNvCodec must be installed to run e2e inference integration")
+
+    publisher = CapturePublisher()
+    try:
+        source = RTSPFrameSource(stream_url)
+    except (RuntimeError, ValueError) as exc:
+        message = str(exc).lower()
+        if (
+            "libnvcuvid" in message
+            or "cuda codec" in message
+            or "pynvdecoder" in message
+            or "unsupported ffmpeg pixel format" in message
+        ):
+            pytest.skip(f"NVDEC frame source unavailable: {exc}")
+        raise
+
+    orchestrator = PipelineOrchestrator(frame_source=source, max_frames=1, publisher=publisher)
+    orchestrator.run()
+
+    assert publisher.published, "Pipeline should publish at least one payload"
+
+    telemetry_snapshot: dict[str, Any] | None = None
+    yolo_payloads: list[dict[str, Any]] = []
+    for _, payload in publisher.published:
+        for item in payload:
+            if "telemetry" in item and isinstance(item["telemetry"], dict):
+                telemetry_snapshot = item["telemetry"]
+            if item.get("model") in {"yolo_global", "yolo_tiles"}:
+                yolo_payloads.append(item)
+
+    assert telemetry_snapshot is not None, "Expected telemetry in published payload"
+    for key in [
+        "fusion_wait_ms",
+        "overlay_lag_ms",
+        "end_to_end_ms",
+        "inference_model_sum_ms",
+        "inference_model_max_ms",
+    ]:
+        assert key in telemetry_snapshot, f"Missing e2e telemetry key: {key}"
+
+    assert yolo_payloads, "Expected at least one YOLO payload"
+    assert any("yolo_inference_ms" in item for item in yolo_payloads), "Expected yolo_inference_ms in YOLO payload"
+
+    budget_report = evaluate_perf_budget(telemetry_snapshot, fusion_strategy=orchestrator.config.get("fusion_strategy"))
+    if budget_report.mode != "off":
+        print("e2e_perf_budget_checked:", budget_report.checked)
+        print("e2e_perf_budget_summary:", budget_report.summary)
+        print("e2e_perf_budget_table:\n" + render_perf_budget_table(budget_report))
+        report_file = write_perf_budget_html_report(budget_report)
+        print("e2e_perf_budget_html_report:", str(report_file))
