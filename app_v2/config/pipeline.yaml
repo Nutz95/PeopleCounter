@@ -3,10 +3,10 @@ fusion_strategy: ASYNC_OVERLAY
 models:
   yolo_global:
     enabled: true
-    engine: models/tensorrt/yolo26n-seg.engine
+    engine: models/tensorrt/yolo26n-seg-fp8-qdq.engine  # FP8 Q/DQ (global frame)
   yolo_tiles:
     enabled: true
-    engine: models/tensorrt/yolo26n-seg.engine
+    engine: models/tensorrt/yolo26n-seg-fp8-qdq.engine  # FP8 Q/DQ ModelOpt PTQ
   density:
     enabled: true
     engine: models/tensorrt/dm_count_qnrf.engine
@@ -16,7 +16,7 @@ trt_execution:
   strict_shape_check: true
 
 yolo_tiles_parallel:
-  enabled: false
+  enabled: True  # ✅ Split x2 activé (16 tiles/group)
   groups: 2
 
 inference_streams:

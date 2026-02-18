@@ -16,7 +16,71 @@ action() {
     echo "🧪 Running prep commands inside the container..."
     local docker_args=("--gpus" "all" "-e" "DISPLAY=$DISPLAY" "-v" "$PWD:/app" "-w" "/app")
     local container_id
-    container_id=$(docker create "${docker_args[@]}" "$IMAGE_NAME" bash -c "set -e; apt-get update -qq; apt-get install -y --no-install-recommends git curl unzip ninja-build build-essential pkg-config cmake || true; if ! command -v nvcc >/dev/null 2>&1; then echo '⚠️ nvcc introuvable : votre image doit fournir un CUDA 13.x compatible'; fi; pip install --no-cache-dir 'cuda-python>=13.1.0,<14.0'; pip install --no-cache-dir nvidia-ml-py flask screeninfo psutil matplotlib ninja pytest pycocotools; pip uninstall -y pynvml || true; exit 0")
+    container_id=$(docker create "${docker_args[@]}" "$IMAGE_NAME" bash -c "set -e; 
+    
+    # System packages
+    apt-get update -qq
+    apt-get install -y --no-install-recommends git curl unzip ninja-build build-essential pkg-config cmake || true
+    
+    # Verify CUDA
+    if ! command -v nvcc >/dev/null 2>&1; then 
+        echo '⚠️ nvcc introuvable : votre image doit fournir un CUDA 13.x compatible'
+    fi
+    
+    # Install TensorRT 10.15 runtime + trtexec (Blackwell sm_120 FP8/FP16 fixes)
+    # TRT 10.15 resolves Blackwell perf regressions: +24% FP8 ConvNets, +9% FP16 FLUX
+    echo '🔧 Installing TensorRT 10.15 (trtexec + runtime)...'
+    apt-get install -y --no-install-recommends libnvinfer-bin || echo '⚠️ libnvinfer-bin apt install failed'
+    if ! command -v trtexec >/dev/null 2>&1; then
+        TRTEXEC_PATH=\$(find /usr -name trtexec 2>/dev/null | head -1)
+        [ -n \"\$TRTEXEC_PATH\" ] && ln -sf \"\$TRTEXEC_PATH\" /usr/local/bin/trtexec || echo '⚠️ trtexec not found'
+    fi
+    if command -v trtexec >/dev/null 2>&1; then
+        echo \"✅ trtexec: \$(trtexec --version 2>&1 | grep 'TensorRT v' | head -1 || echo 'version unknown')\"
+    fi
+
+    # Upgrade Python TensorRT bindings to 10.15 (needed to match new runtime)
+    # NOTE: existing .engine files will be INCOMPATIBLE after this upgrade -> rebuild all engines
+    echo '📦 Upgrading Python TensorRT to 10.15...'
+    APT_TRT_VER=\$(dpkg -l libnvinfer-bin 2>/dev/null | awk '/^ii/{print \$3}' | cut -d- -f1 || echo 'unknown')
+    echo \"ℹ️ apt libnvinfer version: \$APT_TRT_VER\"
+    pip install --no-cache-dir --upgrade \
+        'tensorrt==10.15.1.29' \
+        'tensorrt_cu13==10.15.1.29' \
+        'tensorrt_cu13_bindings==10.15.1.29' \
+        'tensorrt_cu13_libs==10.15.1.29' \
+        --extra-index-url https://pypi.ngc.nvidia.com || \
+    pip install --no-cache-dir --upgrade \
+        'tensorrt>=10.15,<10.16' \
+        --extra-index-url https://pypi.ngc.nvidia.com || \
+    echo '⚠️ TRT 10.15 pip wheels not found - engines will use existing TRT version'
+    python3 -c 'import tensorrt; print(f\"✅ Python TRT: {tensorrt.__version__}\")' || \
+        echo '⚠️ tensorrt import failed'
+
+    # NVIDIA ModelOpt: quantization toolkit (FP8/INT8 with proper Q/DQ nodes)
+    # + onnx-graphsurgeon for modelopt.onnx.quantization (ONNX-space Q/DQ insertion)
+    echo '📦 Installing NVIDIA ModelOpt + ONNX tools...'
+    pip install --no-cache-dir 'nvidia-modelopt[torch]' || \
+    pip install --no-cache-dir 'nvidia-modelopt' || \
+    echo '⚠️ nvidia-modelopt installation failed (optional - skip if not needed)'
+    pip install --no-cache-dir 'nvidia-onnx-graphsurgeon' 'onnxconverter-common' || \
+    { pip install --no-cache-dir 'onnx-graphsurgeon' --index-url https://pypi.ngc.nvidia.com && \
+      pip install --no-cache-dir 'onnxconverter-common'; } || \
+    echo '⚠️ onnx-graphsurgeon install failed (optional)'
+    # lief + onnx>=1.19 for modelopt.onnx.quantization (no-deps to avoid protobuf upgrade)
+    pip install --no-cache-dir 'lief' 'onnx>=1.19.0' --no-deps || \
+    echo '⚠️ lief/onnx upgrade failed (optional for FP8 quantization)'
+    python3 -c 'import modelopt; print(\"\u2705 nvidia-modelopt:\", modelopt.__version__)' 2>/dev/null || \
+        echo 'ℹ️ nvidia-modelopt not available'
+    python3 -c 'import onnx_graphsurgeon; print(\"\u2705 onnx-graphsurgeon:\", onnx_graphsurgeon.__version__)' 2>/dev/null || \
+        echo 'ℹ️ onnx-graphsurgeon not available'
+
+    # Python packages
+    pip install --no-cache-dir 'cuda-python>=13.1.0,<14.0'
+    pip install --no-cache-dir nvidia-ml-py flask screeninfo psutil matplotlib ninja pytest pycocotools
+    pip uninstall -y pynvml || true
+    
+    exit 0")
 
     docker start -a "$container_id"
     echo "💾 Committing prep container to $IMAGE_NAME..."

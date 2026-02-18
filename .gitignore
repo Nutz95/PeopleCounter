@@ -227,3 +227,15 @@ models/
 external/
 vendors/lwcc
 windows/bin/
+datasets/
+coco_val_minimal/
+Conductor.agent.md
+implement-subagent.agent.md
+Conductor.agent.md
+implement-subagent.agent.md
+.vscode/code-review-subagent.agent.md
+.vscode/Conductor.agent.md
+.vscode/implement-subagent.agent.md
+.vscode/planning-subagent.agent.md
+Conductor.agent.md
+implement-subagent.agent.md

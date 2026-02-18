@@ -51,10 +51,12 @@ six==1.17.0
 soupsieve==2.8
 sympy>=1.13.1
 # TensorRT Python packages (may require system libs / NVIDIA repos)
-tensorrt==10.14.1.48.post1
-tensorrt_cu13==10.14.1.48.post1
-tensorrt_cu13_bindings==10.14.1.48.post1
-tensorrt_cu13_libs==10.14.1.48.post1
+# TRT 10.15 adds Blackwell sm_120 FP8 kernels (+24% FP8 ConvNets, +9% FP16 FLUX)
+# NOTE: 1_prepare.sh upgrades to 10.15 at image prep time; exact PyPI post version may differ
+tensorrt==10.15.1.29
+tensorrt_cu13==10.15.1.29
+tensorrt_cu13_bindings==10.15.1.29
+tensorrt_cu13_libs==10.15.1.29
 # Unified torch stack for CUDA (installed from cu131 index in setup.sh)
 torch==2.9.1
 torchaudio==2.9.1
