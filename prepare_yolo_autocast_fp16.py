@@ -199,7 +199,7 @@ def main() -> None:
         build_trt_engine(src_onnx, engine_out, args.workspace_gb, timing_cache, strongly_typed=strongly_typed)
     else:
         with tempfile.TemporaryDirectory() as tmp:
-            mixed_onnx = Path(tmp) / "yolo26n-seg-fp16-mixed.onnx"
+            mixed_onnx = Path(tmp) / (onnx_in.stem + "-fp16-mixed.onnx")
             strongly_typed = convert_onnx_to_fp16(onnx_in, mixed_onnx)
             src_onnx = mixed_onnx if strongly_typed else onnx_in
             build_trt_engine(src_onnx, engine_out, args.workspace_gb, timing_cache, strongly_typed=strongly_typed)

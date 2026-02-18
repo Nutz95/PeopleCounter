@@ -8,9 +8,20 @@ try:
 except Exception:  # pragma: no cover
     trt = None  # type: ignore[assignment]
 
+try:
+    from app_v2.infrastructure.engine_refitter import EngineRefitter, get_onnx_path_for_engine
+    _REFITTER_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _REFITTER_AVAILABLE = False
+
 
 class TensorRTEngineLoader:
-    """Loads TensorRT engine blobs and exposes metadata for other infrastructure classes."""
+    """Loads TensorRT engine blobs and exposes metadata for other infrastructure classes.
+
+    Weight-stripped engines (produced with ``convert_onnx_to_trt.py --strip``)
+    are detected automatically via their ``.onnxpath`` sidecar file and refitted
+    transparently before use.  Callers do not need to handle this case explicitly.
+    """
 
     def __init__(self, engine_path: str, profiles: Dict[str, Any]) -> None:
         self.engine_path = engine_path
@@ -45,7 +56,20 @@ class TensorRTEngineLoader:
 
             logger = trt.Logger(trt.Logger.WARNING)
             runtime = trt.Runtime(logger)
-            engine = runtime.deserialize_cuda_engine(resolved.read_bytes())
+
+            # Auto-detect weight-stripped engine and refit from ONNX sidecar.
+            engine_bytes = resolved.read_bytes()
+            if _REFITTER_AVAILABLE and get_onnx_path_for_engine(resolved) is not None:
+                refitter = EngineRefitter(resolved)
+                engine = refitter.load_and_refit()
+                if engine is not None:
+                    print(f"[TensorRTEngineLoader] Refitted stripped engine from {resolved.name}")
+                else:
+                    metadata["reason"] = "engine refit failed"
+                    self._metadata = metadata
+                    return self._metadata
+            else:
+                engine = runtime.deserialize_cuda_engine(engine_bytes)
             if engine is None:
                 metadata["reason"] = "deserialize_cuda_engine returned None"
                 self._metadata = metadata

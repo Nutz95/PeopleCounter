@@ -240,3 +240,5 @@ implement-subagent.agent.md
 Conductor.agent.md
 implement-subagent.agent.md
 PeopleCounter.code-workspace
+vendors/lwcc
+external/lwcc

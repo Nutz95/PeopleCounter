@@ -24,9 +24,9 @@ class _FakeIStreamWriter:
 _fake_trt.IStreamWriter = _FakeIStreamWriter
 sys.modules.setdefault("tensorrt", _fake_trt)
 
-from app_v2.infrastructure.engine_stream_writer import (  # noqa: E402
-    FileStreamWriter,
+from app_v2.infrastructure.stream_writers import (  # noqa: E402
     BytesStreamWriter,
+    FileStreamWriter,
 )
 
 

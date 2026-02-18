@@ -148,39 +148,66 @@ Le goulot est l'étape 1. Un kernel fusionné ferait en **un seul pass** : NV12 
 
 ## Tableau de suivi des gains
 
-> Mis à jour après chaque étape. Généré dans `plans/optimization_gains.html`.
 > Les métriques `end_to_end_ms` / `inference_tiles_ms` / `bridge_ms` nécessitent une caméra réelle (NVDEC_TEST_STREAM_URL).
 
 | # | Optimisation | Fichiers créés / modifiés | Tests | `end_to_end_ms` | `inference_tiles_ms` | `bridge_ms` | Statut |
 |---|---|---|---|---|---|---|---|
 | 0 | **Baseline** | — | 42 ✅ | 37.6 ms 🔴 | 19.9 ms | 8.7 ms | ✅ référence |
-| 1 | **Timing Cache** | `timing_cache_manager.py`, `convert_onnx_to_trt.py`, `prepare_yolo_modelopt_fp8.py` | +14 → 56 ✅ | *(pas d'impact latence)* | *(pas d'impact latence)* | — | ✅ mesuré |
-| 2 | **CUDA Graphs** | `cuda_graph_cache.py`, `tensorrt_execution_context.py` | +8 → 64 ✅ | à mesurer | à mesurer | — | ✅ implémenté |
-| 3 | **AutoCast FP16** | `prepare_yolo_autocast_fp16.py`, `2_prepare_nvdec.sh` | +7 → 71 ✅ | à mesurer | à mesurer | — | ✅ mesuré (voir ci-dessous) |
-| 4 | **Weight Stripping** | `engine_refitter.py`, `convert_onnx_to_trt.py` | +11 → 82 ✅ | *(perf = FP32)* | *(perf = FP32)* | — | ✅ mesuré (voir ci-dessous) |
-| 5 | **Fused NV12+letterbox** | `nv12_cuda_bridge.py`, `preprocess.py` | +7 → 89 ✅ | à mesurer | à mesurer | 🎯 -4 ms visé | ✅ implémenté |
-| 6 | **IStreamWriter** | `engine_stream_writer.py`, `convert_onnx_to_trt.py` | +12 → 101 ✅ | — | — | — | ✅ implémenté |
+| 1 | **Timing Cache** | `timing_cache_manager.py`, `convert_onnx_to_trt.py`, `prepare_yolo_modelopt_fp8.py` | +14 → 56 ✅ | *(infra, pas d'impact latence)* | *(infra)* | — | ✅ mesuré |
+| 2 | **CUDA Graphs** | `cuda_graph_cache.py`, `tensorrt_execution_context.py` | +8 → 64 ✅ | à mesurer (caméra requise) | à mesurer | — | ✅ implémenté |
+| 3 | **AutoCast FP16** | `prepare_yolo_autocast_fp16.py`, `2_prepare_nvdec.sh` | +7 → 71 ✅ | à mesurer | −2.4 % GPU tiles | — | ✅ mesuré trtexec |
+| 4 | **Weight Stripping** | `engine_refitter.py`, `convert_onnx_to_trt.py` | +11 → 82 ✅ | *(perf = FP32)* | *(perf = FP32)* | — | ✅ mesuré trtexec |
+| 5 | **Fused NV12+letterbox** | `nv12_cuda_bridge.py`, `preprocess.py` | +7 → 89 ✅ | à mesurer | à mesurer | 🎯 −4 ms visé | ✅ implémenté |
+| 6 | **IStreamWriter** | `engine_stream_writer.py` → `stream_writers/` | +12 → 101 ✅ | *(infra)* | *(infra)* | — | ✅ implémenté |
 
 **Total tests** : 42 (baseline) → **101** (+59 nouveaux tests)
 
 ---
 
-## Benchmarks moteur — `trtexec` batch=8 (RTX 5060 Ti, 2026-02-18)
+## Benchmarks moteur — GPU Compute median (RTX 5060 Ti sm_120, 2026-02-18)
 
-> Commande : `trtexec --loadEngine=<engine> --shapes=images:8x3x640x640 --warmUp=200 --iterations=100 --avgRuns=10`
+> Commande : `trtexec --loadEngine=<engine> --shapes=images:Bx3x640x640 --warmUp=200 --iterations=100 --avgRuns=10`
+> Valeurs = GPU Compute Time median (hors H2D/D2H). Latency totale ≈ GPU + 1.55 ms (H2D) + 1.37 ms (D2H).
 
-| Engine | Taille | GPU median | Latency median | Δ GPU vs FP32 | Δ Taille vs FP32 | Notes |
-|--------|--------|-----------|----------------|---------------|-------------------|-------|
-| `yolo26n-seg.engine` (FP32 baseline) | **7.8 MB** | **5.17 ms** | **8.16 ms** | ref | ref | Profil dynamique batch 1–32 |
-| `yolo26n-seg-fp16-mixed.engine` (opt #3) | 7.9 MB | **4.89 ms** | **7.88 ms** | **−5.4 %** | +1 % | FP16 builder flag (ModelOpt fallback) |
-| `yolo26n-seg-fp8-qdq.engine` (FP8 QDQ) | **6.5 MB** | 5.10 ms | 8.19 ms | −1.4 % | **−17 %** | Profil dynamique, Q/DQ nodes |
-| `yolo26n-seg-fp8-b32.engine` (FP8 b32) | 7.8 MB | 5.14 ms | 8.16 ms | −0.6 % | 0 % | Batch statique 32 |
-| `yolo26n-seg-stripped.engine` (opt #4) | **4.1 MB** | ~5.17 ms | ~8.16 ms | 0 % | **−47 %** | Poids rechargés via refit (514 ms démarrage) |
+### yolo26n-seg (7.8 MB FP32) — tiles parallèles
 
-**Observations** :
-- FP16 donne le meilleur gain GPU compute (−5.4 %) malgré la limitation ModelOpt (fallback FP16 flag) — moteur 7.9 MB légèrement plus gros que FP32 (overhead STRONGLY_TYPED non utilisé)
-- FP8-QDQ est 17 % plus petit mais sans gain compute significatif sur RTX 5060 Ti (sm_120) — le Q/DQ overhead annule le bénéfice pour ce modèle tiny
-- Weight stripping réduit la taille de −47 % avec performances identiques ; seul coût : 514 ms de refit au premier démarrage
+| Format | Taille | batch=1 | batch=8 | batch=16 | batch=32 | Recommandation |
+|--------|--------|---------|---------|----------|----------|----------------|
+| **FP32** (baseline) | 7.8 MB | 2.63 ms | 5.21 ms | 9.38 ms | 18.59 ms | référence |
+| **FP16** (opt #3) | 7.9 MB | 3.26 ms ⚠️ | **4.98 ms** | **9.08 ms** | 18.93 ms | batch≥8 seulement |
+| **FP8-QDQ** | 6.5 MB | 2.66 ms | 5.01 ms | **8.66 ms** | **17.71 ms** | ✅ batch≥16 |
+| **Stripped** (opt #4) | **4.1 MB** | =FP32 | =FP32 | =FP32 | =FP32 | déploiement allégé |
+
+⚠️ FP16 est **plus lent** que FP32 à batch=1 sur yolo26n (modèle trop petit pour amortir les casts).
+
+### yolo26m-seg (48 MB FP32) — tile globale (batch=1) + plus grand modèle
+
+| Format | Taille | batch=1 | batch=8 | batch=16 | batch=32 | Recommandation |
+|--------|--------|---------|---------|----------|----------|----------------|
+| **FP32** (baseline) | 48 MB | 5.53 ms | 22.71 ms | 45.85 ms | 92.87 ms | référence |
+| **FP16** (opt #3) | ~30 MB | **5.24 ms** | 22.35 ms | 46.26 ms | 94.15 ms | batch=1 uniquement |
+| **FP8-QDQ** | 30 MB | 5.05 ms | **19.75 ms** | **39.34 ms** | **80.98 ms** | ✅ **tous batch** |
+
+FP8-QDQ donne −13 % GPU compute sur yolo26m à batch≥8. Très significatif pour ce modèle.
+
+### Analyse architecture global tile + sous-tiles
+
+L'idée : utiliser **yolo26m-seg FP8-QDQ (batch=1, ~5 ms)** pour la tile globale, et **yolo26n-seg FP8-QDQ (batch≤16, ~8.7 ms)** pour les sous-tiles en parallèle.
+
+```
+Stream A (tile globale) :   yolo26m-seg FP8-QDQ  →  5.05 ms GPU
+Stream B (sous-tiles ×N) :  yolo26n-seg FP8-QDQ  →  8.66 ms GPU (batch=16)
+                                                      ↑ budget 33 ms – 5 ms (transfer) = 28 ms = confortable
+```
+
+Les deux chemins tournent en parallèle. La fusion (opt #2 à venir) doit ensuite attendre le plus lent des deux — avec ces chiffres le chemin sous-tiles est le goulot (~12 ms total avec transfers).
+
+Pour ~16 tiles simultanées (batch=16) vs 1 frame globale :
+- yolo26m FP8 batch=1 = 5 ms ← terminerait bien avant le batch de tiles
+- yolo26n FP8 batch=16 = 8.66 ms ← goulot
+- **Équilibre** : on pourrait grouper jusqu'à 16 tiles en un seul batch et le global tile finit ~3.6 ms avant → très bon overlap
+
+---
 
 ---
 

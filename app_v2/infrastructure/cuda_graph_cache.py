@@ -61,6 +61,25 @@ class CudaGraphCache:
     def is_captured(self, batch_size: int) -> bool:
         return batch_size in self._entries
 
+    def stats(self) -> dict[str, Any]:
+        """Return a snapshot of capture state for logging/monitoring.
+
+        Example::
+
+            {
+                "captured_batches": [8, 16],
+                "failed_batches": [],
+                "using_graph": True,
+            }
+        """
+        captured = sorted(self._entries.keys())
+        failed = sorted(self._capture_failed)
+        return {
+            "captured_batches": captured,
+            "failed_batches": failed,
+            "using_graph": len(captured) > 0,
+        }
+
     def execute(
         self,
         input_tensor: Any,

@@ -49,8 +49,8 @@ class TestConvertOnnxToFp16:
         _make_minimal_fp32_onnx(onnx_in)
 
         # Import the function under test
-        import prepare_yolo_autocast_fp16 as m
-        m.convert_onnx_to_fp16(onnx_in, onnx_out)
+        import prepare_yolo_autocast_fp16 as autocast_module
+        autocast_module.convert_onnx_to_fp16(onnx_in, onnx_out)
 
         assert onnx_out.exists(), "FP16 ONNX output file should be created"
         assert onnx_out.stat().st_size > 0
@@ -61,8 +61,8 @@ class TestConvertOnnxToFp16:
         onnx_out = tmp_path / "model_fp16.onnx"
         _make_minimal_fp32_onnx(onnx_in)
 
-        import prepare_yolo_autocast_fp16 as m
-        m.convert_onnx_to_fp16(onnx_in, onnx_out)
+        import prepare_yolo_autocast_fp16 as autocast_module
+        autocast_module.convert_onnx_to_fp16(onnx_in, onnx_out)
 
         loaded = onnx_module.load(str(onnx_out))
         onnx_module.checker.check_model(loaded)  # raises if invalid
@@ -74,18 +74,18 @@ class TestConvertOnnxToFp16:
         onnx_out = tmp_path / "model_fp16.onnx"
         _make_minimal_fp32_onnx(onnx_in)
 
-        import prepare_yolo_autocast_fp16 as m
-        m.convert_onnx_to_fp16(onnx_in, onnx_out)
+        import prepare_yolo_autocast_fp16 as autocast_module
+        autocast_module.convert_onnx_to_fp16(onnx_in, onnx_out)
 
         model = onnx_module.load(str(onnx_out))
         FLOAT = onnx_module.TensorProto.FLOAT
-        for inp in model.graph.input:
-            assert inp.type.tensor_type.elem_type == FLOAT, (
-                f"Input {inp.name} should remain FLOAT32, got {inp.type.tensor_type.elem_type}"
+        for graph_input in model.graph.input:
+            assert graph_input.type.tensor_type.elem_type == FLOAT, (
+                f"Input {graph_input.name} should remain FLOAT32, got {graph_input.type.tensor_type.elem_type}"
             )
-        for out in model.graph.output:
-            assert out.type.tensor_type.elem_type == FLOAT, (
-                f"Output {out.name} should remain FLOAT32, got {out.type.tensor_type.elem_type}"
+        for graph_output in model.graph.output:
+            assert graph_output.type.tensor_type.elem_type == FLOAT, (
+                f"Output {graph_output.name} should remain FLOAT32, got {graph_output.type.tensor_type.elem_type}"
             )
 
 
@@ -96,18 +96,17 @@ class TestConvertOnnxToFp16:
 class TestAutocastCliArgs:
     def test_missing_onnx_exits(self, tmp_path: Path) -> None:
         """Script should exit(1) if input ONNX file doesn't exist."""
-        import prepare_yolo_autocast_fp16 as m
+        import prepare_yolo_autocast_fp16 as autocast_module
         with patch.object(sys, "argv", ["prog", "--onnx-in", str(tmp_path / "missing.onnx")]):
             with pytest.raises(SystemExit) as exc_info:
-                m.main()
+                autocast_module.main()
         assert exc_info.value.code == 1
 
     def test_help_exits_zero(self) -> None:
-        import prepare_yolo_autocast_fp16  # noqa: F401
+        import prepare_yolo_autocast_fp16 as autocast_module
         with patch.object(sys, "argv", ["prog", "--help"]):
             with pytest.raises(SystemExit) as exc_info:
-                import prepare_yolo_autocast_fp16 as m
-                m.main()
+                autocast_module.main()
         assert exc_info.value.code == 0
 
 
@@ -147,8 +146,8 @@ class TestBuildTrtEngine:
         mock_trt, expected_bytes = self._make_mock_trt(tmp_path)
 
         with patch("prepare_yolo_autocast_fp16.trt", mock_trt):
-            import prepare_yolo_autocast_fp16 as m
-            m.build_trt_engine(
+            import prepare_yolo_autocast_fp16 as autocast_module
+            autocast_module.build_trt_engine(
                 onnx_path=onnx_in,
                 engine_out=engine_out,
                 workspace_gb=1,
@@ -171,8 +170,8 @@ class TestBuildTrtEngine:
             patch("prepare_yolo_autocast_fp16.trt", mock_trt),
             patch("prepare_yolo_autocast_fp16.TimingCacheManager", return_value=mock_cache_mgr),
         ):
-            import prepare_yolo_autocast_fp16 as m
-            m.build_trt_engine(
+            import prepare_yolo_autocast_fp16 as autocast_module
+            autocast_module.build_trt_engine(
                 onnx_path=onnx_in,
                 engine_out=engine_out,
                 workspace_gb=1,

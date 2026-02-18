@@ -14,7 +14,7 @@ except ImportError:
     _write_sidecar = None  # type: ignore[assignment]
 
 try:
-    from app_v2.infrastructure.engine_stream_writer import FileStreamWriter as _FileStreamWriter
+    from app_v2.infrastructure.stream_writers import FileStreamWriter as _FileStreamWriter
 except ImportError:
     _FileStreamWriter = None  # type: ignore[assignment]
 

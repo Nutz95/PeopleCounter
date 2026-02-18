@@ -33,15 +33,15 @@ from app_v2.infrastructure.engine_refitter import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 def _make_engine_file(tmp_path: Path, engine_name: str = "model.engine") -> Path:
-    ep = tmp_path / engine_name
-    ep.write_bytes(b"\x00\x01\x02\x03")
-    return ep
+    engine_file_path = tmp_path / engine_name
+    engine_file_path.write_bytes(b"\x00\x01\x02\x03")
+    return engine_file_path
 
 
 def _make_onnx_file(tmp_path: Path, onnx_name: str = "model.onnx") -> Path:
-    op = tmp_path / onnx_name
-    op.write_bytes(b"\x08\x00")  # minimal fake ONNX bytes
-    return op
+    onnx_file_path = tmp_path / onnx_name
+    onnx_file_path.write_bytes(b"\x08\x00")  # minimal fake ONNX bytes
+    return onnx_file_path
 
 
 # ---------------------------------------------------------------------------
@@ -51,32 +51,32 @@ def _make_onnx_file(tmp_path: Path, onnx_name: str = "model.onnx") -> Path:
 
 class TestSidecarHelpers:
     def test_write_and_read_sidecar(self, tmp_path: Path):
-        ep = _make_engine_file(tmp_path)
-        op = _make_onnx_file(tmp_path)
+        engine_file_path = _make_engine_file(tmp_path)
+        onnx_file_path = _make_onnx_file(tmp_path)
 
-        write_refit_sidecar(ep, op)
-        sidecar = Path(str(ep) + REFIT_SIDECAR_SUFFIX)
+        write_refit_sidecar(engine_file_path, onnx_file_path)
+        sidecar = Path(str(engine_file_path) + REFIT_SIDECAR_SUFFIX)
         assert sidecar.exists(), "sidecar file should be created"
-        result = get_onnx_path_for_engine(ep)
-        assert result == op.resolve()
+        result = get_onnx_path_for_engine(engine_file_path)
+        assert result == onnx_file_path.resolve()
 
     def test_get_onnx_path_returns_none_when_no_sidecar(self, tmp_path: Path):
-        ep = _make_engine_file(tmp_path)
-        assert get_onnx_path_for_engine(ep) is None
+        engine_file_path = _make_engine_file(tmp_path)
+        assert get_onnx_path_for_engine(engine_file_path) is None
 
     def test_get_onnx_path_returns_none_when_sidecar_points_to_missing_file(
         self, tmp_path: Path
     ):
-        ep = _make_engine_file(tmp_path)
-        sidecar = Path(str(ep) + REFIT_SIDECAR_SUFFIX)
+        engine_file_path = _make_engine_file(tmp_path)
+        sidecar = Path(str(engine_file_path) + REFIT_SIDECAR_SUFFIX)
         sidecar.write_text("/nonexistent/path/model.onnx")
-        assert get_onnx_path_for_engine(ep) is None
+        assert get_onnx_path_for_engine(engine_file_path) is None
 
     def test_sidecar_stores_absolute_path(self, tmp_path: Path):
-        ep = _make_engine_file(tmp_path)
-        op = _make_onnx_file(tmp_path)
-        write_refit_sidecar(ep, op)
-        sidecar_text = Path(str(ep) + REFIT_SIDECAR_SUFFIX).read_text().strip()
+        engine_file_path = _make_engine_file(tmp_path)
+        onnx_file_path = _make_onnx_file(tmp_path)
+        write_refit_sidecar(engine_file_path, onnx_file_path)
+        sidecar_text = Path(str(engine_file_path) + REFIT_SIDECAR_SUFFIX).read_text().strip()
         assert Path(sidecar_text).is_absolute()
 
 
@@ -87,23 +87,23 @@ class TestSidecarHelpers:
 
 class TestEngineRefitterInit:
     def test_explicit_onnx_path(self, tmp_path: Path):
-        ep = _make_engine_file(tmp_path)
-        op = _make_onnx_file(tmp_path)
-        r = EngineRefitter(ep, op)
-        assert r.engine_path == ep
-        assert r.onnx_path == op
+        engine_file_path = _make_engine_file(tmp_path)
+        onnx_file_path = _make_onnx_file(tmp_path)
+        refitter = EngineRefitter(engine_file_path, onnx_file_path)
+        assert refitter.engine_path == engine_file_path
+        assert refitter.onnx_path == onnx_file_path
 
     def test_auto_onnx_from_sidecar(self, tmp_path: Path):
-        ep = _make_engine_file(tmp_path)
-        op = _make_onnx_file(tmp_path)
-        write_refit_sidecar(ep, op)
-        r = EngineRefitter(ep)
-        assert r.onnx_path == op.resolve()
+        engine_file_path = _make_engine_file(tmp_path)
+        onnx_file_path = _make_onnx_file(tmp_path)
+        write_refit_sidecar(engine_file_path, onnx_file_path)
+        refitter = EngineRefitter(engine_file_path)
+        assert refitter.onnx_path == onnx_file_path.resolve()
 
     def test_raises_when_no_onnx_and_no_sidecar(self, tmp_path: Path):
-        ep = _make_engine_file(tmp_path)
+        engine_file_path = _make_engine_file(tmp_path)
         with pytest.raises(FileNotFoundError, match="No ONNX source found"):
-            EngineRefitter(ep)
+            EngineRefitter(engine_file_path)
 
 
 # ---------------------------------------------------------------------------
@@ -127,69 +127,69 @@ class TestEngineRefitterLoadAndRefit:
         return mock_engine, mock_runtime, mock_refitter, mock_parser_refitter
 
     def test_refit_succeeds(self, tmp_path: Path):
-        ep = _make_engine_file(tmp_path)
-        op = _make_onnx_file(tmp_path)
-        eng, rt, ref, pref = self._make_mock_trt()
+        engine_file_path = _make_engine_file(tmp_path)
+        onnx_file_path = _make_onnx_file(tmp_path)
+        mock_engine, mock_runtime, mock_refitter, mock_parser_refitter = self._make_mock_trt()
 
         with (
-            patch("app_v2.infrastructure.engine_refitter.trt.Runtime", return_value=rt),
-            patch("app_v2.infrastructure.engine_refitter.trt.Refitter", return_value=ref),
+            patch("app_v2.infrastructure.engine_refitter.trt.Runtime", return_value=mock_runtime),
+            patch("app_v2.infrastructure.engine_refitter.trt.Refitter", return_value=mock_refitter),
             patch(
                 "app_v2.infrastructure.engine_refitter.trt.OnnxParserRefitter",
-                return_value=pref,
+                return_value=mock_parser_refitter,
             ),
         ):
-            r = EngineRefitter(ep, op)
-            result = r.load_and_refit()
+            refitter = EngineRefitter(engine_file_path, onnx_file_path)
+            result = refitter.load_and_refit()
 
-        rt.deserialize_cuda_engine.assert_called_once()
-        pref.refit_from_file.assert_called_once_with(str(op))
-        ref.refit_cuda_engine.assert_called_once()
-        assert result is eng
+        mock_runtime.deserialize_cuda_engine.assert_called_once()
+        mock_parser_refitter.refit_from_file.assert_called_once_with(str(onnx_file_path))
+        mock_refitter.refit_cuda_engine.assert_called_once()
+        assert result is mock_engine
 
     def test_raises_when_deserialize_fails(self, tmp_path: Path):
-        ep = _make_engine_file(tmp_path)
-        op = _make_onnx_file(tmp_path)
-        rt = MagicMock()
-        rt.deserialize_cuda_engine.return_value = None
+        engine_file_path = _make_engine_file(tmp_path)
+        onnx_file_path = _make_onnx_file(tmp_path)
+        mock_runtime = MagicMock()
+        mock_runtime.deserialize_cuda_engine.return_value = None
 
-        with patch("app_v2.infrastructure.engine_refitter.trt.Runtime", return_value=rt):
-            r = EngineRefitter(ep, op)
+        with patch("app_v2.infrastructure.engine_refitter.trt.Runtime", return_value=mock_runtime):
+            refitter = EngineRefitter(engine_file_path, onnx_file_path)
             with pytest.raises(RuntimeError, match="Failed to deserialise"):
-                r.load_and_refit()
+                refitter.load_and_refit()
 
     def test_raises_when_parser_refitter_fails(self, tmp_path: Path):
-        ep = _make_engine_file(tmp_path)
-        op = _make_onnx_file(tmp_path)
-        eng, rt, ref, pref = self._make_mock_trt()
-        pref.refit_from_file.return_value = False  # <- failure
+        engine_file_path = _make_engine_file(tmp_path)
+        onnx_file_path = _make_onnx_file(tmp_path)
+        mock_engine, mock_runtime, mock_refitter, mock_parser_refitter = self._make_mock_trt()
+        mock_parser_refitter.refit_from_file.return_value = False  # <- failure
 
         with (
-            patch("app_v2.infrastructure.engine_refitter.trt.Runtime", return_value=rt),
-            patch("app_v2.infrastructure.engine_refitter.trt.Refitter", return_value=ref),
+            patch("app_v2.infrastructure.engine_refitter.trt.Runtime", return_value=mock_runtime),
+            patch("app_v2.infrastructure.engine_refitter.trt.Refitter", return_value=mock_refitter),
             patch(
                 "app_v2.infrastructure.engine_refitter.trt.OnnxParserRefitter",
-                return_value=pref,
+                return_value=mock_parser_refitter,
             ),
         ):
-            r = EngineRefitter(ep, op)
+            refitter = EngineRefitter(engine_file_path, onnx_file_path)
             with pytest.raises(RuntimeError, match="OnnxParserRefitter failed"):
-                r.load_and_refit()
+                refitter.load_and_refit()
 
     def test_raises_when_refit_cuda_engine_fails(self, tmp_path: Path):
-        ep = _make_engine_file(tmp_path)
-        op = _make_onnx_file(tmp_path)
-        eng, rt, ref, pref = self._make_mock_trt()
-        ref.refit_cuda_engine.return_value = False  # <- failure
+        engine_file_path = _make_engine_file(tmp_path)
+        onnx_file_path = _make_onnx_file(tmp_path)
+        mock_engine, mock_runtime, mock_refitter, mock_parser_refitter = self._make_mock_trt()
+        mock_refitter.refit_cuda_engine.return_value = False  # <- failure
 
         with (
-            patch("app_v2.infrastructure.engine_refitter.trt.Runtime", return_value=rt),
-            patch("app_v2.infrastructure.engine_refitter.trt.Refitter", return_value=ref),
+            patch("app_v2.infrastructure.engine_refitter.trt.Runtime", return_value=mock_runtime),
+            patch("app_v2.infrastructure.engine_refitter.trt.Refitter", return_value=mock_refitter),
             patch(
                 "app_v2.infrastructure.engine_refitter.trt.OnnxParserRefitter",
-                return_value=pref,
+                return_value=mock_parser_refitter,
             ),
         ):
-            r = EngineRefitter(ep, op)
+            refitter = EngineRefitter(engine_file_path, onnx_file_path)
             with pytest.raises(RuntimeError, match="refit_cuda_engine.*returned False"):
-                r.load_and_refit()
+                refitter.load_and_refit()
