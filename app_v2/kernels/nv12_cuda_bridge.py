@@ -115,3 +115,131 @@ def _extract_device_pointer(value: Any) -> int:
         if isinstance(maybe_ptr, int):
             return maybe_ptr
     return 0
+
+
+def nv12_to_rgb_nchw_fp16_letterbox(
+    frame: Any,
+    target_h: int,
+    target_w: int,
+) -> Any:
+    """Fused NV12 decode + letterbox resize → RGB NCHW float16.
+
+    Returns a ``[3, target_h, target_w]`` float16 tensor in *[0, 1]* range.
+
+    Compared to calling :func:`nv12_frame_to_rgb_hwc_cuda` followed by a
+    bilinear letterbox resize, this function avoids allocating the full-
+    resolution RGB intermediate by sampling Y and UV planes *directly at
+    output resolution* via ``grid_sample``, then applying the YUV→RGB
+    conversion on the smaller (target) tensor.
+
+    The UV half-resolution is handled transparently by ``grid_sample``'s
+    normalised-coordinate convention — a sub-pixel alignment offset of
+    ``0.5 / W`` is introduced (< 1 pixel for any realistic resolution),
+    which is acceptable for real-time video.
+    """
+    if torch is None or not torch.cuda.is_available():
+        raise RuntimeError("CUDA-enabled PyTorch is required for fused NV12 letterbox")
+    if torch_functional is None:
+        raise RuntimeError("torch.nn.functional is required for fused NV12 letterbox")
+    if cuda_runtime is None:
+        raise RuntimeError("cuda.bindings.runtime is required for fused NV12 letterbox")
+
+    width = int(getattr(frame, "width"))
+    height = int(getattr(frame, "height"))
+    pitch = int(getattr(frame, "pitch") or width)
+
+    y_ptr = _extract_device_pointer(getattr(frame, "device_ptr_y", None))
+    uv_ptr = _extract_device_pointer(getattr(frame, "device_ptr_uv", None))
+    if y_ptr <= 0:
+        raise RuntimeError("NV12 frame missing valid device_ptr_y")
+    if uv_ptr <= 0 or uv_ptr == y_ptr:
+        uv_ptr = y_ptr + pitch * height
+
+    # ------------------------------------------------------------------ #
+    # Copy Y and UV planes (same as two-step path)
+    # ------------------------------------------------------------------ #
+    y_plane = torch.empty((height, width), dtype=torch.uint8, device="cuda")
+    uv_plane = torch.empty((max(1, height // 2), width), dtype=torch.uint8, device="cuda")
+
+    _copy_plane_2d_async(
+        destination_ptr=int(y_plane.data_ptr()),
+        destination_pitch_bytes=width,
+        source_ptr=y_ptr,
+        source_pitch_bytes=pitch,
+        width_bytes=width,
+        height_rows=height,
+    )
+    _copy_plane_2d_async(
+        destination_ptr=int(uv_plane.data_ptr()),
+        destination_pitch_bytes=width,
+        source_ptr=uv_ptr,
+        source_pitch_bytes=pitch,
+        width_bytes=width,
+        height_rows=max(1, height // 2),
+    )
+
+    # ------------------------------------------------------------------ #
+    # Build letterbox sampling grid [1, target_h, target_w, 2]
+    # ------------------------------------------------------------------ #
+    scale = min(target_w / max(1, width), target_h / max(1, height))
+    render_w = max(1, int(round(width * scale)))
+    render_h = max(1, int(round(height * scale)))
+    off_x = (target_w - render_w) // 2
+    off_y = (target_h - render_h) // 2
+
+    oj = torch.arange(target_w, device="cuda", dtype=torch.float32)
+    oi = torch.arange(target_h, device="cuda", dtype=torch.float32)
+
+    # Pixel (oj) in output → fractional pixel in input Y plane → normalised to [-1, 1]
+    nx = (oj - off_x) * width / render_w  # src_x (fractional, in [0, W))
+    ny = (oi - off_y) * height / render_h  # src_y (fractional, in [0, H))
+    nx = (nx + 0.5) * (2.0 / width) - 1.0   # align_corners=False convention
+    ny = (ny + 0.5) * (2.0 / height) - 1.0
+
+    # grid_sample expects [1, H, W, 2] with (x=col, y=row) ordering
+    gx = nx.view(1, target_w).expand(target_h, target_w)
+    gy = ny.view(target_h, 1).expand(target_h, target_w)
+    grid = torch.stack([gx, gy], dim=-1).unsqueeze(0)  # [1, target_h, target_w, 2]
+
+    # ------------------------------------------------------------------ #
+    # Sample Y, U, V at output resolution
+    # ------------------------------------------------------------------ #
+    y_f = y_plane.float().unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+
+    uv_pairs = (
+        uv_plane.view(max(1, height // 2), max(1, width // 2), 2)
+        .permute(2, 0, 1)
+        .float()
+    )  # [2, H/2, W/2]
+    u_f = uv_pairs[0:1].unsqueeze(0)  # [1, 1, H/2, W/2]
+    v_f = uv_pairs[1:2].unsqueeze(0)  # [1, 1, H/2, W/2]
+
+    # The SAME normalised grid works for Y (H×W) and UV (H/2×W/2) —
+    # grid_sample scales coords relative to each input's size, so the UV
+    # sub-pixel offset is ≤ 0.5 px and negligible for video quality.
+    sample_kw = {"mode": "bilinear", "padding_mode": "zeros", "align_corners": False}
+    y_out = torch_functional.grid_sample(y_f, grid, **sample_kw)  # [1,1,th,tw]
+    u_out = torch_functional.grid_sample(u_f, grid, **sample_kw)
+    v_out = torch_functional.grid_sample(v_f, grid, **sample_kw)
+
+    # ------------------------------------------------------------------ #
+    # BT.601 limited-range YUV → RGB, normalise [0,255] → [0,1] FP16
+    # ------------------------------------------------------------------ #
+    y_val = y_out - 16.0
+    u_val = u_out - 128.0
+    v_val = v_out - 128.0
+
+    r = torch.clamp(1.164 * y_val + 1.596 * v_val, 0.0, 255.0)
+    g = torch.clamp(1.164 * y_val - 0.392 * u_val - 0.813 * v_val, 0.0, 255.0)
+    b = torch.clamp(1.164 * y_val + 2.017 * u_val, 0.0, 255.0)
+
+    rgb = torch.cat([r, g, b], dim=1) / 255.0       # [1, 3, target_h, target_w] fp32
+
+    # Mask: pixels outside the rendered area must be black (0), not the
+    # artefact colour produced by BT.601(Y=0, U=0, V=0).
+    valid_x = ((nx >= -1.0) & (nx <= 1.0)).float().view(1, 1, 1, target_w)
+    valid_y = ((ny >= -1.0) & (ny <= 1.0)).float().view(1, 1, target_h, 1)
+    mask = valid_y * valid_x                          # [1, 1, target_h, target_w]
+    rgb = rgb * mask
+
+    return rgb.to(dtype=torch.float16).squeeze(0)   # [3, target_h, target_w] fp16

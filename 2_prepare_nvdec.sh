@@ -23,7 +23,15 @@ docker_args=(
     "-v" "$PWD:/app"
     "-w" "/app"
 )
-container_id=$(docker create "${docker_args[@]}" "$IMAGE_NAME" bash -c "set -e; chmod +x /app/scripts/nvdec/install_vpf.sh; /app/scripts/nvdec/install_vpf.sh")
+container_id=$(docker create "${docker_args[@]}" "$IMAGE_NAME" bash -c "set -e
+
+# ── Python packages needed for ONNX model preparation ──────────────────────
+chmod +x /app/scripts/nvdec/install_python_packages.sh
+/app/scripts/nvdec/install_python_packages.sh
+
+# ── NVDEC / VPF ─────────────────────────────────────────────────────────────
+chmod +x /app/scripts/nvdec/install_vpf.sh
+/app/scripts/nvdec/install_vpf.sh")
 
 cleanup() {
     if [[ -n "${container_id:-}" ]]; then

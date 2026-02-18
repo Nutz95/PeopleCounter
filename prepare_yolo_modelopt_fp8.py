@@ -192,6 +192,12 @@ def quantize_onnx() -> bool:
         return False
 
 # ── Step 4: TRT engine ────────────────────────────────────────────────────────
+try:
+    from app_v2.infrastructure.timing_cache_manager import TimingCacheManager as _TCM_fp8
+except ImportError:
+    _TCM_fp8 = None  # type: ignore[assignment]
+
+
 def build_trt_engine() -> bool:
     print(f"\n{'='*60}")
     print(f"Building TRT engine: {ONNX_QDQ} → {ENGINE_OUT}")
@@ -200,6 +206,12 @@ def build_trt_engine() -> bool:
     builder = trt.Builder(logger)
     config  = builder.create_builder_config()
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, WORKSPACE_GB * 1024 ** 3)
+
+    # Timing cache — persists kernel tactic choices across rebuilds (deterministic on sm_120)
+    _cache_path = ENGINE_OUT.parent / "timing_cache.bin"
+    _tc = _TCM_fp8(str(_cache_path)) if _TCM_fp8 is not None else None
+    if _tc is not None:
+        _tc.load_into_config(config)
     # Precision flags only needed when NOT using STRONGLY_TYPED (set conditionally below)
 
     # STRONGLY_TYPED is required for FP8 Q/DQ nodes in TRT 10.x (not EXPLICIT_BATCH)
@@ -243,6 +255,10 @@ def build_trt_engine() -> bool:
     ENGINE_OUT.parent.mkdir(parents=True, exist_ok=True)
     with open(ENGINE_OUT, "wb") as f:
         f.write(serialized)
+
+    # Persist timing cache after successful build
+    if _tc is not None:
+        _tc.save_from_config(config)
 
     size_mb = ENGINE_OUT.stat().st_size / 1e6
     print(f"✅ Engine: {ENGINE_OUT} ({size_mb:.1f} MB)")

@@ -4,7 +4,10 @@ from typing import Any
 
 from app_v2.core.preprocessor_types import GpuTensor, PreprocessTask, TensorMemoryFormat
 from app_v2.infrastructure.gpu_tensor_pool import GpuTensorLease, GpuTensorPool
-from app_v2.kernels.nv12_cuda_bridge import nv12_frame_to_rgb_hwc_cuda
+from app_v2.kernels.nv12_cuda_bridge import (
+    nv12_frame_to_rgb_hwc_cuda,
+    nv12_to_rgb_nchw_fp16_letterbox,
+)
 
 try:
     import torch
@@ -166,3 +169,56 @@ def run_tiling_kernel(
     resized = _tile_resize(src_hwc, task)
     output = _to_target_fp16(resized, lease)
     return _build_tensor(task, output, lease)
+
+
+def run_letterbox_kernel_fused(
+    frame: Any,
+    task: PreprocessTask,
+    stream: int = 0,
+    pool: GpuTensorPool | None = None,
+    source_tensor: Any | None = None,
+) -> GpuTensor:
+    """Fused NV12 + letterbox kernel — skips the full-resolution RGB intermediate.
+
+    For NV12 frames this is significantly faster than :func:`run_letterbox_kernel`
+    because it samples the Y/UV planes *directly at output resolution* and folds
+    the YUV→RGB conversion into the same pass, eliminating a temporary
+    ``(H × W × 3)`` tensor allocation and the subsequent resize pass.
+
+    For non-NV12 frames (pre-decoded RGB tensors) the function falls back
+    transparently to the standard two-step letterbox path.
+    """
+    # Fused path only for NV12 frames without a pre-supplied source tensor
+    is_nv12 = (
+        source_tensor is None
+        and getattr(frame, "device_ptr_y", None) is not None
+        and (
+            bool(getattr(frame, "is_nv12", lambda: False)())
+            or getattr(frame, "device_ptr_y", None) is not None
+        )
+    )
+
+    lease = _acquire_output_tensor(task, stream, pool)
+
+    if is_nv12:
+        telemetry = getattr(frame, "telemetry", None)
+        if telemetry:
+            telemetry.mark_stage_start("preprocess_nv12_fused")
+
+        rgb_nchw_fp16 = nv12_to_rgb_nchw_fp16_letterbox(
+            frame, task.target_height, task.target_width
+        )
+
+        if telemetry:
+            telemetry.mark_stage_end("preprocess_nv12_fused")
+
+        out = lease.tensor
+        out.zero_()
+        out.copy_(rgb_nchw_fp16)
+    else:
+        # Non-NV12: regular two-step
+        src_hwc = _source_tensor_from_frame(frame, source_tensor=source_tensor)
+        resized = _letterbox_resize(src_hwc, task.target_height, task.target_width)
+        out = _to_target_fp16(resized, lease)
+
+    return _build_tensor(task, out, lease)

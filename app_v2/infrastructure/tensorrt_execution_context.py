@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover
 
 if TYPE_CHECKING:
     from app_v2.infrastructure.tensorrt_engine_loader import TensorRTEngineLoader
+    from app_v2.infrastructure.cuda_graph_cache import CudaGraphCache
 
 
 class TensorRTExecutionContext:
@@ -35,6 +36,8 @@ class TensorRTExecutionContext:
         cfg_enabled = bool(self.options.get("enabled", False))
         self._trt_enabled = (env_enabled.strip() == "1") if isinstance(env_enabled, str) else cfg_enabled
         self._strict_shape_check = bool(self.options.get("strict_shape_check", True))
+        self._cuda_graphs_enabled = bool(self.options.get("cuda_graphs", False))
+        self._cuda_graph_cache: "CudaGraphCache | None" = None
         engine = self.engine_loader.engine
         if self._trt_enabled and engine is not None:
             self._context = engine.create_execution_context()
@@ -98,6 +101,18 @@ class TensorRTExecutionContext:
                 output_tensors.append(output_tensor)
 
             stream_handle = int(getattr(stream, "cuda_stream", 0))
+
+            if self._cuda_graphs_enabled and hasattr(stream, "cuda_stream"):
+                graph_result = self._execute_via_graph(
+                    input_tensor=input_tensor,
+                    input_name=input_name,
+                    output_names=output_names,
+                    stream=stream,
+                )
+                if graph_result is not None:
+                    graph_result["prepare_batch_ms"] = float(prepare_batch_ms)
+                    return graph_result
+
             enqueue_start_ns = self._perf_counter_ns()
             ok = bool(self._context.execute_async_v3(stream_handle))
             enqueue_ms = (self._perf_counter_ns() - enqueue_start_ns) / 1_000_000.0
@@ -118,6 +133,47 @@ class TensorRTExecutionContext:
                 "enqueue_ms": float(enqueue_ms),
                 "stream_sync_ms": float(stream_sync_ms),
             }
+
+    def _execute_via_graph(
+        self,
+        input_tensor: Any,
+        input_name: str,
+        output_names: list[str],
+        stream: Any,
+    ) -> Dict[str, Any] | None:
+        """Try graph-replay path. Returns result dict on success, None to fall back."""
+        from app_v2.infrastructure.cuda_graph_cache import CudaGraphCache
+
+        if self._cuda_graph_cache is None:
+            self._cuda_graph_cache = CudaGraphCache(
+                trt_context=self._context,
+                stream=stream,
+                engine=self.engine_loader.engine,
+            )
+
+        enqueue_start_ns = self._perf_counter_ns()
+        outputs = self._cuda_graph_cache.execute(input_tensor, output_names, input_name)
+        enqueue_ms = (self._perf_counter_ns() - enqueue_start_ns) / 1_000_000.0
+
+        if not outputs:
+            return None
+
+        sync_start_ns = self._perf_counter_ns()
+        if hasattr(stream, "synchronize"):
+            stream.synchronize()
+        stream_sync_ms = (self._perf_counter_ns() - sync_start_ns) / 1_000_000.0
+
+        return {
+            "status": "ok",
+            "outputs": outputs,
+            "output_tensors": list(outputs.values()),
+            "input_shape": tuple(int(x) for x in input_tensor.shape),
+            "engine_path": self._metadata.get("path"),
+            "prepare_batch_ms": 0.0,  # filled by caller
+            "enqueue_ms": float(enqueue_ms),
+            "stream_sync_ms": float(stream_sync_ms),
+            "cuda_graph": True,
+        }
 
     def _is_input_shape_compatible(self, input_name: str, tensor: Any) -> bool:
         engine = self.engine_loader.engine
@@ -191,6 +247,12 @@ class TensorRTExecutionContext:
         if trt_dtype == trt.DataType.INT32:
             return torch.int32
         return torch.float32
+
+    def release_graphs(self) -> None:
+        """Free all captured CUDA graphs (call before engine unload)."""
+        if self._cuda_graph_cache is not None:
+            self._cuda_graph_cache.release()
+            self._cuda_graph_cache = None
 
     def release_stream(self, stream_key: str) -> None:
         """Return the stream handle to the pool."""
