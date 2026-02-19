@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor, Future
 from typing import Any, Sequence
 
 from app_v2.application.gpu_preprocess_planner import GpuPreprocessPlanner
@@ -42,75 +44,135 @@ class GpuPreprocessor(Preprocessor):
         self._pool_is_external = tensor_pool is not None
         self._pool = tensor_pool or GpuTensorPool()
         self._stream_manager = PreprocessStreamManager()
+        # Persistent thread pool — created once, reused across all frames.
+        # Avoids the ~4 ms per-frame overhead of creating/destroying threads
+        # inside build_output().  Max workers = max supported specs (2 here).
+        self._executor: ThreadPoolExecutor | None = None
 
     def configure(self, metadata: dict[str, Any]) -> None:
         self._registry.configure(metadata)
         self._stream_manager.configure(metadata)
         if not self._pool_is_external:
             self._pool = self._build_pool(metadata)
+        # (Re-)create the persistent executor sized to the number of specs.
+        num_specs = len(list(self._registry.all_specs()))
+        if num_specs > 1:
+            if self._executor is not None:
+                self._executor.shutdown(wait=False)
+            self._executor = ThreadPoolExecutor(max_workers=num_specs)
+        else:
+            if self._executor is not None:
+                self._executor.shutdown(wait=False)
+            self._executor = None
+
+    def _dispatch_one_spec(
+        self,
+        spec: Any,
+        frame: Any,
+        frame_width: int,
+        frame_height: int,
+        source_tensor: Any,
+    ) -> tuple[str, Any, tuple[Any, ...], int, dict[str, float], float]:
+        """Dispatch preprocess for one model spec on its dedicated CUDA stream.
+
+        Returns (model_name, plan, inputs, stream_id, stream_metrics, elapsed_ms).
+        Designed to run in a background thread — each thread sets its own CUDA
+        stream context.  The tensor pool and stream manager are already
+        thread-safe at this point (streams pre-created in configure()).
+        """
+        stream_id = self._stream_manager.stream_for_model(spec.model_name)
+        stream_metrics: dict[str, float] = {
+            preprocess_stream_model_key(spec.model_name): float(stream_id),
+        }
+        cuda_stream_handle = self._stream_manager.stream_handle(stream_id)
+        if cuda_stream_handle is not None:
+            stream_metrics[preprocess_stream_cuda_model_key(spec.model_name)] = float(cuda_stream_handle)
+
+        t_start_ns = time.monotonic_ns()
+        plan = self._planner.build_plan(frame_width, frame_height, spec)
+        inputs: list[GpuTensor] = []
+        with self._stream_manager.stream_context(stream_id):
+            if spec.mode is PreprocessMode.TILES:
+                inputs = run_tiling_kernel_fused_batch(
+                    frame, list(plan.tasks), stream=stream_id, pool=self._pool
+                )
+            else:
+                for task in plan.tasks:
+                    tensor = run_letterbox_kernel_fused(
+                        frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor
+                    )
+                    inputs.append(tensor)
+        elapsed_ms = (time.monotonic_ns() - t_start_ns) / 1_000_000.0
+        return spec.model_name, plan, tuple(inputs), stream_id, stream_metrics, elapsed_ms
 
     def build_output(self, frame_id: int, frame: Any) -> PreprocessOutput:
         frame_width = int(getattr(frame, "width"))
         frame_height = int(getattr(frame, "height"))
 
-        plans = {}
-        model_inputs = {}
         telemetry: FrameTelemetry | None = getattr(frame, "telemetry", None)
-        stream_metrics: dict[str, float] = {}
-        used_streams: set[int] = set()
         if telemetry:
             telemetry.mark_stage_start("preprocess")
             frame_timestamp_ns = getattr(frame, "timestamp_ns", None)
             if frame_timestamp_ns is not None:
                 telemetry.add_metrics({FRAME_TIMESTAMP_NS: int(frame_timestamp_ns)})
+
         # For raw NV12 frames, skip the full-frame decode: each fused kernel
         # handles its own crop/letterbox directly from the Y/UV device pointers.
         is_nv12 = getattr(frame, "device_ptr_y", None) is not None
         source_tensor = None if is_nv12 else resolve_frame_source_tensor(frame)
-        for spec in self._registry.all_specs():
-            model_stage = preprocess_model_stage_name(spec.model_name)
-            stream_id = self._stream_manager.stream_for_model(spec.model_name)
-            used_streams.add(stream_id)
-            stream_metrics[preprocess_stream_model_key(spec.model_name)] = float(stream_id)
-            cuda_stream_handle = self._stream_manager.stream_handle(stream_id)
-            if cuda_stream_handle is not None:
-                stream_metrics[preprocess_stream_cuda_model_key(spec.model_name)] = float(cuda_stream_handle)
-            if telemetry:
-                telemetry.mark_stage_start(model_stage)
-            plan = self._planner.build_plan(frame_width, frame_height, spec)
-            plans[spec.model_name] = plan
-            inputs: list[GpuTensor] = []
-            with self._stream_manager.stream_context(stream_id):
-                if spec.mode is PreprocessMode.TILES:
-                    # Batch path: copy full NV12 frame once, process all tiles in a single
-                    # grid_sample call — reduces Python→CUDA dispatch from O(N×ops) to O(ops).
-                    kernel_batch_stage = f"preprocess_kernel_batch_{spec.model_name}"
-                    if telemetry:
-                        telemetry.mark_stage_start(kernel_batch_stage)
-                    inputs = run_tiling_kernel_fused_batch(
-                        frame, list(plan.tasks), stream=stream_id, pool=self._pool
-                    )
-                    if telemetry:
-                        telemetry.mark_stage_end(kernel_batch_stage)
-                else:
-                    for task in plan.tasks:
-                        kernel_stage = f"preprocess_kernel_{spec.model_name}_{task.task_index}"
-                        if telemetry:
-                            telemetry.mark_stage_start(kernel_stage)
-                        tensor = run_letterbox_kernel_fused(
-                            frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor
-                        )
-                        if telemetry:
-                            telemetry.mark_stage_end(kernel_stage)
-                        inputs.append(tensor)
-            model_inputs[spec.model_name] = tuple(inputs)
-            if telemetry:
-                telemetry.mark_stage_end(model_stage)
 
+        specs = list(self._registry.all_specs())
+        plans: dict[str, Any] = {}
+        model_inputs: dict[str, tuple[Any, ...]] = {}
+        used_streams: set[int] = set()
+        merged_stream_metrics: dict[str, float] = {}
+        per_model_ms: dict[str, float] = {}
+
+        if len(specs) > 1:
+            # Parallel dispatch using the persistent executor (no thread-creation overhead).
+            executor = self._executor
+            if executor is None:
+                # Fallback: executor not yet created (e.g. configure() not called).
+                executor = ThreadPoolExecutor(max_workers=len(specs))
+            t_dispatch_start = time.monotonic_ns()
+            futures: list[Future[Any]] = [
+                executor.submit(self._dispatch_one_spec, spec, frame, frame_width, frame_height, source_tensor)
+                for spec in specs
+            ]
+            results = [f.result() for f in futures]
+            t_dispatch_end = time.monotonic_ns()
+        else:
+            t_dispatch_start = time.monotonic_ns()
+            results = [
+                self._dispatch_one_spec(specs[0], frame, frame_width, frame_height, source_tensor)
+            ]
+            t_dispatch_end = time.monotonic_ns()
+
+        for model_name, plan, inputs, stream_id, stream_metrics, elapsed_ms in results:
+            plans[model_name] = plan
+            model_inputs[model_name] = inputs
+            used_streams.add(stream_id)
+            merged_stream_metrics.update(stream_metrics)
+            per_model_ms[model_name] = elapsed_ms
+
+        t_sync_start = time.monotonic_ns()
         self._stream_manager.synchronize_streams(used_streams)
+        t_sync_end = time.monotonic_ns()
+
         if telemetry:
+            # Record per-model stage timings collected from threads
+            for model_name, elapsed_ms in per_model_ms.items():
+                model_stage = preprocess_model_stage_name(model_name)
+                telemetry.add_metrics({model_stage + "_ms": elapsed_ms})
             telemetry.add_metrics(self._pool.stats_snapshot().as_dict(), prefix="tensor_pool_")
-            telemetry.add_metrics(stream_metrics)
+            telemetry.add_metrics(merged_stream_metrics)
+            # Sub-breakdown metrics to diagnose serial overhead sources
+            dispatch_ms = (t_dispatch_end - t_dispatch_start) / 1_000_000.0
+            sync_ms = (t_sync_end - t_sync_start) / 1_000_000.0
+            telemetry.add_metrics({
+                "preprocess_dispatch_ms": dispatch_ms,
+                "preprocess_sync_ms": sync_ms,
+            })
             telemetry.mark_stage_end("preprocess")
             self._add_parallelism_metrics(telemetry, model_inputs)
 

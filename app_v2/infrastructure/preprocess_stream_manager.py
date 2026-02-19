@@ -19,6 +19,11 @@ class PreprocessStreamManager:
     def configure(self, metadata: dict[str, Any]) -> None:
         self._stream_by_model = self.build_stream_map(metadata)
         self._cuda_streams = {}
+        # Pre-create all configured streams so that concurrent calls to
+        # stream_context() during parallel preprocessing never write to
+        # self._cuda_streams after configure() returns.
+        for stream_id in set(self._stream_by_model.values()):
+            self._get_or_create_cuda_stream(int(stream_id))
 
     def stream_for_model(self, model_name: str) -> int:
         return int(self._stream_by_model.get(model_name, 0))

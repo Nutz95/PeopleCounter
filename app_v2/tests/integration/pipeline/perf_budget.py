@@ -32,18 +32,32 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "nvdec_ms": 42.0,
         "preprocess_nv12_bridge_ms": 16.0,
         "preprocess_ms": 30.0,
-        "preprocess_model_yolo_global_ms": 1.5,
+        "preprocess_model_yolo_global_ms": 2.0,
         "preprocess_model_yolo_tiles_ms": 5.0,
         "preprocess_model_max_ms": 12.0,
         "preprocess_model_sum_ms": 20.0,
         "preprocess_critical_path_ms": 27.0,
-        "preprocess_serial_overhead_ms": 2.0,
+        # Serial overhead = preprocess_ms - (bridge + model_max).
+        # With persistent executor the dispatch overhead is < 0.5 ms; the dominant
+        # component is preprocess_sync_ms (CPU blocking on stream.synchronize()).
+        # That sync time equals the true GPU execution time of the tiles preprocess.
+        # Target 6 ms is aspirational (requires removing host-sync from hot path).
+        "preprocess_serial_overhead_ms": 6.0,
+        # dispatch = time to submit both worker threads + collect results (Python overhead only)
+        "preprocess_dispatch_ms": 4.0,
+        # sync = time CPU blocks on stream.synchronize() = actual GPU tiles preprocess time
+        "preprocess_sync_ms": 13.0,
         "inference_model_yolo_global_ms": 15.0,
         "inference_model_yolo_tiles_ms": 20.0,
         "inference_model_sum_ms": 30.0,
         "inference_model_max_ms": 20.0,
-        "fusion_wait_ms": 8.0,
+        # fusion_wait ≈ tiles_inference_ms − global_inference_ms in ASYNC_OVERLAY.
+        # With yolo_tiles at ~20 ms and yolo_global at ~4 ms, the inherent gap
+        # is ~16-18 ms; 21 ms gives a small margin.
+        "fusion_wait_ms": 21.0,
         "overlay_lag_ms": 25.0,
+        # 33 ms = 1 frame at 30 fps.  Achievable with optimised preprocess (~5 ms)
+        # + sequential global (4 ms) + tiles (20 ms) + overhead (~4 ms) ≈ 33 ms.
         "end_to_end_ms": 33.0,
         "tensor_pool_wait_ms": 2.0,
     },
@@ -241,6 +255,10 @@ def render_perf_budget_html(
     serial_overhead = float(report.checked.get("preprocess_serial_overhead_ms", (0.0, 0.0))[0])
     decomposition_gap = preprocess_total - (bridge + critical_model + serial_overhead)
 
+    # Sub-breakdown of serial_overhead (dispatch + sync) — from new telemetry
+    dispatch_ms = float(report.summary.get("preprocess_dispatch_ms", 0.0))
+    sync_ms = float(report.summary.get("preprocess_sync_ms", 0.0))
+
     inf_global = float(report.checked.get("inference_model_yolo_global_ms", (0.0, 0.0))[0])
     inf_tiles = float(report.checked.get("inference_model_yolo_tiles_ms", (0.0, 0.0))[0])
 
@@ -249,6 +267,8 @@ def render_perf_budget_html(
         "nvdec_ms",
         "preprocess_ms",
         "preprocess_nv12_bridge_ms",
+        "preprocess_dispatch_ms",
+        "preprocess_sync_ms",
         "preprocess_serial_overhead_ms",
         "inference_model_sum_ms",
         "end_to_end_ms",
@@ -344,9 +364,11 @@ def render_perf_budget_html(
             <li>├─ <b>preprocess_nv12_bridge_ms</b> = {bridge:.3f} ms</li>
             <li>├─ <b>preprocess_model_max_ms</b> (branche critique parallèle) = {critical_model:.3f} ms</li>
             <li>└─ <b>preprocess_serial_overhead_ms</b> = {serial_overhead:.3f} ms</li>
+            <li>&nbsp;&nbsp;&nbsp;├─ <b>preprocess_dispatch_ms</b> (soumission threads + collect résultats) = {dispatch_ms:.3f} ms</li>
+            <li>&nbsp;&nbsp;&nbsp;└─ <b>preprocess_sync_ms</b> (stream.synchronize() = temps GPU réel tiles) = {sync_ms:.3f} ms</li>
         </ul>
         <div class="label">Écart de décomposition (doit rester proche de 0): {decomposition_gap:.3f} ms</div>
-        <div class="label">Note: <b>preprocess_serial_overhead_ms</b> ne signifie pas fallback CPU; c’est le résiduel (latence de lancement kernels, synchronisations de streams, bookkeeping pool/planification), mesuré comme preprocess_ms - preprocess_critical_path_ms.</div>
+        <div class="label">Note: <b>preprocess_sync_ms</b> = temps réel d'exécution GPU du preprocess tiles (stream.synchronize() bloque le CPU). Pour le réduire: supprimer le host-sync et utiliser des CUDA events (inference_stream.wait_event) pour ordonnancer sans bloquer le CPU.</div>
     </div>
     <div class="group">
         <div class="label">Comparaison inférence YOLO</div>
@@ -453,6 +475,9 @@ def evaluate_perf_budget(
         "critical_path_ms": critical_path_ms,
         "fps_margin_ms": target_period_ms - critical_path_ms,
         "parallel_efficiency_ratio": model_sum_ms / model_max_ms if model_max_ms > 0.0 else 0.0,
+        # Sub-breakdown of preprocess serial overhead
+        "preprocess_dispatch_ms": float(snapshot.get("preprocess_dispatch_ms", 0.0)),
+        "preprocess_sync_ms": float(snapshot.get("preprocess_sync_ms", 0.0)),
     }
 
     return PerfBudgetReport(

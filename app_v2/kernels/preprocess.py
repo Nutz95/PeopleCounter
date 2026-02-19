@@ -265,7 +265,7 @@ def run_tiling_kernel_fused_batch(
         for task in tasks
     ]
 
-    rgb_batch = nv12_tiles_to_rgb_nchw_fp16_batch(frame, tile_crops, target_h, target_w)
+    rgb_batch = nv12_tiles_to_rgb_nchw_fp16_batch(frame, tile_crops, target_h, target_w, stream_id=stream)
     # rgb_batch: [num_tiles, 3, target_h, target_w] fp16
 
     result: list[GpuTensor] = []
@@ -311,7 +311,7 @@ def run_letterbox_kernel_fused(
             telemetry.mark_stage_start("preprocess_nv12_fused")
 
         rgb_nchw_fp16 = nv12_to_rgb_nchw_fp16_letterbox(
-            frame, task.target_height, task.target_width
+            frame, task.target_height, task.target_width, stream_id=stream
         )
 
         if telemetry:

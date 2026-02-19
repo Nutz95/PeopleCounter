@@ -152,7 +152,7 @@ class TestFusedKernelDispatch:
         ):
             result = run_letterbox_kernel_fused(frame, _task())
 
-        mock_fused.assert_called_once_with(frame, 32, 32)
+        mock_fused.assert_called_once_with(frame, 32, 32, stream_id=0)
         assert result is not None
 
     def test_pre_supplied_source_tensor_skips_fused_path(self):
