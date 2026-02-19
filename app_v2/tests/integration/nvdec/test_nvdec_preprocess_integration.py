@@ -129,7 +129,8 @@ def test_nvdec_to_gpu_preprocess_global_and_tiles() -> None:
             releaser = getattr(tensor, "release", None)
             if callable(releaser):
                 releaser()
-        assert "preprocess_nv12_bridge_ms" in telemetry_snapshot
+        # NV12 decode is now fused inside each kernel (preprocess_nv12_fused / preprocess_nv12_crop_fused);
+        # the preprocess_nv12_bridge stage no longer runs as a separate step.
         assert "preprocess_model_sum_ms" in telemetry_snapshot
         assert "preprocess_model_max_ms" in telemetry_snapshot
         assert "preprocess_critical_path_ms" in telemetry_snapshot

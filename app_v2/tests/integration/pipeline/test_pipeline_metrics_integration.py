@@ -156,7 +156,8 @@ def test_pipeline_metrics_snapshot_includes_stage_timings_and_pool_stats() -> No
             "frame_id",
             "nvdec_ms",
             "preprocess_ms",
-            "preprocess_nv12_bridge_ms",
+            # preprocess_nv12_bridge_ms removed: NV12 decode is now fused inside each
+            # kernel (preprocess_nv12_fused / preprocess_nv12_crop_fused stage names).
             "preprocess_model_yolo_global_ms",
             "preprocess_model_yolo_tiles_ms",
             "preprocess_model_sum_ms",
@@ -304,7 +305,7 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
     history_metrics = [
         "nvdec_ms",
         "preprocess_ms",
-        "preprocess_nv12_bridge_ms",
+        # preprocess_nv12_bridge_ms: NV12 decode now fused inside kernel stage timings
         "preprocess_serial_overhead_ms",
         "inference_model_sum_ms",
         "inference_model_max_ms",

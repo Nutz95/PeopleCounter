@@ -5,6 +5,7 @@ from typing import Any
 from app_v2.core.preprocessor_types import GpuTensor, PreprocessTask, TensorMemoryFormat
 from app_v2.infrastructure.gpu_tensor_pool import GpuTensorLease, GpuTensorPool
 from app_v2.kernels.nv12_cuda_bridge import (
+    nv12_crop_to_rgb_nchw_fp16,
     nv12_frame_to_rgb_hwc_cuda,
     nv12_to_rgb_nchw_fp16_letterbox,
 )
@@ -169,6 +170,60 @@ def run_tiling_kernel(
     resized = _tile_resize(src_hwc, task)
     output = _to_target_fp16(resized, lease)
     return _build_tensor(task, output, lease)
+
+
+def run_tiling_kernel_fused(
+    frame: Any,
+    task: PreprocessTask,
+    stream: int = 0,
+    pool: GpuTensorPool | None = None,
+    source_tensor: Any | None = None,
+) -> GpuTensor:
+    """Fused NV12 crop + resize kernel — no full-frame RGB intermediate.
+
+    For NV12 frames (when ``source_tensor is None``) this copies only the
+    ``task.source_height × task.source_width`` region from the Y and UV planes
+    directly, avoiding the ``(frame_H × frame_W × 3)`` peak-memory allocation
+    that the standard :func:`run_tiling_kernel` incurs.
+
+    For non-NV12 frames (pre-decoded RGB tensors, or when *source_tensor* is
+    already provided) the function falls back transparently to the standard
+    two-step crop-and-resize path.
+    """
+    is_nv12 = (
+        source_tensor is None
+        and getattr(frame, "device_ptr_y", None) is not None
+    )
+
+    lease = _acquire_output_tensor(task, stream, pool)
+
+    if is_nv12:
+        telemetry = getattr(frame, "telemetry", None)
+        if telemetry:
+            telemetry.mark_stage_start("preprocess_nv12_crop_fused")
+
+        rgb_nchw_fp16 = nv12_crop_to_rgb_nchw_fp16(
+            frame,
+            crop_x=int(task.source_x),
+            crop_y=int(task.source_y),
+            crop_w=int(task.source_width),
+            crop_h=int(task.source_height),
+            target_h=task.target_height,
+            target_w=task.target_width,
+        )
+
+        if telemetry:
+            telemetry.mark_stage_end("preprocess_nv12_crop_fused")
+
+        out = lease.tensor
+        out.zero_()
+        out.copy_(rgb_nchw_fp16)
+    else:
+        src_hwc = _source_tensor_from_frame(frame, source_tensor=source_tensor)
+        resized = _tile_resize(src_hwc, task)
+        out = _to_target_fp16(resized, lease)
+
+    return _build_tensor(task, out, lease)
 
 
 def run_letterbox_kernel_fused(

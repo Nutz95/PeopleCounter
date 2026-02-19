@@ -117,6 +117,112 @@ def _extract_device_pointer(value: Any) -> int:
     return 0
 
 
+def nv12_crop_to_rgb_nchw_fp16(
+    frame: Any,
+    crop_x: int,
+    crop_y: int,
+    crop_w: int,
+    crop_h: int,
+    target_h: int,
+    target_w: int,
+) -> Any:
+    """Fused NV12 crop + resize → RGB NCHW float16, without a full-frame intermediate.
+
+    Copies only the `crop_h × crop_w` region from the Y and UV planes instead
+    of decoding the entire frame.  This avoids the ``(frame_H × frame_W × 3)``
+    peak-memory spike that :func:`nv12_frame_to_rgb_hwc_cuda` would produce.
+
+    Returns a ``[3, target_h, target_w]`` float16 tensor in *[0, 1]* range.
+    Pixel values outside the crop region are filled with 0 via ``padding_mode='border'``.
+    """
+    if torch is None or not torch.cuda.is_available():
+        raise RuntimeError("CUDA-enabled PyTorch is required for fused NV12 crop")
+    if torch_functional is None:
+        raise RuntimeError("torch.nn.functional is required for fused NV12 crop")
+    if cuda_runtime is None:
+        raise RuntimeError("cuda.bindings.runtime is required for fused NV12 crop")
+
+    width = int(getattr(frame, "width"))
+    height = int(getattr(frame, "height"))
+    pitch = int(getattr(frame, "pitch") or width)
+
+    y_ptr = _extract_device_pointer(getattr(frame, "device_ptr_y", None))
+    uv_ptr = _extract_device_pointer(getattr(frame, "device_ptr_uv", None))
+    if y_ptr <= 0:
+        raise RuntimeError("NV12 frame missing valid device_ptr_y")
+    if uv_ptr <= 0 or uv_ptr == y_ptr:
+        uv_ptr = y_ptr + pitch * height
+
+    # Clamp crop to frame bounds
+    crop_x = max(0, min(crop_x, width - 1))
+    crop_y = max(0, min(crop_y, height - 1))
+    crop_w = max(1, min(crop_w, width - crop_x))
+    crop_h = max(1, min(crop_h, height - crop_y))
+
+    # UV plane: half-height, each row has crop_w interleaved bytes (crop_w/2 U-V pairs)
+    uv_row_first = crop_y // 2
+    uv_row_count = max(1, (crop_h + 1) // 2)
+
+    # Source byte offsets for the crop windows
+    y_crop_ptr = y_ptr + crop_y * pitch
+    uv_crop_ptr = uv_ptr + uv_row_first * pitch
+
+    y_plane = torch.empty((crop_h, crop_w), dtype=torch.uint8, device="cuda")
+    uv_plane = torch.empty((uv_row_count, crop_w), dtype=torch.uint8, device="cuda")
+
+    _copy_plane_2d_async(
+        destination_ptr=int(y_plane.data_ptr()),
+        destination_pitch_bytes=crop_w,
+        source_ptr=y_crop_ptr,
+        source_pitch_bytes=pitch,
+        width_bytes=crop_w,
+        height_rows=crop_h,
+    )
+    _copy_plane_2d_async(
+        destination_ptr=int(uv_plane.data_ptr()),
+        destination_pitch_bytes=crop_w,
+        source_ptr=uv_crop_ptr,
+        source_pitch_bytes=pitch,
+        width_bytes=crop_w,
+        height_rows=uv_row_count,
+    )
+
+    # Build simple bilinear resize grid [1, target_h, target_w, 2]
+    oj = torch.arange(target_w, device="cuda", dtype=torch.float32)
+    oi = torch.arange(target_h, device="cuda", dtype=torch.float32)
+    nx = (oj + 0.5) * (2.0 / max(1, target_w)) - 1.0   # [-1, 1]
+    ny = (oi + 0.5) * (2.0 / max(1, target_h)) - 1.0
+    gx = nx.view(1, target_w).expand(target_h, target_w)
+    gy = ny.view(target_h, 1).expand(target_h, target_w)
+    grid = torch.stack([gx, gy], dim=-1).unsqueeze(0)   # [1, th, tw, 2]
+
+    y_f = y_plane.float().unsqueeze(0).unsqueeze(0)     # [1, 1, crop_h, crop_w]
+    uv_pairs = (
+        uv_plane
+        .view(uv_row_count, max(1, crop_w // 2), 2)
+        .permute(2, 0, 1)
+        .float()
+    )  # [2, uv_row_count, crop_w//2]
+    u_f = uv_pairs[0:1].unsqueeze(0)                    # [1, 1, uh, uw]
+    v_f = uv_pairs[1:2].unsqueeze(0)
+
+    sample_kw = {"mode": "bilinear", "padding_mode": "border", "align_corners": False}
+    y_out = torch_functional.grid_sample(y_f, grid, **sample_kw)   # [1,1,th,tw]
+    u_out = torch_functional.grid_sample(u_f, grid, **sample_kw)
+    v_out = torch_functional.grid_sample(v_f, grid, **sample_kw)
+
+    y_val = y_out - 16.0
+    u_val = u_out - 128.0
+    v_val = v_out - 128.0
+
+    r = torch.clamp(1.164 * y_val + 1.596 * v_val, 0.0, 255.0)
+    g = torch.clamp(1.164 * y_val - 0.392 * u_val - 0.813 * v_val, 0.0, 255.0)
+    b = torch.clamp(1.164 * y_val + 2.017 * u_val, 0.0, 255.0)
+
+    rgb = torch.cat([r, g, b], dim=1) / 255.0           # [1, 3, th, tw] fp32
+    return rgb.to(dtype=torch.float16).squeeze(0)        # [3, th, tw] fp16
+
+
 def nv12_to_rgb_nchw_fp16_letterbox(
     frame: Any,
     target_h: int,

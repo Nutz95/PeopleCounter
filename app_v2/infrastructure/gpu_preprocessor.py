@@ -24,7 +24,7 @@ from app_v2.infrastructure.preprocess_stream_manager import PreprocessStreamMana
 from app_v2.kernels.preprocess import (
     resolve_frame_source_tensor,
     run_letterbox_kernel_fused,
-    run_tiling_kernel,
+    run_tiling_kernel_fused,
 )
 
 
@@ -63,7 +63,10 @@ class GpuPreprocessor(Preprocessor):
             frame_timestamp_ns = getattr(frame, "timestamp_ns", None)
             if frame_timestamp_ns is not None:
                 telemetry.add_metrics({FRAME_TIMESTAMP_NS: int(frame_timestamp_ns)})
-        source_tensor = resolve_frame_source_tensor(frame)
+        # For raw NV12 frames, skip the full-frame decode: each fused kernel
+        # handles its own crop/letterbox directly from the Y/UV device pointers.
+        is_nv12 = getattr(frame, "device_ptr_y", None) is not None
+        source_tensor = None if is_nv12 else resolve_frame_source_tensor(frame)
         for spec in self._registry.all_specs():
             model_stage = preprocess_model_stage_name(spec.model_name)
             stream_id = self._stream_manager.stream_for_model(spec.model_name)
@@ -85,7 +88,7 @@ class GpuPreprocessor(Preprocessor):
                     tensor = (
                         run_letterbox_kernel_fused(frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor)
                         if spec.mode is PreprocessMode.GLOBAL
-                        else run_tiling_kernel(frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor)
+                        else run_tiling_kernel_fused(frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor)
                     )
                     if telemetry:
                         telemetry.mark_stage_end(kernel_stage)
