@@ -5,8 +5,16 @@ from typing import Dict, Any
 
 try:
     import tensorrt as trt
+    # TRT uses a process-global logger singleton (nvinfer1::getLogger()).  The
+    # *first* trt.Runtime(logger) call registers that logger globally.  If the
+    # logger object is ever garbage-collected while TRT is still active, TRT's
+    # internal pointer becomes dangling and the next createInferRuntime call
+    # segfaults with CUDA error 700.  Keeping one module-level instance alive
+    # for the lifetime of the process prevents this.
+    _TRT_LOGGER: "trt.Logger | None" = trt.Logger(trt.Logger.WARNING)
 except Exception:  # pragma: no cover
     trt = None  # type: ignore[assignment]
+    _TRT_LOGGER = None
 
 try:
     from app_v2.infrastructure.engine_refitter import EngineRefitter, get_onnx_path_for_engine
@@ -54,7 +62,7 @@ class TensorRTEngineLoader:
                 self._metadata = metadata
                 return self._metadata
 
-            logger = trt.Logger(trt.Logger.WARNING)
+            logger = _TRT_LOGGER or trt.Logger(trt.Logger.WARNING)
             runtime = trt.Runtime(logger)
 
             # Auto-detect weight-stripped engine and refit from ONNX sidecar.

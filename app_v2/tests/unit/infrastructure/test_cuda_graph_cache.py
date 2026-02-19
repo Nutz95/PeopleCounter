@@ -14,6 +14,24 @@ except ImportError:
 pytestmark = pytest.mark.skipif(not torch_available, reason="torch not available")
 
 
+@pytest.fixture(autouse=True)
+def _cuda_graph_cleanup():
+    """Synchronise the device at the start and end of each test.
+
+    This prevents GPU work from one test leaking into the next.  We deliberately
+    do NOT call torch.cuda.empty_cache() here: emptying the allocator cache frees
+    'caching-alive' tensor addresses, which can invalidate pointers that other
+    tests (TRT integration tests in particular) have registered with an async
+    execution context.  A plain synchronise is sufficient to retire all pending
+    GPU work without disturbing the allocator's cached-page layout.
+    """
+    if torch_available and torch.cuda.is_available():
+        torch.cuda.synchronize()
+    yield
+    if torch_available and torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
 def _make_trt_mocks(batch_size: int = 1, height: int = 64, width: int = 64):
     """Return (mock_trt, mock_context, mock_engine) for tests."""
     import torch
@@ -65,6 +83,7 @@ class TestCudaGraphCacheCapture:
         with (
             patch("app_v2.infrastructure.cuda_graph_cache.trt", mock_trt),
             patch("torch.cuda.CUDAGraph", return_value=mock_graph),
+            patch("torch.cuda.graph"),  # no-op: prevents real GPU capture on the mock
         ):
             cache = CudaGraphCache(mock_context, stream, mock_engine, warmup_iters=1)
             result = cache.execute(input_t, ["output0"], "images")
@@ -77,6 +96,11 @@ class TestCudaGraphCacheCapture:
         First call: capture → replay (1 replay).
         Second call: replay only (2 replays total).
         torch.cuda.CUDAGraph constructor is called only once (no re-capture).
+
+        Note: we use fully-mocked CUDAGraph objects (no real GPU capture) because
+        creating empty CUDA graphs (with a mock TRT context that issues no GPU work)
+        corrupts the device state on sm_120/Blackwell, causing CUDA error 700 in
+        subsequent TensorRT inference tests.
         """
         import torch
         from app_v2.infrastructure.cuda_graph_cache import CudaGraphCache
@@ -85,31 +109,43 @@ class TestCudaGraphCacheCapture:
         stream = _make_stream()
         input_t = _make_input(batch_size=1)
 
-        graph_ctor_count = {"n": 0}
         replay_count = {"n": 0}
+        ctor_count = {"n": 0}
 
-        real_graph_cls = torch.cuda.CUDAGraph
+        mock_graph = MagicMock()
+        mock_graph.__enter__ = MagicMock(return_value=mock_graph)
+        mock_graph.__exit__ = MagicMock(return_value=False)
+        original_replay = mock_graph.replay
+        def _replay():
+            replay_count["n"] += 1
+        mock_graph.replay = _replay
 
-        class SpyGraph(real_graph_cls):
-            def __init__(self):
-                super().__init__()
-                graph_ctor_count["n"] += 1
-            def replay(self):
-                super().replay()
-                replay_count["n"] += 1
+        original_ctor = {"fn": None}
+
+        def mock_cuda_graph_ctor():
+            ctor_count["n"] += 1
+            return mock_graph
 
         with (
             patch("app_v2.infrastructure.cuda_graph_cache.trt", mock_trt),
-            patch("torch.cuda.CUDAGraph", side_effect=SpyGraph),
+            patch("torch.cuda.CUDAGraph", side_effect=mock_cuda_graph_ctor),
+            patch("torch.cuda.graph"),  # no-op context manager: avoids real GPU capture
         ):
             cache = CudaGraphCache(mock_context, stream, mock_engine, warmup_iters=1)
             cache.execute(input_t, ["output0"], "images")  # capture + replay
             cache.execute(input_t, ["output0"], "images")  # replay only
 
-        assert graph_ctor_count["n"] == 1, "Graph should be captured only once"
-        assert replay_count["n"] == 2, "replay() called once per execute() call"
+        assert ctor_count["n"] == 1, "CUDAGraph should be constructed only once (no re-capture)"
+        assert replay_count["n"] == 2, "replay() called once per execute() call after capture"
 
     def test_separate_graphs_per_batch_size(self) -> None:
+        """A distinct CUDAGraph is captured for each unique batch size.
+
+        Note: we patch torch.cuda.CUDAGraph and torch.cuda.graph to avoid
+        creating real (empty) GPU graphs.  Empty CUDA graph captures with a
+        mocked TRT context produce no GPU work, which corrupts device state on
+        sm_120/Blackwell and causes CUDA error 700 in subsequent TRT tests.
+        """
         import torch
         from app_v2.infrastructure.cuda_graph_cache import CudaGraphCache
 
@@ -117,31 +153,31 @@ class TestCudaGraphCacheCapture:
         stream = _make_stream()
 
         graphs_created = {"n": 0}
-        original_graph_cls = torch.cuda.CUDAGraph
 
-        class CountingGraph:
-            def __init__(self):
-                graphs_created["n"] += 1
-                self._g = original_graph_cls()
-            def __enter__(self):
-                return self._g.__enter__()
-            def __exit__(self, *a):
-                return self._g.__exit__(*a)
-            def replay(self):
-                self._g.replay()
+        def make_mock_graph():
+            graphs_created["n"] += 1
+            mock_g = MagicMock()
+            mock_g.__enter__ = MagicMock(return_value=mock_g)
+            mock_g.__exit__ = MagicMock(return_value=False)
+            return mock_g
 
         mock_context = MagicMock()
         mock_context.execute_async_v3.return_value = True
         mock_context.get_tensor_shape.side_effect = lambda n: (1, 84, 8400)
 
-        with patch("app_v2.infrastructure.cuda_graph_cache.trt", mock_trt):
+        with (
+            patch("app_v2.infrastructure.cuda_graph_cache.trt", mock_trt),
+            patch("torch.cuda.CUDAGraph", side_effect=make_mock_graph),
+            patch("torch.cuda.graph"),  # no-op: avoids real GPU capture
+        ):
             cache = CudaGraphCache(mock_context, stream, mock_engine, warmup_iters=1)
             for bs in [1, 2, 4]:
                 t = _make_input(batch_size=bs)
                 mock_context.get_tensor_shape.return_value = (bs, 84, 8400)
                 cache.execute(t, ["output0"], "images")
 
-        assert len(cache._entries) == 3, "Should have one graph per batch size"
+        assert graphs_created["n"] == 3, "One CUDAGraph should be created per batch size"
+        assert len(cache._entries) == 3, "Should have one graph entry per batch size"
 
     def test_capture_failure_falls_back_to_direct(self) -> None:
         import torch
@@ -174,6 +210,8 @@ class TestCudaGraphCacheRelease:
 
         with (
             patch("app_v2.infrastructure.cuda_graph_cache.trt", mock_trt),
+            patch("torch.cuda.CUDAGraph", return_value=MagicMock()),
+            patch("torch.cuda.graph"),  # no-op: avoids empty GPU graph capture
         ):
             cache = CudaGraphCache(mock_context, stream, mock_engine, warmup_iters=1)
             cache.execute(input_t, ["output0"], "images")

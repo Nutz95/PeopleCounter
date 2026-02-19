@@ -24,7 +24,7 @@ from app_v2.infrastructure.preprocess_stream_manager import PreprocessStreamMana
 from app_v2.kernels.preprocess import (
     resolve_frame_source_tensor,
     run_letterbox_kernel_fused,
-    run_tiling_kernel_fused,
+    run_tiling_kernel_fused_batch,
 )
 
 
@@ -81,18 +81,28 @@ class GpuPreprocessor(Preprocessor):
             plans[spec.model_name] = plan
             inputs: list[GpuTensor] = []
             with self._stream_manager.stream_context(stream_id):
-                for task in plan.tasks:
-                    kernel_stage = f"preprocess_kernel_{spec.model_name}_{task.task_index}"
+                if spec.mode is PreprocessMode.TILES:
+                    # Batch path: copy full NV12 frame once, process all tiles in a single
+                    # grid_sample call — reduces Python→CUDA dispatch from O(N×ops) to O(ops).
+                    kernel_batch_stage = f"preprocess_kernel_batch_{spec.model_name}"
                     if telemetry:
-                        telemetry.mark_stage_start(kernel_stage)
-                    tensor = (
-                        run_letterbox_kernel_fused(frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor)
-                        if spec.mode is PreprocessMode.GLOBAL
-                        else run_tiling_kernel_fused(frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor)
+                        telemetry.mark_stage_start(kernel_batch_stage)
+                    inputs = run_tiling_kernel_fused_batch(
+                        frame, list(plan.tasks), stream=stream_id, pool=self._pool
                     )
                     if telemetry:
-                        telemetry.mark_stage_end(kernel_stage)
-                    inputs.append(tensor)
+                        telemetry.mark_stage_end(kernel_batch_stage)
+                else:
+                    for task in plan.tasks:
+                        kernel_stage = f"preprocess_kernel_{spec.model_name}_{task.task_index}"
+                        if telemetry:
+                            telemetry.mark_stage_start(kernel_stage)
+                        tensor = run_letterbox_kernel_fused(
+                            frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor
+                        )
+                        if telemetry:
+                            telemetry.mark_stage_end(kernel_stage)
+                        inputs.append(tensor)
             model_inputs[spec.model_name] = tuple(inputs)
             if telemetry:
                 telemetry.mark_stage_end(model_stage)
