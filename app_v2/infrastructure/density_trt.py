@@ -25,8 +25,9 @@ class DensityTRT(InferenceModel):
         """Ensure the density model respects the configured tiling resolution."""
         pass
 
-    def infer(self, frame_id: int, inputs: Sequence[Any]) -> dict[str, Any]:
+    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None) -> dict[str, Any]:
         """Return raw density heatmaps keyed by frame_id."""
+        del preprocess_events  # density model not yet integrated with TRT
         return {"frame_id": frame_id, "density": None}
 
     def close(self) -> None:

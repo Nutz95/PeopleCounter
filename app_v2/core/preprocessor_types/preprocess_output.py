@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from app_v2.core.frame_telemetry import FrameTelemetry
@@ -15,6 +15,10 @@ class PreprocessOutput:
     plans: Mapping[str, PreprocessPlan]
     model_inputs: Mapping[str, Sequence[Any]]
     telemetry: FrameTelemetry | None = None
+    # CUDA events recorded on each preprocess stream after kernel dispatch.
+    # Keys are stream_ids.  Pass to the inference stream via wait_event() to
+    # establish a GPU-side ordering dependency without blocking the CPU.
+    cuda_events: dict[int, Any] = field(default_factory=dict)
 
     def flatten_inputs(self, model_name: str | None = None) -> list[Any]:
         """Return model inputs as a flat list compatible with `InferenceModel.infer`."""

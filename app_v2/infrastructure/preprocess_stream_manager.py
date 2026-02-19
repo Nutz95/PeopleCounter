@@ -43,6 +43,25 @@ class PreprocessStreamManager:
             if stream is not None:
                 stream.synchronize()
 
+    def record_events(self, stream_ids: set[int]) -> dict[int, Any]:
+        """Record a CUDA Event on each stream and return the events.
+
+        This is a non-blocking alternative to ``synchronize_streams``.  The
+        returned events can be passed to an inference stream via
+        ``inference_stream.wait_event(event)`` to establish a GPU-side ordering
+        dependency — no CPU blocking required.
+        """
+        if torch is None or not torch.cuda.is_available():
+            return {}
+        events: dict[int, Any] = {}
+        for stream_id in stream_ids:
+            stream = self._get_or_create_cuda_stream(stream_id)
+            if stream is not None:
+                event = torch.cuda.Event()
+                event.record(stream)
+                events[stream_id] = event
+        return events
+
     def stream_handle(self, stream_id: int) -> int | None:
         stream = self._get_or_create_cuda_stream(stream_id)
         if stream is None:

@@ -156,7 +156,10 @@ class GpuPreprocessor(Preprocessor):
             per_model_ms[model_name] = elapsed_ms
 
         t_sync_start = time.monotonic_ns()
-        self._stream_manager.synchronize_streams(used_streams)
+        # Record events on each preprocess stream instead of blocking the CPU.
+        # The inference layer will call stream.wait_event() to create a GPU-side
+        # ordering dependency, so the host never stalls on preprocess completion.
+        cuda_events = self._stream_manager.record_events(used_streams)
         t_sync_end = time.monotonic_ns()
 
         if telemetry:
@@ -176,7 +179,7 @@ class GpuPreprocessor(Preprocessor):
             telemetry.mark_stage_end("preprocess")
             self._add_parallelism_metrics(telemetry, model_inputs)
 
-        return PreprocessOutput(frame_id=frame_id, plans=plans, model_inputs=model_inputs, telemetry=telemetry)
+        return PreprocessOutput(frame_id=frame_id, plans=plans, model_inputs=model_inputs, telemetry=telemetry, cuda_events=cuda_events)
 
     def process(self, frame_id: int, frame: Any) -> Sequence[Any]:
         output = self.build_output(frame_id, frame)

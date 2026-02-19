@@ -67,6 +67,12 @@ class TensorRTExecutionContext:
         stream = next(iter(self._bound_streams.values()), None)
         stream_ctx = torch.cuda.stream(stream) if hasattr(stream, "cuda_stream") else nullcontext()
         with stream_ctx:
+            # Establish GPU-side ordering: wait for all preprocess streams to
+            # finish before touching their output tensors.  This is a non-blocking
+            # GPU-side dependency (no CPU stall) — the host returns immediately.
+            for event in inputs.get("preprocess_events", []):
+                if hasattr(stream, "wait_event"):
+                    stream.wait_event(event)
             prepare_batch_result = self._prepare_batch(inputs)
             if "error" in prepare_batch_result:
                 return {"status": "gpu_unavailable", "inputs": inputs, "reason": prepare_batch_result["error"]}

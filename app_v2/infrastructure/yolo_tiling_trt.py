@@ -29,7 +29,7 @@ class YoloTilingTRT(InferenceModel):
         """Bind TensorRT profiles for the expected batch."""
         pass
 
-    def infer(self, frame_id: int, inputs: Sequence[Any]) -> dict[str, Any]:
+    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None) -> dict[str, Any]:
         """Execute tiled inference and return decoded placeholders + metrics."""
         stream_key = f"model:{self._name}"
         start_ns = time.perf_counter_ns()
@@ -41,6 +41,7 @@ class YoloTilingTRT(InferenceModel):
                     "inputs": list(inputs),
                     "model": self._name,
                     "params": dict(self._inference_params),
+                    "preprocess_events": list(preprocess_events or []),
                 }
             )
             decode_start_ns = time.perf_counter_ns()

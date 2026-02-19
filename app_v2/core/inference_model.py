@@ -22,8 +22,15 @@ class InferenceModel(ABC):
         """Warm up TensorRT context for the configured batch size."""
 
     @abstractmethod
-    def infer(self, frame_id: int, inputs: Sequence[Any]) -> dict[str, Any]:
-        """Execute inference and return a dictionary of intermediate tensors."""
+    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None) -> dict[str, Any]:
+        """Execute inference and return a dictionary of intermediate tensors.
+
+        Args:
+            preprocess_events: Optional CUDA events recorded on preprocess
+                streams.  The inference stream must call ``wait_event()`` on
+                each before touching preprocess output tensors, establishing a
+                GPU-side ordering dependency without blocking the CPU.
+        """
 
     @abstractmethod
     def close(self) -> None:

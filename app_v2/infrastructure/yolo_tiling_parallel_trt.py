@@ -39,7 +39,7 @@ class YoloTilingParallelTRT(InferenceModel):
         """Bind TensorRT profiles for the expected batch."""
         pass
 
-    def infer(self, frame_id: int, inputs: Sequence[Any]) -> dict[str, Any]:
+    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None) -> dict[str, Any]:
         """Execute tiled inference in parallel groups and return merged results + metrics."""
         start_ns = time.perf_counter_ns()
         
@@ -67,6 +67,7 @@ class YoloTilingParallelTRT(InferenceModel):
                 frame_id=frame_id,
                 group_idx=group_idx,
                 tiles=partition,
+                preprocess_events=list(preprocess_events or []),
             )
             futures.append((group_idx, future))
         
@@ -113,7 +114,7 @@ class YoloTilingParallelTRT(InferenceModel):
             "max_group_ms": float(max_group_ms),
         }
 
-    def _execute_group(self, frame_id: int, group_idx: int, tiles: list[Any]) -> dict[str, Any]:
+    def _execute_group(self, frame_id: int, group_idx: int, tiles: list[Any], preprocess_events: list[Any] | None = None) -> dict[str, Any]:
         """Execute inference for one group of tiles on a dedicated TRT context."""
         stream_key = f"model:{self._name}:g{group_idx}"
         group_start_ns = time.perf_counter_ns()
@@ -127,6 +128,7 @@ class YoloTilingParallelTRT(InferenceModel):
                     "inputs": tiles,
                     "model": f"{self._name}_g{group_idx}",
                     "params": dict(self._inference_params),
+                    "preprocess_events": list(preprocess_events or []),
                 }
             )
             decode_start_ns = time.perf_counter_ns()
