@@ -210,7 +210,14 @@ class NvdecPacketForwarder:
         height = self._demuxer_int(demuxer, "Height")
 
         pkt_data_cls = getattr(nvc, "PacketData", None)
-        pkt_data = pkt_data_cls() if pkt_data_cls is not None else None
+
+        # NOTE: The current PyNvCodec DemuxSinglePacket only accepts
+        #   (packet: np.ndarray) or (packet: np.ndarray, sei: np.ndarray).
+        # Passing a PacketData object as the second argument raises a
+        # TypeError (incompatible function arguments).  We therefore always
+        # use the single-arg form; is_keyframe() and _pts_us() both have
+        # fallback paths that work without PacketData.
+        pkt_data = None
 
         packet = np.zeros(shape=(0,), dtype=np.uint8)
 
@@ -219,10 +226,7 @@ class NvdecPacketForwarder:
 
         while self._running:
             try:
-                if pkt_data is not None:
-                    success = demuxer.DemuxSinglePacket(packet, pkt_data)
-                else:
-                    success = demuxer.DemuxSinglePacket(packet)
+                success = demuxer.DemuxSinglePacket(packet)
             except Exception as exc:
                 log_warning(LogChannel.GLOBAL, f"DemuxSinglePacket error: {exc}")
                 return False  # Transient error — caller will reconnect
