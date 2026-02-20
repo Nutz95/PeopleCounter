@@ -100,6 +100,11 @@ class PipelineOrchestrator:
         if self._packet_forwarder is not None:
             self._packet_forwarder.start()
         self.preprocessor.configure(self.config)
+        # Ensure the fusion strategy waits for ALL models before publishing
+        # a frame — otherwise we get one SSE event per model (3×) and the
+        # ring-buffer release hooks fire before downstream models finish.
+        if isinstance(self.fusion_strategy, SimpleFusionStrategy) and self._models:
+            self.fusion_strategy.expected_count = len(self._models)
         self._running = True
         # Consecutive decode-error counter: skip bad frames up to this limit
         # before giving up (handles NVDEC "HW decoder faced error" after a corrupt
@@ -121,13 +126,13 @@ class PipelineOrchestrator:
                         f"Frame {frame_id} skipped — decode error "
                         f"({_consecutive_decode_errors}/{_MAX_CONSECUTIVE_DECODE_ERRORS}): {decode_exc}",
                     )
+                    self.scheduler.acknowledge(frame_id)
+                    self.performance_tracker.clear(frame_id)
                     if _consecutive_decode_errors >= _MAX_CONSECUTIVE_DECODE_ERRORS:
                         raise RuntimeError(
                             f"Aborting after {_MAX_CONSECUTIVE_DECODE_ERRORS} "
                             "consecutive decode failures"
                         ) from decode_exc
-                    self.scheduler.acknowledge(frame_id)
-                    self.performance_tracker.clear(frame_id)
                     continue
                 _consecutive_decode_errors = 0
                 # ────────────────────────────────────────────────────────────

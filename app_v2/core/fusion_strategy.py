@@ -22,13 +22,24 @@ class FusionStrategy(ABC):
 
 
 class SimpleFusionStrategy(FusionStrategy):
-    """Default fusion strategy that publishes eagerly."""
+    """Default fusion strategy that publishes once all expected models have reported.
 
-    def __init__(self, strategy_type: FusionStrategyType = FusionStrategyType.ASYNC_OVERLAY) -> None:
+    ``expected_count`` controls how many ``collect()`` calls are needed before
+    the aggregator publishes the merged frame result.  Set it to
+    ``len(models)`` in the orchestrator so that all model outputs arrive in a
+    single SSE event rather than one event per model.
+    """
+
+    def __init__(
+        self,
+        strategy_type: FusionStrategyType = FusionStrategyType.ASYNC_OVERLAY,
+        expected_count: int = 1,
+    ) -> None:
         super().__init__(strategy_type)
+        self.expected_count = expected_count
 
     def should_publish(self, frame_id: int, collected_ids: Sequence[int]) -> bool:
-        return True
+        return len(collected_ids) >= self.expected_count
 
     def merge(self, payloads: Sequence[Any]) -> Sequence[Any]:
         return list(payloads)

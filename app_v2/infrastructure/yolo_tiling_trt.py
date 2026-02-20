@@ -15,7 +15,10 @@ class YoloTilingTRT(InferenceModel):
         self._stream_id = stream_id
         self._name = "yolo_tiles"
         self._inference_params = dict(inference_params or {})
-        self._decoder = YoloDecoder(person_class_id=int(self._inference_params.get("person_class_id", 0)))
+        self._decoder = YoloDecoder(
+            person_class_id=int(self._inference_params.get("person_class_id", 0)),
+            confidence_threshold=float(self._inference_params.get("confidence_threshold", 0.25)),
+        )
 
     @property
     def name(self) -> str:

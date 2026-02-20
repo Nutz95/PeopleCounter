@@ -235,6 +235,7 @@ class TestOrchestratorDecodeErrorSkip:
         orch._video_quality = 75
         orch._webcodecs_server = MagicMock()
         orch._packet_forwarder = None
+        orch.fusion_strategy = MagicMock()
         return orch
 
     def test_single_decode_error_does_not_abort_pipeline(self, monkeypatch):
