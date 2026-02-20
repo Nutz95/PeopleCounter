@@ -29,36 +29,60 @@ logger = logging.getLogger("camera_bridge")
 
 
 # Per-client buffer: 256 TS-aligned chunks (~16 MB at ~64 KB/chunk).
-# Large enough to absorb ~10 s of an 8-Mbps stream without drops.
+# Large enough to absorb ~9 s of a 15-Mbps stream without drops.
 _CLIENT_QUEUE_SIZE = 256
+
+
+@dataclass
+class _ClientStream:
+    """Per-client state: the data queue and a keyframe re-sync flag."""
+    q: "queue.Queue[bytes | None]" = field(
+        default_factory=lambda: queue.Queue(maxsize=_CLIENT_QUEUE_SIZE)
+    )
+    # True while flushing stale data after an overflow — new chunks are
+    # skipped until the next IDR keyframe so the client always starts with
+    # a complete, decodable access unit.
+    draining: bool = False
+
+
+def _chunk_starts_at_keyframe(chunk: bytes) -> bool:
+    """Return True if *chunk* begins with a PAT TS packet (PID 0x0000).
+
+    FFmpeg with ``-mpegts_flags +resend_headers`` emits a fresh PAT/PMT
+    immediately before every IDR frame, so a PAT at offset 0 reliably
+    marks a keyframe boundary in the MPEG-TS stream.
+    """
+    if len(chunk) < 4 or chunk[0] != 0x47:
+        return False
+    pid = ((chunk[1] & 0x1F) << 8) | chunk[2]
+    return pid == 0x0000
 
 
 class StreamBroadcaster:
     def __init__(self) -> None:
-        self._clients: list[queue.Queue[bytes | None]] = []
+        self._clients: list[_ClientStream] = []
         self._lock = threading.Lock()
         self._history: deque[bytes] = deque()
         self._history_size = 0
         self._history_limit = 512 * 1024
 
-    def register(self) -> queue.Queue[bytes | None]:
-        q: queue.Queue[bytes | None] = queue.Queue(maxsize=_CLIENT_QUEUE_SIZE)
+    def register(self) -> _ClientStream:
+        stream = _ClientStream()
         with self._lock:
-            self._clients.append(q)
-            history = list(self._history)
-        return q
+            self._clients.append(stream)
+        return stream
 
-    def register_with_history(self) -> tuple[queue.Queue[bytes | None], list[bytes]]:
-        q = queue.Queue(maxsize=_CLIENT_QUEUE_SIZE)
+    def register_with_history(self) -> tuple[_ClientStream, list[bytes]]:
+        stream = _ClientStream()
         with self._lock:
-            self._clients.append(q)
+            self._clients.append(stream)
             history = list(self._history)
-        return q, history
+        return stream, history
 
-    def unregister(self, q: queue.Queue[bytes | None]) -> None:
+    def unregister(self, stream: _ClientStream) -> None:
         with self._lock:
-            if q in self._clients:
-                self._clients.remove(q)
+            if stream in self._clients:
+                self._clients.remove(stream)
 
     def broadcast(self, chunk: bytes) -> None:
         self._history.append(chunk)
@@ -66,19 +90,29 @@ class StreamBroadcaster:
         while self._history_size > self._history_limit and self._history:
             removed = self._history.popleft()
             self._history_size -= len(removed)
+        is_kf = _chunk_starts_at_keyframe(chunk)
         with self._lock:
             clients = list(self._clients)
-        for q in clients:
-            # Drop-oldest strategy: when the queue is full discard the stale
-            # front chunk so the consumer always has the freshest data and the
-            # MPEG-TS stream is not silently gapped by dropping the newest chunk.
-            if q.full():
-                try:
-                    q.get_nowait()
-                except queue.Empty:
-                    pass
+        for stream in clients:
+            if stream.draining:
+                if not is_kf:
+                    continue  # skip until the next IDR keyframe
+                stream.draining = False  # IDR arrived — resume
+            if stream.q.full():
+                # Queue overflowed.  Flushing individual chunks would leave
+                # the client with a partial, corrupted frame.  Instead, drain
+                # the entire queue and re-sync at the next keyframe so every
+                # received frame is complete and decodable.
+                while True:
+                    try:
+                        stream.q.get_nowait()
+                    except queue.Empty:
+                        break
+                if not is_kf:
+                    stream.draining = True
+                    continue  # wait for next IDR before accepting data
             try:
-                q.put_nowait(chunk)
+                stream.q.put_nowait(chunk)
             except queue.Full:
                 pass  # race condition — skip rather than block
 
@@ -86,8 +120,8 @@ class StreamBroadcaster:
         with self._lock:
             clients = list(self._clients)
             self._clients.clear()
-        for q in clients:
-            q.put(None)
+        for stream in clients:
+            stream.q.put(None)
 
 
 class StreamRequestHandler(BaseHTTPRequestHandler):
@@ -99,7 +133,7 @@ class StreamRequestHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
-        queue_ref, history = self.broadcaster.register_with_history()
+        stream, history = self.broadcaster.register_with_history()
         self.send_response(200)
         self.send_header("Content-Type", "video/mp2t")
         self.send_header("Cache-Control", "no-cache")
@@ -110,7 +144,7 @@ class StreamRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
             self.wfile.flush()
             while True:
-                chunk = queue_ref.get()
+                chunk = stream.q.get()
                 if chunk is None:
                     break
                 try:
@@ -119,7 +153,7 @@ class StreamRequestHandler(BaseHTTPRequestHandler):
                 except (ConnectionResetError, BrokenPipeError, OSError):
                     break
         finally:
-            self.broadcaster.unregister(queue_ref)
+            self.broadcaster.unregister(stream)
 
 
 def drain_ffmpeg_stderr(pipe: Optional[BinaryIO]) -> None:
@@ -324,12 +358,12 @@ def choose_encoder(ffmpeg_path: Path) -> str:
 
 def choose_bitrate_for_encoder(encoder: str) -> int:
     """Prompt user for bitrate (kbps) with sensible defaults per encoder."""
-    # Hardware encoders default to 8 Mbps — enough for 4K detection accuracy
-    # while keeping the WSL2 network queue small and reducing corrupt-packet rate.
+    # Hardware encoders default to 15 Mbps — necessary for 4K to avoid
+    # visible macroblocks that degrade density-map quality.
     defaults = {
-        "h264_nvenc": 8000,
-        "h264_qsv": 8000,
-        "h264_vaapi": 8000,
+        "h264_nvenc": 15000,
+        "h264_qsv": 15000,
+        "h264_vaapi": 15000,
         "libx264": 25000,
     }
     default = defaults.get(encoder, 25000)
