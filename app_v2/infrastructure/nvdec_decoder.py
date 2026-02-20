@@ -34,6 +34,10 @@ class NvdecDecoder:
         self._probe_info: dict[str, Any] | None = None
         self._decoder = self._create_decoder()
         self._width, self._height = self._dimensions()
+        # True after the first successful DecodeSingleSurface(); used to gate
+        # auto-reset so we only recreate the hardware decoder ONCE per
+        # corruption event, not on every subsequent buffering-phase failure.
+        self._last_surface_was_good: bool = False
         log_info(LogChannel.GLOBAL, f"NvdecDecoder created for stream {stream_url}")
         log_info(LogChannel.GLOBAL, f"NVDEC ring capacity: {self._ring.capacity}")
 
@@ -49,6 +53,29 @@ class NvdecDecoder:
         log_info(LogChannel.GLOBAL, "Stopping NVDEC decoder")
         self._connected = False
 
+    def reset(self) -> None:
+        """Recreate the PyNvDecoder instance after a hardware error.
+
+        PyNvCodec prints ``HW decoder faced error. Re-create instance.`` when
+        the NVDEC hardware encounters a corrupt stream packet.  After that
+        message the internal decoder state is invalid and all subsequent
+        ``DecodeSingleSurface()`` calls will fail.  Creating a new
+        ``PyNvDecoder`` object opens a fresh connection to the stream and
+        re-initialises the NVDEC hardware context.
+
+        ``_last_surface_was_good`` is cleared so that the fresh decoder's
+        normal buffering-phase failures (while waiting for the next I-frame)
+        do not trigger a second reset.
+        """
+        log_warning(LogChannel.GLOBAL, "Recreating NVDEC decoder instance after hardware error")
+        self._last_surface_was_good = False
+        try:
+            del self._decoder
+        except Exception:
+            pass
+        self._decoder = self._create_decoder()
+        log_info(LogChannel.GLOBAL, "NVDEC decoder instance recreated successfully")
+
     def decode_next_into_ring(self, *, frame_id: int, timestamp_ns: int | None = None) -> int:
         """Decode the next frame into a ring-buffer slot and return the slot index."""
         if not self._connected:
@@ -63,9 +90,16 @@ class NvdecDecoder:
             telemetry = FrameTelemetry(frame_id=frame_id)
             telemetry.mark_stage_start("nvdec")
             surface = self._decode_surface()
+            if surface is None and self._last_surface_was_good:
+                # First failure after a run of good frames: PyNvCodec has already
+                # printed "HW decoder faced error. Re-create instance." for each
+                # retry.  Recreate once; subsequent buffering-phase failures are
+                # handled by the orchestrator's consecutive-error skip guard.
+                self.reset()  # clears _last_surface_was_good internally
             telemetry.mark_stage_end("nvdec")
             if surface is None:
                 raise RuntimeError("NVDEC decoder failed to produce a surface")
+            self._last_surface_was_good = True
             frame = self._surface_to_gpu_frame(surface, frame_id, timestamp_ns, telemetry)
             self._ring.commit(slot, frame)
             log_debug(LogChannel.NVDEC, f"Decoded frame {frame_id} into slot {slot}")

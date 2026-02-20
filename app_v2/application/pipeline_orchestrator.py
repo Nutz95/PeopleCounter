@@ -101,11 +101,36 @@ class PipelineOrchestrator:
             self._packet_forwarder.start()
         self.preprocessor.configure(self.config)
         self._running = True
+        # Consecutive decode-error counter: skip bad frames up to this limit
+        # before giving up (handles NVDEC "HW decoder faced error" after a corrupt
+        # packet — the decoder self-heals after a few buffering-phase misses).
+        _MAX_CONSECUTIVE_DECODE_ERRORS = 10
+        _consecutive_decode_errors = 0
         try:
             while self._should_continue():
                 frame_id = self.scheduler.schedule(None)
-                with self.performance_tracker.stage(frame_id, "nvdec"):
-                    frame = self.frame_source.next_frame(frame_id)
+
+                # ── NVDEC decode ────────────────────────────────────────────
+                try:
+                    with self.performance_tracker.stage(frame_id, "nvdec"):
+                        frame = self.frame_source.next_frame(frame_id)
+                except RuntimeError as decode_exc:
+                    _consecutive_decode_errors += 1
+                    log_warning(
+                        LogChannel.GLOBAL,
+                        f"Frame {frame_id} skipped — decode error "
+                        f"({_consecutive_decode_errors}/{_MAX_CONSECUTIVE_DECODE_ERRORS}): {decode_exc}",
+                    )
+                    if _consecutive_decode_errors >= _MAX_CONSECUTIVE_DECODE_ERRORS:
+                        raise RuntimeError(
+                            f"Aborting after {_MAX_CONSECUTIVE_DECODE_ERRORS} "
+                            "consecutive decode failures"
+                        ) from decode_exc
+                    self.scheduler.acknowledge(frame_id)
+                    self.performance_tracker.clear(frame_id)
+                    continue
+                _consecutive_decode_errors = 0
+                # ────────────────────────────────────────────────────────────
 
                 # ── Video encode dispatch ───────────────────────────────────
                 # Submitted immediately after NVDEC decode, BEFORE inference.
