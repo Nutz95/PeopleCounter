@@ -28,9 +28,9 @@ ALTERNATIVE_NAME_PATTERN = re.compile(r'Alternative name\s+"?(.+?)"?$', re.IGNOR
 logger = logging.getLogger("camera_bridge")
 
 
-# Per-client buffer: 256 TS-aligned chunks (~16 MB at ~64 KB/chunk).
-# Large enough to absorb ~9 s of a 15-Mbps stream without drops.
-_CLIENT_QUEUE_SIZE = 256
+# Per-client buffer: 512 TS-aligned chunks (~32 MB at ~64 KB/chunk).
+# 512 × 65 KB ≈ 33 MB — comfortable 20 s of headroom at 15 Mbps.
+_CLIENT_QUEUE_SIZE = 512
 
 
 @dataclass
@@ -45,17 +45,24 @@ class _ClientStream:
     draining: bool = False
 
 
-def _chunk_starts_at_keyframe(chunk: bytes) -> bool:
-    """Return True if *chunk* begins with a PAT TS packet (PID 0x0000).
+def _find_keyframe_offset(chunk: bytes) -> int:
+    """Return the byte offset of the first PAT TS packet (PID 0x0000) in *chunk*.
+
+    Returns -1 if no PAT is found.
 
     FFmpeg with ``-mpegts_flags +resend_headers`` emits a fresh PAT/PMT
-    immediately before every IDR frame, so a PAT at offset 0 reliably
-    marks a keyframe boundary in the MPEG-TS stream.
+    immediately before every IDR frame, so a PAT anywhere in the chunk
+    reliably marks a keyframe-restart boundary.  We scan every TS packet
+    rather than just checking byte 0 because fixed-size reads (N × 188 bytes)
+    can land at any offset relative to the stream's IDR access unit.
     """
-    if len(chunk) < 4 or chunk[0] != 0x47:
-        return False
-    pid = ((chunk[1] & 0x1F) << 8) | chunk[2]
-    return pid == 0x0000
+    for off in range(0, len(chunk) - 3, 188):
+        if chunk[off] != 0x47:          # lost sync byte — try to continue
+            continue
+        pid = ((chunk[off + 1] & 0x1F) << 8) | chunk[off + 2]
+        if pid == 0x0000:
+            return off
+    return -1
 
 
 class StreamBroadcaster:
@@ -90,29 +97,33 @@ class StreamBroadcaster:
         while self._history_size > self._history_limit and self._history:
             removed = self._history.popleft()
             self._history_size -= len(removed)
-        is_kf = _chunk_starts_at_keyframe(chunk)
         with self._lock:
             clients = list(self._clients)
         for stream in clients:
             if stream.draining:
-                if not is_kf:
-                    continue  # skip until the next IDR keyframe
-                stream.draining = False  # IDR arrived — resume
-            if stream.q.full():
-                # Queue overflowed.  Flushing individual chunks would leave
-                # the client with a partial, corrupted frame.  Instead, drain
-                # the entire queue and re-sync at the next keyframe so every
-                # received frame is complete and decodable.
-                while True:
-                    try:
-                        stream.q.get_nowait()
-                    except queue.Empty:
-                        break
-                if not is_kf:
-                    stream.draining = True
-                    continue  # wait for next IDR before accepting data
+                off = _find_keyframe_offset(chunk)
+                if off < 0:
+                    continue  # no IDR boundary in this chunk — keep waiting
+                stream.draining = False
+                # Trim the chunk so it starts exactly at the PAT packet.
+                effective = chunk[off:] if off > 0 else chunk
+            else:
+                effective = chunk
+                if stream.q.full():
+                    # Queue overflowed.  Flush entirely and re-sync at the next
+                    # keyframe so every frame the consumer sees is complete.
+                    while True:
+                        try:
+                            stream.q.get_nowait()
+                        except queue.Empty:
+                            break
+                    off = _find_keyframe_offset(chunk)
+                    if off < 0:
+                        stream.draining = True
+                        continue
+                    effective = chunk[off:] if off > 0 else chunk
             try:
-                stream.q.put_nowait(chunk)
+                stream.q.put_nowait(effective)
             except queue.Full:
                 pass  # race condition — skip rather than block
 

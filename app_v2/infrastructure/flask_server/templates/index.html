@@ -436,16 +436,12 @@
 
       const RENDER_QUEUE_MAX  = 4;   // max buffered decoded frames
       const DECODE_QUEUE_MAX  = 8;   // drop non-keyframes above this threshold
-      const JITTER_MS         = 33;  // one-frame jitter buffer (was 100 ms)
       const renderQueue = [];
 
       let decoder  = null;
       let ws       = null;
       let initDone = false;
       let rafId    = null;
-      // PTS clock sync: wall0 (ms from performance.now) and pts0 (ms)
-      let wall0 = null;
-      let pts0  = null;
 
       // If no init message arrives in 5 s, the source is not H.264 — keep MJPEG.
       const fallbackTimer = setTimeout(() => {
@@ -473,27 +469,21 @@
         decoder = null; ws = null; wall0 = null; pts0 = null;
       }
 
-      // ── Render loop: PTS-gated display ───────────────────────────
-      function renderLoop(rafTs) {
+      // ── Render loop ───────────────────────────────────────────────
+      // Always display the most-recent decoded frame at the next rAF tick.
+      // Older frames are discarded to minimise display latency on a live feed.
+      // canvas.width/height are in canvas-buffer pixels (native stream
+      // resolution); clientWidth/clientHeight are CSS pixels and must NOT be
+      // used as drawImage target dimensions.
+      function renderLoop() {
+        // Discard all but the latest decoded frame so we never fall behind.
+        while (renderQueue.length > 1) {
+          renderQueue.shift()?.close();
+        }
         if (renderQueue.length > 0) {
-          const frame = renderQueue[0];
-          // frame.timestamp is in microseconds (from _pts_us server-side)
-          const ptsMsAbs = frame.timestamp / 1000;
-
-          if (wall0 === null) {
-            // First frame: anchor wall clock to PTS, add jitter buffer head-start
-            wall0 = rafTs - JITTER_MS;
-            pts0  = ptsMsAbs;
-          }
-
-          const ptsElapsed  = ptsMsAbs - pts0;   // video time elapsed (ms)
-          const wallElapsed = rafTs  - wall0;    // wall time elapsed (ms)
-
-          if (wallElapsed >= ptsElapsed) {
-            renderQueue.shift();
-            ctx.drawImage(frame, 0, 0, videoCanvas.clientWidth, videoCanvas.clientHeight);
-            frame.close();
-          }
+          const frame = renderQueue.shift();
+          ctx.drawImage(frame, 0, 0, videoCanvas.width, videoCanvas.height);
+          frame.close();
         }
         rafId = requestAnimationFrame(renderLoop);
       }
@@ -501,9 +491,6 @@
       function onInitMsg(msg) {
         clearTimeout(fallbackTimer);
         initDone = true;
-        // Reset PTS clock on every re-configure (stream restart, reconnect)
-        wall0 = null;
-        pts0  = null;
 
         const config = {
           codec: msg.codec || 'avc1',
