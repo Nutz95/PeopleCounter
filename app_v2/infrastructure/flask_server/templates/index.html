@@ -119,14 +119,33 @@
 
   <script>
     // ── Constants ──────────────────────────────────────────────────
-    const MAX_HISTORY = 60;
-    const TARGET_MS   = 33.33;  // 30 fps
+    const MAX_HISTORY  = 60;
+    const TARGET_MS    = 33.33;  // 30 fps
+    const SMOOTH_WIN   = 2000;   // 2-second rolling average window (ms)
 
     // ── State ──────────────────────────────────────────────────────
     const e2eHist    = [];
     const tilesHist  = [];
     const fpsTs      = [];     // raw timestamps for FPS estimation
     let   showMask   = false;
+
+    // Rolling-average buckets: { t: timestamp_ms, v: value }[]
+    const _smooth = {
+      e2e:    [],
+      tiles:  [],
+      global: [],
+      preproc: [],
+      fusion: [],
+      count:  [],
+    };
+
+    function rollAvg(arr, value) {
+      const now = Date.now();
+      arr.push({ t: now, v: value });
+      while (arr.length && now - arr[0].t > SMOOTH_WIN) arr.shift();
+      if (arr.length === 0) return value;
+      return arr.reduce((s, x) => s + x.v, 0) / arr.length;
+    }
 
     // ── DOM refs ───────────────────────────────────────────────────
     const $connStatus   = document.getElementById('conn-status');
@@ -180,54 +199,69 @@
       const global_  = +(tel.inference_model_yolo_global_ms     ?? 0);
       const fusion   = +(tel.fusion_wait_ms                     ?? 0);
 
+      // Skip frames with no telemetry (density-only events when fusion fires late)
+      const hasTelemetry = e2e > 0 || tiles > 0 || global_ > 0;
+
       // ── FPS (from publication events, not inference rate) ────────
       const now = Date.now();
-      fpsTs.push(now);
-      while (fpsTs.length && now - fpsTs[0] > 2000) fpsTs.shift();
+      if (hasTelemetry) {
+        fpsTs.push(now);
+        while (fpsTs.length && now - fpsTs[0] > 2000) fpsTs.shift();
+      }
       const fps = fpsTs.length > 1
         ? Math.round((fpsTs.length - 1) / ((now - fpsTs[0]) / 1000))
         : 0;
+
+      // ── Compute rolling averages (only update when telemetry present) ─
+      const avgE2e    = hasTelemetry ? rollAvg(_smooth.e2e,    e2e)    : (e2eHist.length ? e2eHist[e2eHist.length-1] : 0);
+      const avgTiles  = hasTelemetry ? rollAvg(_smooth.tiles,  tiles)  : 0;
+      const avgGlobal = hasTelemetry ? rollAvg(_smooth.global, global_): 0;
+      const avgPreproc= hasTelemetry ? rollAvg(_smooth.preproc,preproc): 0;
+      const avgFusion = hasTelemetry ? rollAvg(_smooth.fusion, fusion) : 0;
+      const avgCount  = rollAvg(_smooth.count, count);
 
       // ── Update DOM ───────────────────────────────────────────────
       $connStatus.textContent  = '⬤ Live';
       $connStatus.style.color  = 'var(--accent)';
 
-      $countValue.textContent  = count;
+      $countValue.textContent  = Math.round(avgCount);
       $frameLabel.textContent  = `frame ${msg.frame_id}`;
 
-      $e2eValue.textContent    = e2e.toFixed(1);
+      $e2eValue.textContent    = avgE2e.toFixed(1);
       $fpsDerived.textContent  = fps ? `${fps} fps` : '— fps';
 
-      $preprocValue.textContent = preproc.toFixed(2);
-      $tilesValue.textContent   = tiles.toFixed(2);
-      $globalValue.textContent  = global_.toFixed(2);
-      $fusionValue.textContent  = fusion.toFixed(2);
+      $preprocValue.textContent = avgPreproc.toFixed(2);
+      $tilesValue.textContent   = avgTiles.toFixed(2);
+      $globalValue.textContent  = avgGlobal.toFixed(2);
+      $fusionValue.textContent  = avgFusion.toFixed(2);
 
       // Video overlay chips
-      $latencyChip.textContent = `${e2e.toFixed(1)} ms`;
+      $latencyChip.textContent = `${avgE2e.toFixed(1)} ms`;
       $fpsChip.textContent     = fps ? `${fps} fps` : '— fps';
       $latencyChip.style.background =
-        e2e <= TARGET_MS
+        avgE2e <= TARGET_MS
           ? 'rgba(42,223,165,0.18)'
-          : e2e <= TARGET_MS * 1.2
+          : avgE2e <= TARGET_MS * 1.2
           ? 'rgba(245,158,11,0.22)'
           : 'rgba(239,68,68,0.22)';
 
       // Pipeline breakdown overlay
-      $ovPreprocess.textContent = `preprocess ${preproc.toFixed(1)} ms`;
-      $ovGlobal.textContent     = `global  ${global_.toFixed(1)} ms`;
-      $ovTiles.textContent      = `tiles   ${tiles.toFixed(1)} ms`;
+      $ovPreprocess.textContent = `preprocess ${avgPreproc.toFixed(1)} ms`;
+      $ovGlobal.textContent     = `global  ${avgGlobal.toFixed(1)} ms`;
+      $ovTiles.textContent      = `tiles   ${avgTiles.toFixed(1)} ms`;
 
       // ── Mask overlay ─────────────────────────────────────────────
       if (showMask) drawMask(payload);
       else maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 
       // ── History & chart ──────────────────────────────────────────
-      e2eHist.push(e2e);
-      tilesHist.push(tiles);
-      if (e2eHist.length  > MAX_HISTORY) e2eHist.shift();
-      if (tilesHist.length > MAX_HISTORY) tilesHist.shift();
-      drawChart();
+      if (hasTelemetry) {
+        e2eHist.push(e2e);
+        tilesHist.push(tiles);
+        if (e2eHist.length  > MAX_HISTORY) e2eHist.shift();
+        if (tilesHist.length > MAX_HISTORY) tilesHist.shift();
+        drawChart();
+      }
     });
 
     sse.onerror = () => {
@@ -336,7 +370,14 @@
     // ── WebCodecs VideoDecoder (zero server-side encode) ──────────
     // Architecture:
     //   PyFFmpegDemuxer → Annex-B H.264 packets → WebSocket binary
-    //   → EncodedVideoChunk → VideoDecoder → <canvas>
+    //   → EncodedVideoChunk → VideoDecoder → render queue → rAF → <canvas>
+    //
+    // Render queue: decoded VideoFrames are pushed to a bounded queue.
+    // requestAnimationFrame pops one frame per display refresh (~16 ms),
+    // giving smooth 30 fps playback even if packets arrive in bursts.
+    //
+    // Backpressure: if decoder.decodeQueueSize exceeds the threshold,
+    // non-keyframe packets are dropped so the decoder catches up.
     //
     // Falls back silently to MJPEG if:
     //   • The browser doesn't support WebCodecs  (VideoDecoder undefined)
@@ -350,9 +391,14 @@
       const videoFeed   = document.getElementById('video-feed');
       const ctx         = videoCanvas.getContext('2d');
 
+      const RENDER_QUEUE_MAX  = 4;   // max buffered decoded frames
+      const DECODE_QUEUE_MAX  = 8;   // drop non-keyframes above this threshold
+      const renderQueue = [];
+
       let decoder  = null;
       let ws       = null;
       let initDone = false;
+      let rafId    = null;
 
       // If no init message arrives in 5 s, the source is not H.264 — keep MJPEG.
       const fallbackTimer = setTimeout(() => {
@@ -373,9 +419,23 @@
 
       function teardown() {
         clearTimeout(fallbackTimer);
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
         try { ws && ws.close(); } catch(e) {}
         try { decoder && decoder.close(); } catch(e) {}
+        while (renderQueue.length) renderQueue.shift()?.close?.();
         decoder = null; ws = null;
+      }
+
+      // ── Render loop: pop one frame per display refresh ────────────
+      function renderLoop() {
+        if (renderQueue.length > 0) {
+          const frame = renderQueue.shift();
+          // Draw into the canvas buffer at the canvas element's CSS display size
+          // so the output fills the container regardless of source resolution.
+          ctx.drawImage(frame, 0, 0, videoCanvas.clientWidth, videoCanvas.clientHeight);
+          frame.close();
+        }
+        rafId = requestAnimationFrame(renderLoop);
       }
 
       function onInitMsg(msg) {
@@ -393,12 +453,15 @@
 
         decoder = new VideoDecoder({
           output: (frame) => {
-            ctx.drawImage(frame, 0, 0, videoCanvas.clientWidth, videoCanvas.clientHeight);
-            frame.close();
+            // Keep the render queue bounded: drop the oldest pending frame
+            // if the consumer (rAF) hasn't caught up yet.
+            if (renderQueue.length >= RENDER_QUEUE_MAX) {
+              renderQueue.shift()?.close();
+            }
+            renderQueue.push(frame);
           },
           error: (e) => {
             console.warn('VideoDecoder error:', e);
-            // If the codec config was wrong, fall back to MJPEG.
             teardown();
             videoFeed.style.display  = '';
             videoCanvas.style.display = 'none';
@@ -412,6 +475,8 @@
           }
           decoder.configure(config);
           activateCanvas();
+          // Start the rAF render loop after successfully configuring the decoder.
+          rafId = requestAnimationFrame(renderLoop);
         }).catch(() => { teardown(); });
       }
 
@@ -420,6 +485,10 @@
         const view = new DataView(data);
         const flags      = view.getUint8(0);
         const isKeyframe = (flags & 1) !== 0;
+
+        // Backpressure: drop non-keyframes when the decode queue is backed up.
+        if (!isKeyframe && decoder.decodeQueueSize > DECODE_QUEUE_MAX) return;
+
         // pts_us: u64 LE — read as two u32 to avoid BigInt requirement
         const pts_lo = view.getUint32(1, true);
         const pts_hi = view.getUint32(5, true);
@@ -453,6 +522,7 @@
       ws.onerror = () => { clearTimeout(fallbackTimer); };
       ws.onclose = () => {
         clearTimeout(fallbackTimer);
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
         if (initDone) {
           // Reconnect after a short delay.
           setTimeout(initWebCodecs, 2000);
