@@ -261,6 +261,13 @@ def render_perf_budget_html(
 
     inf_global = float(report.checked.get("inference_model_yolo_global_ms", (0.0, 0.0))[0])
     inf_tiles = float(report.checked.get("inference_model_yolo_tiles_ms", (0.0, 0.0))[0])
+    e2e_ms = float(report.checked.get("end_to_end_ms", (0.0, 0.0))[0])
+    nvdec_ms = float(report.checked.get("nvdec_ms", (0.0, 0.0))[0])
+    fusion_wait_ms = float(report.checked.get("fusion_wait_ms", (0.0, 0.0))[0])
+    # Critical inference path = sequential global + tiles (current architecture)
+    inf_sequential = inf_global + inf_tiles
+    known_sub_total = nvdec_ms + preprocess_total + inf_sequential
+    python_overhead_ms = max(0.0, e2e_ms - known_sub_total)
 
     hist = history or {}
     stat_keys = [
@@ -376,6 +383,19 @@ def render_perf_budget_html(
             <li><b>inference_model_yolo_global_ms</b> = {inf_global:.3f} ms</li>
             <li><b>inference_model_yolo_tiles_ms</b> = {inf_tiles:.3f} ms</li>
         </ul>
+    </div>
+    <div class="group">
+        <div class="label">Décomposition end-to-end (waterfall)</div>
+        <ul>
+            <li><b>end_to_end_ms</b> = {e2e_ms:.3f} ms</li>
+            <li>├─ <b>nvdec_ms</b> (décodage NVDEC) = {nvdec_ms:.3f} ms</li>
+            <li>├─ <b>preprocess_ms</b> (dispatch CPU, GPU async via CUDA events) = {preprocess_total:.3f} ms</li>
+            <li>├─ <b>inference_yolo_global_ms</b> = {inf_global:.3f} ms</li>
+            <li>├─ <b>inference_yolo_tiles_ms</b> (chemin critique) = {inf_tiles:.3f} ms</li>
+            <li>├─ (sous-total connu = {known_sub_total:.3f} ms)</li>
+            <li>└─ <b>python_overhead_ms</b> (GIL, scheduling, agrégation, tensor pool) = {python_overhead_ms:.3f} ms</li>
+        </ul>
+        <div class="label">Note: python_overhead_ms inclut la latence d'ordonnancement Python entre les étapes (GIL, ThreadPoolExecutor, agrégateur). Pour réduire davantage: paralléliser global+tiles, C++ wrapper, ou asyncio.</div>
     </div>
     <div class="spark">
         <div class="label">Sparkline utilisation budgets (%)</div>

@@ -149,6 +149,101 @@ def nv12_frame_to_rgb_hwc_cuda(frame: Any) -> Any:
     return torch.stack((r, g, b), dim=-1).to(dtype=torch.uint8)
 
 
+def nv12_to_rgb_hwc_resized_cuda(
+    frame: Any,
+    target_h: int,
+    target_w: int,
+    stream_id: int = 0,
+) -> Any:
+    """NV12 → bilinear resize in YUV space → RGB HWC uint8.
+
+    More efficient than ``nv12_frame_to_rgb_hwc_cuda`` + ``F.interpolate`` on
+    the resulting RGB tensor because:
+
+    - NV12 is 1.5 bytes/pixel; RGB is 3 bytes/pixel.  Resizing in YUV space
+      means the bilinear kernels process 2× less data.
+    - The full-resolution RGB intermediate (~25 MB for 4K) is *never* allocated;
+      the YUV→RGB matrix multiply runs on the smaller (target-resolution) planes.
+    - Plane buffers are reused across frames via ``_get_plane_buffers``, so the
+      common case (same frame dimensions) incurs zero allocation per call.
+
+    Args:
+        frame:     GpuFrame with ``device_ptr_y``, ``device_ptr_uv``,
+                   ``pitch``, ``width``, ``height``.
+        target_h:  Output height in pixels.
+        target_w:  Output width in pixels.
+        stream_id: Passed to :func:`_get_plane_buffers` to partition the buffer
+                   cache so concurrent callers on different CUDA streams never
+                   share the same memory.  Use a value that does not overlap with
+                   any preprocess stream ID (0–5) — e.g. 99 for the video encoder.
+
+    Returns:
+        ``[target_h, target_w, 3]`` uint8 CUDA tensor in RGB order.
+    """
+    if torch is None or not torch.cuda.is_available():
+        raise RuntimeError("CUDA-enabled PyTorch is required for NV12 resize bridge")
+    if torch_functional is None:
+        raise RuntimeError("torch.nn.functional is required for NV12 resize bridge")
+    if cuda_runtime is None:
+        raise RuntimeError("cuda.bindings.runtime is required for NV12 resize bridge")
+
+    width = int(getattr(frame, "width"))
+    height = int(getattr(frame, "height"))
+    pitch = int(getattr(frame, "pitch") or width)
+    half_h = max(1, height // 2)
+    half_w = max(1, width // 2)
+
+    y_ptr = _extract_device_pointer(getattr(frame, "device_ptr_y", None))
+    uv_ptr = _extract_device_pointer(getattr(frame, "device_ptr_uv", None))
+    if y_ptr <= 0:
+        raise RuntimeError("NV12 frame missing valid device_ptr_y")
+    if uv_ptr <= 0 or uv_ptr == y_ptr:
+        uv_ptr = y_ptr + pitch * height
+
+    # ── Copy NV12 planes using per-stream cached fp32 views ────────────────
+    y_plane, uv_plane, y_f, u_f, v_f = _get_plane_buffers(height, width, stream_id)
+    _copy_plane_2d_async(
+        destination_ptr=int(y_plane.data_ptr()),
+        destination_pitch_bytes=width,
+        source_ptr=y_ptr,
+        source_pitch_bytes=pitch,
+        width_bytes=width,
+        height_rows=height,
+    )
+    _copy_plane_2d_async(
+        destination_ptr=int(uv_plane.data_ptr()),
+        destination_pitch_bytes=width,
+        source_ptr=uv_ptr,
+        source_pitch_bytes=pitch,
+        width_bytes=width,
+        height_rows=half_h,
+    )
+
+    # Fill pre-allocated fp32 views in-place (no per-frame allocation).
+    y_f.copy_(y_plane.unsqueeze(0).unsqueeze(0))              # [1, 1, H, W]
+    uv_hw2 = uv_plane.view(half_h, half_w, 2)
+    u_f.copy_(uv_hw2[:, :, 0].unsqueeze(0).unsqueeze(0))     # [1, 1, H//2, W//2]
+    v_f.copy_(uv_hw2[:, :, 1].unsqueeze(0).unsqueeze(0))
+
+    # ── Bilinear resize in YUV space ────────────────────────────────────────
+    # Y:  [1,1,H,W]     → [1,1,target_h,target_w]  (bilinear)
+    # UV: [1,1,H//2,W//2] → [1,1,target_h,target_w] (bilinear; handles both
+    #     downscale and the implicit 2× chroma upsample in one pass)
+    interp_kw = {"mode": "bilinear", "align_corners": False}
+    y_s = torch_functional.interpolate(y_f, size=(target_h, target_w), **interp_kw)
+    u_s = torch_functional.interpolate(u_f, size=(target_h, target_w), **interp_kw)
+    v_s = torch_functional.interpolate(v_f, size=(target_h, target_w), **interp_kw)
+
+    # ── BT.601 YUV→RGB via matrix multiply (1 matmul+clamp vs ~18 ops) ─────
+    M, offsets = _get_yuv_matrix()
+    yuv = torch.cat([y_s, u_s, v_s], dim=1) - offsets        # [1, 3, th, tw]
+    rgb = (yuv.permute(0, 2, 3, 1) @ M.T).permute(0, 3, 1, 2)  # [1, 3, th, tw]
+    rgb = rgb.clamp_(0.0, 255.0)
+
+    # [th, tw, 3] uint8 — HWC layout expected by torchvision.io.encode_jpeg
+    return rgb.squeeze(0).permute(1, 2, 0).to(dtype=torch.uint8)
+
+
 def _copy_plane_2d_async(
     *,
     destination_ptr: int,

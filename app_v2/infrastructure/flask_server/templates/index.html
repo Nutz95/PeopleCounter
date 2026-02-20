@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr">
 
 <head>
   <meta charset="utf-8">
@@ -13,29 +13,453 @@
     <div>
       <p class="eyebrow">PeopleCounter v2</p>
       <h1>GPU-first pipeline</h1>
-      <p style="color: var(--muted); margin: 0;">UI minimale (CSS v1). Les endpoints v2 arriveront avec la boucle NVDEC
-        → inférence.</p>
     </div>
     <div class="hero-note">
       <span>Port {{ port }}</span>
-      <span>Docker GPU</span>
+      <span id="conn-status" style="color:var(--muted)">⬤ Connecting…</span>
     </div>
   </header>
 
   <main class="page-column">
-    <section class="metrics-shell">
-      <div class="metrics-grid">
-        <article class="metric-card wide">
-          <div class="metric-title">Status</div>
-          <div class="metric-value">v2 server ready</div>
-          <div class="metric-footnote">Health: <span id="health">OK</span></div>
-        </article>
+
+    <!-- ── Video feed + overlay ──────────────────────────────────── -->
+    <section class="video-shell">
+      <div class="video-wrapper" id="video-wrapper">
+        <!-- WebCodecs H.264 path (zero server-side encode) — preferred -->
+        <canvas id="video-canvas" style="display:none;width:100%;height:100%;object-fit:contain;"></canvas>
+        <!-- MJPEG fallback — shown when WebCodecs is unavailable or stream is not H.264 -->
+        <img id="video-feed" src="/api/video" alt="Video feed" />
+        <!-- Detection / mask overlay canvas -->
+        <canvas id="mask-canvas" class="mask-overlay"></canvas>
+
+        <!-- Top-left: latency chip -->
+        <div class="fps-status" id="latency-chip">— ms</div>
+        <!-- Top-right: FPS chip -->
+        <div class="fps-chip" id="fps-chip">— fps</div>
+
+        <!-- Bottom-left: pipeline stage breakdown -->
+        <div class="video-overlay-controls" id="stage-breakdown">
+          <div style="background:rgba(5,11,23,0.72);border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:6px 12px;font-size:0.75rem;line-height:1.7;color:#d1e4ff;">
+            <span id="ov-preprocess">preprocess — ms</span><br>
+            <span id="ov-global">global — ms</span><br>
+            <span id="ov-tiles">tiles — ms</span>
+          </div>
+        </div>
+
+        <!-- Bottom-right: fullscreen -->
+        <div class="video-actions">
+          <button onclick="toggleFullscreen()">⛶ Plein écran</button>
+        </div>
       </div>
-      <div class="instruction-card">
-        <p>Cette page sert uniquement à valider le pipeline statique (templates + app.css) côté v2.</p>
+
+      <!-- Controls below the video -->
+      <div class="control-group">
+        <label class="toggle">
+          <input type="checkbox" id="mask-toggle">
+          Masque de fusion (bounding boxes)
+        </label>
       </div>
     </section>
-  </main>
-</body>
 
+    <!-- ── Metric cards ──────────────────────────────────────────── -->
+    <section class="metrics-shell">
+      <div class="metrics-grid">
+
+        <article class="metric-card">
+          <div class="metric-title">Personnes détectées</div>
+          <div class="metric-value" id="count-value" style="color:var(--accent)">—</div>
+          <div class="metric-footnote" id="frame-id-label">frame —</div>
+        </article>
+
+        <article class="metric-card">
+          <div class="metric-title">End-to-end</div>
+          <div class="metric-value" id="e2e-value">—</div>
+          <div class="metric-footnote">ms / <span id="fps-derived">— fps</span></div>
+        </article>
+
+        <article class="metric-card">
+          <div class="metric-title">Preprocess</div>
+          <div class="metric-value metric-value--small" id="preprocess-value">—</div>
+          <div class="metric-footnote">ms (CPU dispatch, GPU async)</div>
+        </article>
+
+        <article class="metric-card">
+          <div class="metric-title">Inference tiles</div>
+          <div class="metric-value metric-value--small" id="tiles-value">—</div>
+          <div class="metric-footnote">ms (chemin critique)</div>
+        </article>
+
+        <article class="metric-card">
+          <div class="metric-title">Inference global</div>
+          <div class="metric-value metric-value--small" id="global-value">—</div>
+          <div class="metric-footnote">ms</div>
+        </article>
+
+        <article class="metric-card">
+          <div class="metric-title">Fusion wait</div>
+          <div class="metric-value metric-value--small" id="fusion-value">—</div>
+          <div class="metric-footnote">ms (tiles − global)</div>
+        </article>
+
+      </div>
+
+      <!-- Latency sparkline graph -->
+      <div class="metric-card wide latency-graph-card" style="margin-top:14px">
+        <div class="metric-title">Latence end-to-end — 60 dernières frames</div>
+        <canvas id="latency-chart" height="170"></canvas>
+        <div class="latency-legend">
+          <span><span class="legend-dot backend"></span> end_to_end_ms</span>
+          <span><span class="legend-dot render" style="background:#f59e0b"></span> inference_tiles_ms</span>
+          <span style="color:rgba(255,255,255,0.35)">── 33 ms target (30 fps)</span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    // ── Constants ──────────────────────────────────────────────────
+    const MAX_HISTORY = 60;
+    const TARGET_MS   = 33.33;  // 30 fps
+
+    // ── State ──────────────────────────────────────────────────────
+    const e2eHist    = [];
+    const tilesHist  = [];
+    const fpsTs      = [];     // raw timestamps for FPS estimation
+    let   showMask   = false;
+
+    // ── DOM refs ───────────────────────────────────────────────────
+    const $connStatus   = document.getElementById('conn-status');
+    const $latencyChip  = document.getElementById('latency-chip');
+    const $fpsChip      = document.getElementById('fps-chip');
+    const $countValue   = document.getElementById('count-value');
+    const $frameLabel   = document.getElementById('frame-id-label');
+    const $e2eValue     = document.getElementById('e2e-value');
+    const $fpsDerived   = document.getElementById('fps-derived');
+    const $preprocValue = document.getElementById('preprocess-value');
+    const $tilesValue   = document.getElementById('tiles-value');
+    const $globalValue  = document.getElementById('global-value');
+    const $fusionValue  = document.getElementById('fusion-value');
+    const $ovPreprocess = document.getElementById('ov-preprocess');
+    const $ovGlobal     = document.getElementById('ov-global');
+    const $ovTiles      = document.getElementById('ov-tiles');
+    const maskCanvas    = document.getElementById('mask-canvas');
+    const maskCtx       = maskCanvas.getContext('2d');
+    const latChart      = document.getElementById('latency-chart');
+    const latCtx        = latChart.getContext('2d');
+
+    // ── Mask toggle ────────────────────────────────────────────────
+    document.getElementById('mask-toggle').addEventListener('change', e => {
+      showMask = e.target.checked;
+      if (!showMask) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    });
+
+    // ── SSE connection ─────────────────────────────────────────────
+    const sse = new EventSource('/api/stream');
+
+    sse.addEventListener('message', e => {
+      let msg;
+      try { msg = JSON.parse(e.data); } catch { return; }
+      if (!msg || !msg.frame_id) return;
+
+      const payload = Array.isArray(msg.payload) ? msg.payload : [];
+      const tel     = (payload.find(p => p && p.telemetry) || {}).telemetry || {};
+
+      // ── Person count ─────────────────────────────────────────────
+      let count = 0;
+      for (const p of payload) {
+        if (!p) continue;
+        if (Array.isArray(p.detections)) count += p.detections.length;
+        if (typeof p.count === 'number')  count  = Math.max(count, p.count);
+      }
+
+      // ── Metrics from telemetry snapshot ──────────────────────────
+      const e2e      = +(tel.end_to_end_ms                      ?? 0);
+      const preproc  = +(tel.preprocess_ms                      ?? 0);
+      const tiles    = +(tel.inference_model_yolo_tiles_ms      ?? 0);
+      const global_  = +(tel.inference_model_yolo_global_ms     ?? 0);
+      const fusion   = +(tel.fusion_wait_ms                     ?? 0);
+
+      // ── FPS (from publication events, not inference rate) ────────
+      const now = Date.now();
+      fpsTs.push(now);
+      while (fpsTs.length && now - fpsTs[0] > 2000) fpsTs.shift();
+      const fps = fpsTs.length > 1
+        ? Math.round((fpsTs.length - 1) / ((now - fpsTs[0]) / 1000))
+        : 0;
+
+      // ── Update DOM ───────────────────────────────────────────────
+      $connStatus.textContent  = '⬤ Live';
+      $connStatus.style.color  = 'var(--accent)';
+
+      $countValue.textContent  = count;
+      $frameLabel.textContent  = `frame ${msg.frame_id}`;
+
+      $e2eValue.textContent    = e2e.toFixed(1);
+      $fpsDerived.textContent  = fps ? `${fps} fps` : '— fps';
+
+      $preprocValue.textContent = preproc.toFixed(2);
+      $tilesValue.textContent   = tiles.toFixed(2);
+      $globalValue.textContent  = global_.toFixed(2);
+      $fusionValue.textContent  = fusion.toFixed(2);
+
+      // Video overlay chips
+      $latencyChip.textContent = `${e2e.toFixed(1)} ms`;
+      $fpsChip.textContent     = fps ? `${fps} fps` : '— fps';
+      $latencyChip.style.background =
+        e2e <= TARGET_MS
+          ? 'rgba(42,223,165,0.18)'
+          : e2e <= TARGET_MS * 1.2
+          ? 'rgba(245,158,11,0.22)'
+          : 'rgba(239,68,68,0.22)';
+
+      // Pipeline breakdown overlay
+      $ovPreprocess.textContent = `preprocess ${preproc.toFixed(1)} ms`;
+      $ovGlobal.textContent     = `global  ${global_.toFixed(1)} ms`;
+      $ovTiles.textContent      = `tiles   ${tiles.toFixed(1)} ms`;
+
+      // ── Mask overlay ─────────────────────────────────────────────
+      if (showMask) drawMask(payload);
+      else maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+
+      // ── History & chart ──────────────────────────────────────────
+      e2eHist.push(e2e);
+      tilesHist.push(tiles);
+      if (e2eHist.length  > MAX_HISTORY) e2eHist.shift();
+      if (tilesHist.length > MAX_HISTORY) tilesHist.shift();
+      drawChart();
+    });
+
+    sse.onerror = () => {
+      $connStatus.textContent = '⬤ Reconnecting…';
+      $connStatus.style.color = '#f59e0b';
+    };
+
+    // ── Mask overlay: draw detection bboxes ───────────────────────
+    function drawMask(payload) {
+      const wrapper = maskCanvas.parentElement;
+      maskCanvas.width  = wrapper.clientWidth;
+      maskCanvas.height = wrapper.clientHeight;
+      maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+
+      const W = maskCanvas.width;
+      const H = maskCanvas.height;
+
+      for (const p of payload) {
+        if (!p || !Array.isArray(p.detections)) continue;
+        for (const det of p.detections) {
+          if (!det || !Array.isArray(det.bbox)) continue;
+          const [x1, y1, x2, y2] = det.bbox;   // expected: normalised 0-1
+          const bx = x1 * W, by = y1 * H, bw = (x2 - x1) * W, bh = (y2 - y1) * H;
+          maskCtx.strokeStyle = 'rgba(42,223,165,0.9)';
+          maskCtx.fillStyle   = 'rgba(42,223,165,0.12)';
+          maskCtx.lineWidth   = 2;
+          maskCtx.beginPath();
+          maskCtx.roundRect(bx, by, bw, bh, 4);
+          maskCtx.fill();
+          maskCtx.stroke();
+          // label
+          if (det.label || det.conf != null) {
+            const label = [det.label, det.conf != null ? `${(det.conf*100).toFixed(0)}%` : '']
+              .filter(Boolean).join(' ');
+            maskCtx.fillStyle = 'rgba(5,11,23,0.75)';
+            maskCtx.fillRect(bx, by - 18, label.length * 7 + 8, 18);
+            maskCtx.fillStyle = '#e5fffa';
+            maskCtx.font = '11px monospace';
+            maskCtx.fillText(label, bx + 4, by - 4);
+          }
+        }
+      }
+    }
+
+    // ── Latency chart ─────────────────────────────────────────────
+    function drawChart() {
+      const W = latChart.offsetWidth || 600;
+      const H = 170;
+      latChart.width  = W;
+      latChart.height = H;
+      latCtx.clearRect(0, 0, W, H);
+
+      const N = e2eHist.length;
+      if (N < 2) return;
+
+      const allVals = [...e2eHist, ...tilesHist, TARGET_MS];
+      const maxVal  = Math.max(...allVals) * 1.15;
+
+      function xOf(i)   { return (i / (MAX_HISTORY - 1)) * W; }
+      function yOf(val) { return H - (val / maxVal) * (H - 14); }
+
+      // 33 ms reference line
+      latCtx.beginPath();
+      latCtx.strokeStyle = 'rgba(255,255,255,0.15)';
+      latCtx.setLineDash([5, 5]);
+      latCtx.moveTo(0, yOf(TARGET_MS));
+      latCtx.lineTo(W, yOf(TARGET_MS));
+      latCtx.stroke();
+      latCtx.setLineDash([]);
+      latCtx.fillStyle = 'rgba(255,255,255,0.28)';
+      latCtx.font = '10px sans-serif';
+      latCtx.fillText('33 ms', 4, yOf(TARGET_MS) - 3);
+
+      function drawLine(data, color, fill) {
+        if (data.length < 2) return;
+        latCtx.beginPath();
+        latCtx.strokeStyle = color;
+        latCtx.lineWidth   = 2;
+        // Fill area under curve
+        latCtx.moveTo(xOf(0), H);
+        for (let i = 0; i < data.length; i++) latCtx.lineTo(xOf(i), yOf(data[i]));
+        latCtx.lineTo(xOf(data.length - 1), H);
+        latCtx.closePath();
+        latCtx.fillStyle = fill;
+        latCtx.fill();
+        // Stroke
+        latCtx.beginPath();
+        for (let i = 0; i < data.length; i++) {
+          const x = xOf(i), y = yOf(data[i]);
+          if (i === 0) latCtx.moveTo(x, y); else latCtx.lineTo(x, y);
+        }
+        latCtx.stroke();
+      }
+
+      drawLine(tilesHist, 'rgba(245,158,11,0.85)', 'rgba(245,158,11,0.07)');
+      drawLine(e2eHist,   'rgba(42,223,165,0.9)',  'rgba(42,223,165,0.08)');
+    }
+
+    // ── Fullscreen ────────────────────────────────────────────────
+    function toggleFullscreen() {
+      const el = document.getElementById('video-wrapper');
+      if (!document.fullscreenElement) el.requestFullscreen?.();
+      else document.exitFullscreen?.();
+    }
+
+    // ── WebCodecs VideoDecoder (zero server-side encode) ──────────
+    // Architecture:
+    //   PyFFmpegDemuxer → Annex-B H.264 packets → WebSocket binary
+    //   → EncodedVideoChunk → VideoDecoder → <canvas>
+    //
+    // Falls back silently to MJPEG if:
+    //   • The browser doesn't support WebCodecs  (VideoDecoder undefined)
+    //   • The WebSocket can't connect  (network, wrong port, etc.)
+    //   • The server sends no init message within 5s  (MJPEG/no H.264 source)
+    (function initWebCodecs() {
+      if (typeof VideoDecoder === 'undefined') return; // no WebCodecs support
+
+      const WS_URL    = `ws://${window.location.hostname}:{{ ws_port }}`;
+      const videoCanvas = document.getElementById('video-canvas');
+      const videoFeed   = document.getElementById('video-feed');
+      const ctx         = videoCanvas.getContext('2d');
+
+      let decoder  = null;
+      let ws       = null;
+      let initDone = false;
+
+      // If no init message arrives in 5 s, the source is not H.264 — keep MJPEG.
+      const fallbackTimer = setTimeout(() => {
+        if (!initDone) teardown();
+      }, 5000);
+
+      function base64ToBuffer(b64) {
+        const bin = atob(b64);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        return buf.buffer;
+      }
+
+      function activateCanvas() {
+        videoFeed.style.display  = 'none';
+        videoCanvas.style.display = 'block';
+      }
+
+      function teardown() {
+        clearTimeout(fallbackTimer);
+        try { ws && ws.close(); } catch(e) {}
+        try { decoder && decoder.close(); } catch(e) {}
+        decoder = null; ws = null;
+      }
+
+      function onInitMsg(msg) {
+        clearTimeout(fallbackTimer);
+        initDone = true;
+
+        const config = {
+          codec: msg.codec || 'avc1',
+          optimizeForLatency: true,
+          hardwareAcceleration: 'prefer-hardware',
+        };
+        if (msg.description) config.description = base64ToBuffer(msg.description);
+        if (msg.width)  { config.codedWidth  = msg.width;  videoCanvas.width  = msg.width; }
+        if (msg.height) { config.codedHeight = msg.height; videoCanvas.height = msg.height; }
+
+        decoder = new VideoDecoder({
+          output: (frame) => {
+            ctx.drawImage(frame, 0, 0, videoCanvas.clientWidth, videoCanvas.clientHeight);
+            frame.close();
+          },
+          error: (e) => {
+            console.warn('VideoDecoder error:', e);
+            // If the codec config was wrong, fall back to MJPEG.
+            teardown();
+            videoFeed.style.display  = '';
+            videoCanvas.style.display = 'none';
+          },
+        });
+
+        VideoDecoder.isConfigSupported(config).then(support => {
+          if (!support.supported) {
+            teardown();
+            return;
+          }
+          decoder.configure(config);
+          activateCanvas();
+        }).catch(() => { teardown(); });
+      }
+
+      function onBinaryMsg(data) {
+        if (!decoder || decoder.state !== 'configured') return;
+        const view = new DataView(data);
+        const flags      = view.getUint8(0);
+        const isKeyframe = (flags & 1) !== 0;
+        // pts_us: u64 LE — read as two u32 to avoid BigInt requirement
+        const pts_lo = view.getUint32(1, true);
+        const pts_hi = view.getUint32(5, true);
+        const pts_us = pts_hi * 4294967296 + pts_lo;   // microseconds
+
+        const payload = data.slice(9);
+        try {
+          decoder.decode(new EncodedVideoChunk({
+            type: isKeyframe ? 'key' : 'delta',
+            timestamp: pts_us,
+            data: payload,
+          }));
+        } catch(e) {
+          // Usually "decode called before configure" on startup — harmless.
+        }
+      }
+
+      ws = new WebSocket(WS_URL);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === 'string') {
+          let msg;
+          try { msg = JSON.parse(ev.data); } catch { return; }
+          if (msg && msg.type === 'init') onInitMsg(msg);
+        } else {
+          onBinaryMsg(ev.data);
+        }
+      };
+
+      ws.onerror = () => { clearTimeout(fallbackTimer); };
+      ws.onclose = () => {
+        clearTimeout(fallbackTimer);
+        if (initDone) {
+          // Reconnect after a short delay.
+          setTimeout(initWebCodecs, 2000);
+        }
+      };
+    })();
+  </script>
+
+</body>
 </html>
