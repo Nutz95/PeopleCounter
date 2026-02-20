@@ -149,8 +149,14 @@ class PipelineOrchestrator:
                 self.aggregator.attach_release_hook(frame_id, output.release_all)
                 for model in self._models:
                     processed = output.flatten_inputs(model.name)
+                    tile_plan = output.plans.get(model.name)
                     with self.performance_tracker.stage(frame_id, model.name):
-                        prediction = model.infer(frame_id, processed, preprocess_events=list(output.cuda_events.values()))
+                        prediction = model.infer(
+                            frame_id,
+                            processed,
+                            preprocess_events=list(output.cuda_events.values()),
+                            tile_plan=tile_plan,
+                        )
                         if isinstance(prediction, dict):
                             prediction["_inference_done_ns"] = int(time.time_ns())
                         self.processing_graph.register(model.name, {"frame_id": frame_id})

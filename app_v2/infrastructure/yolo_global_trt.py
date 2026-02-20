@@ -32,7 +32,7 @@ class YoloGlobalTRT(InferenceModel):
         """Ensure the execution context and CUDA streams are primed."""
         pass
 
-    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None) -> dict[str, Any]:
+    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None, tile_plan: Any | None = None) -> dict[str, Any]:
         """Execute inference on the model stream and return decoded placeholders + metrics."""
         stream_key = f"model:{self._name}"
         start_ns = time.perf_counter_ns()
@@ -48,7 +48,7 @@ class YoloGlobalTRT(InferenceModel):
                 }
             )
             decode_start_ns = time.perf_counter_ns()
-            decoded = self._decoder.process(frame_id, raw_outputs)
+            decoded = self._decoder.process(frame_id, raw_outputs, tile_plan=tile_plan)
             decode_ms = (time.perf_counter_ns() - decode_start_ns) / 1_000_000.0
             infer_ms = (time.perf_counter_ns() - start_ns) / 1_000_000.0
             return {

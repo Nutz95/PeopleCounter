@@ -22,7 +22,7 @@ class FilteredLogger:
         self.extreme_debug = parse_bool_env('EXTREME_DEBUG', '0')
         self.yolo_debug = parse_bool_env('YOLO_DEBUG_LOGS', '0')
         self.density_debug = parse_bool_env('DENSITY_DEBUG_LOGS', '0')
-        self.nvdec_debug = parse_bool_env('NVDEC_DEBUG_LOGS', '1')
+        self.nvdec_debug = parse_bool_env('NVDEC_DEBUG_LOGS', '0')
 
     def configure(self, *, extreme_debug=None, yolo_debug=None, density_debug=None, nvdec_debug=None):
         if extreme_debug is not None:

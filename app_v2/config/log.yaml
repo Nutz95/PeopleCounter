@@ -1,5 +1,5 @@
 channels:
-  global: true
+  global: false
   yolo: false
   density: false
-  nvdec: true
+  nvdec: false

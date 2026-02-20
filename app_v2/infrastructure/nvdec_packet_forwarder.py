@@ -169,6 +169,9 @@ class NvdecPacketForwarder:
     # Private: demux loop
     # ------------------------------------------------------------------
 
+    # Maximum delay (seconds) between reconnection attempts.
+    _MAX_RECONNECT_DELAY = 8.0
+
     def _run(self) -> None:
         try:
             import numpy as np  # type: ignore[import]
@@ -177,9 +180,30 @@ class NvdecPacketForwarder:
             log_warning(LogChannel.GLOBAL, f"PyNvCodec/numpy unavailable — WebCodecs packet forwarder disabled: {exc}")
             return
 
+        reconnect_delay = 2.0  # seconds; doubles on each failure up to _MAX_RECONNECT_DELAY
+
+        while self._running:
+            eof = self._run_demux_once(nvc)
+            if not self._running:
+                break
+            if eof:
+                # Clean EOF (stream ended); stop without reconnecting.
+                log_info(LogChannel.GLOBAL, "NvdecPacketForwarder: stream EOF — stopping")
+                break
+            # Transient error — reconnect after a short pause.
+            log_info(LogChannel.GLOBAL, f"NvdecPacketForwarder: reconnecting in {reconnect_delay:.1f} s…")
+            time.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, self._MAX_RECONNECT_DELAY)
+
+        log_info(LogChannel.GLOBAL, "NvdecPacketForwarder run loop exited")
+
+    def _run_demux_once(self, nvc: Any) -> bool:
+        """Run one demux session.  Returns True on clean EOF, False on error."""
+        import numpy as np  # type: ignore[import]
+
         demuxer = self._create_demuxer(nvc)
         if demuxer is None:
-            return
+            return False  # Error (not EOF)
 
         # Read stream dimensions from the demuxer.
         width  = self._demuxer_int(demuxer, "Width")
@@ -188,7 +212,6 @@ class NvdecPacketForwarder:
         pkt_data_cls = getattr(nvc, "PacketData", None)
         pkt_data = pkt_data_cls() if pkt_data_cls is not None else None
 
-        import numpy as np  # type: ignore[import] # noqa: F811 already imported above
         packet = np.zeros(shape=(0,), dtype=np.uint8)
 
         avcc_sent = False
@@ -202,11 +225,10 @@ class NvdecPacketForwarder:
                     success = demuxer.DemuxSinglePacket(packet)
             except Exception as exc:
                 log_warning(LogChannel.GLOBAL, f"DemuxSinglePacket error: {exc}")
-                break
+                return False  # Transient error — caller will reconnect
 
             if not success:
-                log_info(LogChannel.GLOBAL, "Demuxer EOF — NvdecPacketForwarder stopping")
-                break
+                return True  # Clean EOF
 
             pkt_bytes = bytes(packet)
             if not pkt_bytes:
@@ -223,7 +245,7 @@ class NvdecPacketForwarder:
             pts = self._pts_us(pkt_data, t0_ns)
             self._ws_server.push_packet(pkt_bytes, pts, is_kf)
 
-        log_info(LogChannel.GLOBAL, "NvdecPacketForwarder run loop exited")
+        return True  # Stopped cleanly via self._running = False
 
     def _create_demuxer(self, nvc: Any) -> Any | None:
         """Try multiple ``PyFFmpegDemuxer`` constructor signatures."""

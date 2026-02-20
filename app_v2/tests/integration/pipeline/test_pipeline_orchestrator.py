@@ -81,9 +81,10 @@ class SpyModel(InferenceModel):
     def warm_up(self, batch_size: int) -> None:
         del batch_size
 
-    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None) -> dict[str, Any]:
+    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None, tile_plan: Any | None = None) -> dict[str, Any]:
         del frame_id
         del preprocess_events
+        del tile_plan
         captured = list(inputs)
         self.calls.append(captured)
         return {"model": self._name}

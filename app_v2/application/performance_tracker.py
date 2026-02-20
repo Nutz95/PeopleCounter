@@ -5,7 +5,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from typing import ContextManager, Dict, Iterator
 
-from logger.filtered_logger import LogChannel, info as log_info
+from logger.filtered_logger import LogChannel, debug as log_debug
 
 
 class PerformanceTracker:
@@ -26,7 +26,7 @@ class PerformanceTracker:
             return None
         duration = time.perf_counter() - start
         self._history[frame_id][stage] = duration
-        log_info(LogChannel.GLOBAL, f"Frame {frame_id} stage {stage} -> {duration * 1000:.2f} ms")
+        log_debug(LogChannel.GLOBAL, f"Frame {frame_id} stage {stage} -> {duration * 1000:.2f} ms")
         return duration
 
     def get_summary(self, frame_id: int) -> Dict[str, float]:

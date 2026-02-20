@@ -22,7 +22,14 @@ class InferenceModel(ABC):
         """Warm up TensorRT context for the configured batch size."""
 
     @abstractmethod
-    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None) -> dict[str, Any]:
+    def infer(
+        self,
+        frame_id: int,
+        inputs: Sequence[Any],
+        *,
+        preprocess_events: Sequence[Any] | None = None,
+        tile_plan: Any | None = None,
+    ) -> dict[str, Any]:
         """Execute inference and return a dictionary of intermediate tensors.
 
         Args:
@@ -30,6 +37,10 @@ class InferenceModel(ABC):
                 streams.  The inference stream must call ``wait_event()`` on
                 each before touching preprocess output tensors, establishing a
                 GPU-side ordering dependency without blocking the CPU.
+            tile_plan: Optional :class:`PreprocessPlan` for the current frame.
+                When provided the decoder maps all bounding boxes to global
+                frame coordinates (``[0, 1]`` fractions of the original frame
+                dimensions) instead of 640-px letterboxed space.
         """
 
     @abstractmethod

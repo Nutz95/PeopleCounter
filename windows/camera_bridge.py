@@ -28,6 +28,11 @@ ALTERNATIVE_NAME_PATTERN = re.compile(r'Alternative name\s+"?(.+?)"?$', re.IGNOR
 logger = logging.getLogger("camera_bridge")
 
 
+# Per-client buffer: 256 TS-aligned chunks (~16 MB at ~64 KB/chunk).
+# Large enough to absorb ~10 s of an 8-Mbps stream without drops.
+_CLIENT_QUEUE_SIZE = 256
+
+
 class StreamBroadcaster:
     def __init__(self) -> None:
         self._clients: list[queue.Queue[bytes | None]] = []
@@ -37,14 +42,14 @@ class StreamBroadcaster:
         self._history_limit = 512 * 1024
 
     def register(self) -> queue.Queue[bytes | None]:
-        q: queue.Queue[bytes | None] = queue.Queue(maxsize=64)
+        q: queue.Queue[bytes | None] = queue.Queue(maxsize=_CLIENT_QUEUE_SIZE)
         with self._lock:
             self._clients.append(q)
             history = list(self._history)
         return q
 
     def register_with_history(self) -> tuple[queue.Queue[bytes | None], list[bytes]]:
-        q = queue.Queue(maxsize=64)
+        q = queue.Queue(maxsize=_CLIENT_QUEUE_SIZE)
         with self._lock:
             self._clients.append(q)
             history = list(self._history)
@@ -64,10 +69,18 @@ class StreamBroadcaster:
         with self._lock:
             clients = list(self._clients)
         for q in clients:
+            # Drop-oldest strategy: when the queue is full discard the stale
+            # front chunk so the consumer always has the freshest data and the
+            # MPEG-TS stream is not silently gapped by dropping the newest chunk.
+            if q.full():
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    pass
             try:
-                q.put(chunk, block=False)
+                q.put_nowait(chunk)
             except queue.Full:
-                continue
+                pass  # race condition — skip rather than block
 
     def notify_stream_ended(self) -> None:
         with self._lock:
@@ -311,11 +324,12 @@ def choose_encoder(ffmpeg_path: Path) -> str:
 
 def choose_bitrate_for_encoder(encoder: str) -> int:
     """Prompt user for bitrate (kbps) with sensible defaults per encoder."""
-    # Use 25000 kbps as the default for all encoders unless user overrides
+    # Hardware encoders default to 8 Mbps — enough for 4K detection accuracy
+    # while keeping the WSL2 network queue small and reducing corrupt-packet rate.
     defaults = {
-        "h264_nvenc": 25000,
-        "h264_qsv": 25000,
-        "h264_vaapi": 25000,
+        "h264_nvenc": 8000,
+        "h264_qsv": 8000,
+        "h264_vaapi": 8000,
         "libx264": 25000,
     }
     default = defaults.get(encoder, 25000)
@@ -405,20 +419,32 @@ def start_ffmpeg_stream(
             # Note: on some systems you may need to pass -vaapi_device /dev/dri/renderD128
             cmd += ["-vf", "format=nv12,hwupload"]
         if encoder.startswith("h264_nvenc"):
-            # Improve NVENC quality by using VBR HQ and a sensible preset
-            cmd += ["-rc", "vbr_hq", "-preset", "llhq"]
+            # VBR HQ preset; disable B-frames for lower latency + shorter IDR distance.
+            cmd += ["-rc", "vbr_hq", "-preset", "llhq", "-bf", "0"]
+        if encoder.startswith("h264_qsv"):
+            # No B-frames (reduces encode latency by ~2 frames) and single-frame
+            # async depth so each frame is flushed immediately.
+            cmd += ["-bf", "0", "-async_depth", "4"]
+        if not gop1:
+            # Keyframe every 2 s (≈ 2×fps frames).  Shorter GOP = faster NVDEC
+            # resync after a corrupt packet (recovery within 2 s instead of the
+            # hardware-encoder default of ~250 frames / ~8 s).
+            gop_frames = max(1, fps * 2)
+            cmd += ["-g", str(gop_frames), "-keyint_min", str(gop_frames)]
         if gop1:
             # NVIDIA NVENC enforces: Gop Length should be greater than number of B frames + 1
             # Setting GOP=1 with default B-frames will fail. For nvenc, disable B-frames and
             # use the minimal allowed GOP (2). If true GOP=1 is required, fallback to libx264.
             if encoder.startswith("h264_nvenc"):
-                cmd += ["-bf", "0", "-g", "2"]
+                cmd += ["-g", "2"]
                 logger.warning("h264_nvenc doesn't support GOP=1; using -bf 0 -g 2 instead")
             else:
                 cmd += ["-g", "1"]
 
-    # Output as MPEG-TS to stdout
-    cmd += ["-f", "mpegts", "-"]
+    # Output as MPEG-TS to stdout.
+    # +resend_headers replays PAT/PMT before every IDR frame so a new client
+    # (or a reader that missed the initial headers) can sync on any keyframe.
+    cmd += ["-f", "mpegts", "-mpegts_flags", "+resend_headers", "-"]
     logger.info("Launching FFmpeg bridge: %s", " ".join(cmd))
     print("[i] Démarrage de FFmpeg pour streamer le flux H.264 …")
     proc = subprocess.Popen(
@@ -431,13 +457,20 @@ def start_ffmpeg_stream(
     return proc
 
 
+# MPEG-TS packets are always 188 bytes; read multiples of 188 so we never
+# split a TS packet across two broadcaster chunks.  348 × 188 = 65424 bytes
+# (≈ 64 KB, close to the previous read size without fragmenting TS packets).
+_TS_PACKET_SIZE = 188
+_TS_READ_SIZE = _TS_PACKET_SIZE * 348  # 65424 bytes per syscall
+
+
 def stream_ffmpeg_output(ffmpeg_proc: subprocess.Popen, broadcaster: StreamBroadcaster) -> None:
     stdout = ffmpeg_proc.stdout
     if stdout is None:
         return
     try:
         while True:
-            chunk = stdout.read(64 * 1024)
+            chunk = stdout.read(_TS_READ_SIZE)
             if not chunk:
                 break
             broadcaster.broadcast(chunk)

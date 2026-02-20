@@ -32,7 +32,7 @@ class YoloTilingTRT(InferenceModel):
         """Bind TensorRT profiles for the expected batch."""
         pass
 
-    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None) -> dict[str, Any]:
+    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None, tile_plan: Any | None = None) -> dict[str, Any]:
         """Execute tiled inference and return decoded placeholders + metrics."""
         stream_key = f"model:{self._name}"
         start_ns = time.perf_counter_ns()

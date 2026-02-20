@@ -17,7 +17,7 @@ from app_v2.core.telemetry_keys import (
     OVERLAY_LAG_MS,
     inference_model_metric_key,
 )
-from logger.filtered_logger import LogChannel, info as log_info
+from logger.filtered_logger import LogChannel, info as log_info, debug as log_debug
 
 
 class ResultAggregator:
@@ -47,7 +47,7 @@ class ResultAggregator:
                 payload_list.append({"telemetry": telemetry.snapshot()})
             self.publisher.publish(frame_id, payload_list)
             self._run_release_hooks(frame_id)
-            log_info(
+            log_debug(
                 LogChannel.GLOBAL,
                 f"Published frame {frame_id} with {len(payload_list)} payloads via {self.fusion_strategy.strategy_type.value}",
             )

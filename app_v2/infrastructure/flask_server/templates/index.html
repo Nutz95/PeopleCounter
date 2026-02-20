@@ -55,7 +55,7 @@
       <!-- Controls below the video -->
       <div class="control-group">
         <label class="toggle">
-          <input type="checkbox" id="mask-toggle">
+          <input type="checkbox" id="mask-toggle" checked>
           Masque de fusion (bounding boxes)
         </label>
       </div>
@@ -74,7 +74,7 @@
         <article class="metric-card">
           <div class="metric-title">End-to-end</div>
           <div class="metric-value" id="e2e-value">—</div>
-          <div class="metric-footnote">ms / <span id="fps-derived">— fps</span></div>
+          <div class="metric-footnote">ms latence / <span id="fps-derived">— fps</span> débit réel</div>
         </article>
 
         <article class="metric-card">
@@ -127,7 +127,7 @@
     const e2eHist    = [];
     const tilesHist  = [];
     const fpsTs      = [];     // raw timestamps for FPS estimation
-    let   showMask   = false;
+    let   showMask   = true;   // ON by default — toggle checkbox below
 
     // Rolling-average buckets: { t: timestamp_ms, v: value }[]
     const _smooth = {
@@ -136,7 +136,6 @@
       global: [],
       preproc: [],
       fusion: [],
-      count:  [],
     };
 
     function rollAvg(arr, value) {
@@ -167,6 +166,11 @@
     const latChart      = document.getElementById('latency-chart');
     const latCtx        = latChart.getContext('2d');
 
+    // Source video dimensions received from the server via telemetry.
+    // Cached here so drawMask() is correct from the very first SSE event.
+    let _videoSrcW = 0;
+    let _videoSrcH = 0;
+
     // ── Mask toggle ────────────────────────────────────────────────
     document.getElementById('mask-toggle').addEventListener('change', e => {
       showMask = e.target.checked;
@@ -184,12 +188,18 @@
       const payload = Array.isArray(msg.payload) ? msg.payload : [];
       const tel     = (payload.find(p => p && p.telemetry) || {}).telemetry || {};
 
+      // Update cached video source dimensions whenever the server reports them.
+      if (tel.frame_width  > 0) _videoSrcW = tel.frame_width;
+      if (tel.frame_height > 0) _videoSrcH = tel.frame_height;
+
       // ── Person count ─────────────────────────────────────────────
+      // Use max across models to avoid double-counting the same person
+      // (yolo_global and yolo_tiles independently detect the same person).
       let count = 0;
       for (const p of payload) {
         if (!p) continue;
-        if (Array.isArray(p.detections)) count += p.detections.length;
-        if (typeof p.count === 'number')  count  = Math.max(count, p.count);
+        if (Array.isArray(p.detections)) count = Math.max(count, p.detections.length);
+        if (typeof p.count === 'number')  count = Math.max(count, p.count);
       }
 
       // ── Metrics from telemetry snapshot ──────────────────────────
@@ -218,13 +228,12 @@
       const avgGlobal = hasTelemetry ? rollAvg(_smooth.global, global_): 0;
       const avgPreproc= hasTelemetry ? rollAvg(_smooth.preproc,preproc): 0;
       const avgFusion = hasTelemetry ? rollAvg(_smooth.fusion, fusion) : 0;
-      const avgCount  = rollAvg(_smooth.count, count);
 
       // ── Update DOM ───────────────────────────────────────────────
       $connStatus.textContent  = '⬤ Live';
       $connStatus.style.color  = 'var(--accent)';
 
-      $countValue.textContent  = Math.round(avgCount);
+      $countValue.textContent  = count;  // raw count — no smoothing
       $frameLabel.textContent  = `frame ${msg.frame_id}`;
 
       $e2eValue.textContent    = avgE2e.toFixed(1);
@@ -274,17 +283,48 @@
       const wrapper = maskCanvas.parentElement;
       maskCanvas.width  = wrapper.clientWidth;
       maskCanvas.height = wrapper.clientHeight;
-      maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 
       const W = maskCanvas.width;
       const H = maskCanvas.height;
+      // Canvas not laid out yet (e.g. on startup before first layout pass).
+      if (W === 0 || H === 0) return;
+
+      maskCtx.clearRect(0, 0, W, H);
+
+      // ── Source video dimensions ────────────────────────────────────
+      const canvasEl  = document.getElementById('video-canvas');
+      const videoEl   = document.getElementById('video-feed');
+      const useCanvas = canvasEl.style.display !== 'none';
+      const fallbackW = useCanvas ? canvasEl.width : (videoEl.naturalWidth  || 0);
+      const fallbackH = useCanvas ? canvasEl.height : (videoEl.naturalHeight || 0);
+      const srcW = _videoSrcW || fallbackW;
+      const srcH = _videoSrcH || fallbackH;
+      if (srcW <= 0 || srcH <= 0) return;
+
+      // ── Display letterbox (CSS object-fit:contain) ─────────────────
+      // The video is fitted inside the wrapper with black bars on the shorter axis.
+      // Bboxes arrive as [0,1] fractions of the ORIGINAL frame — the server already
+      // un-letterboxed the preprocessing padding (global model) and remapped tile-
+      // local detections to global frame space, so no preprocessing math is needed here.
+      const dispScale = Math.min(W / srcW, H / srcH);
+      const dispW = srcW * dispScale;      // displayed-content width  (px)
+      const dispH = srcH * dispScale;      // displayed-content height (px)
+      const dispX = (W - dispW) / 2;      // left black-bar offset    (px)
+      const dispY = (H - dispH) / 2;      // top  black-bar offset    (px)
 
       for (const p of payload) {
         if (!p || !Array.isArray(p.detections)) continue;
         for (const det of p.detections) {
-          if (!det || !Array.isArray(det.bbox)) continue;
-          const [x1, y1, x2, y2] = det.bbox;   // expected: normalised 0-1
-          const bx = x1 * W, by = y1 * H, bw = (x2 - x1) * W, bh = (y2 - y1) * H;
+          if (!det || !Array.isArray(det.bbox) || det.bbox.length < 4) continue;
+
+          // Direct linear mapping — no preprocessing letterbox to undo.
+          const [gx1, gy1, gx2, gy2] = det.bbox;
+          const bx = dispX + gx1 * dispW;
+          const by = dispY + gy1 * dispH;
+          const bw = (gx2 - gx1) * dispW;
+          const bh = (gy2 - gy1) * dispH;
+          if (bw <= 0 || bh <= 0) continue;
+
           maskCtx.strokeStyle = 'rgba(42,223,165,0.9)';
           maskCtx.fillStyle   = 'rgba(42,223,165,0.12)';
           maskCtx.lineWidth   = 2;
@@ -292,7 +332,7 @@
           maskCtx.roundRect(bx, by, bw, bh, 4);
           maskCtx.fill();
           maskCtx.stroke();
-          // label
+
           if (det.label || det.conf != null) {
             const label = [det.label, det.conf != null ? `${(det.conf*100).toFixed(0)}%` : '']
               .filter(Boolean).join(' ');
@@ -372,9 +412,12 @@
     //   PyFFmpegDemuxer → Annex-B H.264 packets → WebSocket binary
     //   → EncodedVideoChunk → VideoDecoder → render queue → rAF → <canvas>
     //
-    // Render queue: decoded VideoFrames are pushed to a bounded queue.
-    // requestAnimationFrame pops one frame per display refresh (~16 ms),
-    // giving smooth 30 fps playback even if packets arrive in bursts.
+    // Render queue: decoded VideoFrames wait until their PTS time is due.
+    // requestAnimationFrame checks PTS against wall-clock elapsed time so the
+    // video plays at the correct speed regardless of burst decode timing.
+    //
+    // Jitter buffer: we allow a 100 ms head-start before the clock starts so
+    // the queue is never starved on startup.
     //
     // Backpressure: if decoder.decodeQueueSize exceeds the threshold,
     // non-keyframe packets are dropped so the decoder catches up.
@@ -393,12 +436,16 @@
 
       const RENDER_QUEUE_MAX  = 4;   // max buffered decoded frames
       const DECODE_QUEUE_MAX  = 8;   // drop non-keyframes above this threshold
+      const JITTER_MS         = 33;  // one-frame jitter buffer (was 100 ms)
       const renderQueue = [];
 
       let decoder  = null;
       let ws       = null;
       let initDone = false;
       let rafId    = null;
+      // PTS clock sync: wall0 (ms from performance.now) and pts0 (ms)
+      let wall0 = null;
+      let pts0  = null;
 
       // If no init message arrives in 5 s, the source is not H.264 — keep MJPEG.
       const fallbackTimer = setTimeout(() => {
@@ -423,17 +470,30 @@
         try { ws && ws.close(); } catch(e) {}
         try { decoder && decoder.close(); } catch(e) {}
         while (renderQueue.length) renderQueue.shift()?.close?.();
-        decoder = null; ws = null;
+        decoder = null; ws = null; wall0 = null; pts0 = null;
       }
 
-      // ── Render loop: pop one frame per display refresh ────────────
-      function renderLoop() {
+      // ── Render loop: PTS-gated display ───────────────────────────
+      function renderLoop(rafTs) {
         if (renderQueue.length > 0) {
-          const frame = renderQueue.shift();
-          // Draw into the canvas buffer at the canvas element's CSS display size
-          // so the output fills the container regardless of source resolution.
-          ctx.drawImage(frame, 0, 0, videoCanvas.clientWidth, videoCanvas.clientHeight);
-          frame.close();
+          const frame = renderQueue[0];
+          // frame.timestamp is in microseconds (from _pts_us server-side)
+          const ptsMsAbs = frame.timestamp / 1000;
+
+          if (wall0 === null) {
+            // First frame: anchor wall clock to PTS, add jitter buffer head-start
+            wall0 = rafTs - JITTER_MS;
+            pts0  = ptsMsAbs;
+          }
+
+          const ptsElapsed  = ptsMsAbs - pts0;   // video time elapsed (ms)
+          const wallElapsed = rafTs  - wall0;    // wall time elapsed (ms)
+
+          if (wallElapsed >= ptsElapsed) {
+            renderQueue.shift();
+            ctx.drawImage(frame, 0, 0, videoCanvas.clientWidth, videoCanvas.clientHeight);
+            frame.close();
+          }
         }
         rafId = requestAnimationFrame(renderLoop);
       }
@@ -441,6 +501,9 @@
       function onInitMsg(msg) {
         clearTimeout(fallbackTimer);
         initDone = true;
+        // Reset PTS clock on every re-configure (stream restart, reconnect)
+        wall0 = null;
+        pts0  = null;
 
         const config = {
           codec: msg.codec || 'avc1',
@@ -476,7 +539,7 @@
           decoder.configure(config);
           activateCanvas();
           // Start the rAF render loop after successfully configuring the decoder.
-          rafId = requestAnimationFrame(renderLoop);
+          if (rafId === null) rafId = requestAnimationFrame(renderLoop);
         }).catch(() => { teardown(); });
       }
 
@@ -524,8 +587,8 @@
         clearTimeout(fallbackTimer);
         if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
         if (initDone) {
-          // Reconnect after a short delay.
-          setTimeout(initWebCodecs, 2000);
+          // Reconnect quickly — the server keeps the stream running.
+          setTimeout(initWebCodecs, 500);
         }
       };
     })();

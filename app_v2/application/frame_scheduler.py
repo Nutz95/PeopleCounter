@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Any, Deque
 
-from logger.filtered_logger import LogChannel, info as log_info
+from logger.filtered_logger import LogChannel, info as log_info, debug as log_debug
 
 
 class FrameScheduler:
@@ -19,7 +19,7 @@ class FrameScheduler:
         frame_id = self._next_id
         self._next_id += 1
         self._pending.append(frame_id)
-        log_info(LogChannel.GLOBAL, f"Scheduled frame {frame_id}")
+        log_debug(LogChannel.GLOBAL, f"Scheduled frame {frame_id}")
         return frame_id
 
     def acknowledge(self, frame_id: int) -> None:

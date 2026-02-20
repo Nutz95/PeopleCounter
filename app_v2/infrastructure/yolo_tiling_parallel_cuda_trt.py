@@ -46,7 +46,7 @@ class YoloTilingParallelCudaTRT(InferenceModel):
         """Bind TensorRT profiles for the expected batch."""
         pass
 
-    def infer(self, frame_id: int, inputs: Sequence[Any]) -> dict[str, Any]:
+    def infer(self, frame_id: int, inputs: Sequence[Any], *, preprocess_events: Sequence[Any] | None = None, tile_plan: Any | None = None) -> dict[str, Any]:
         """Execute tiled inference in parallel groups using native CUDA streams."""
         start_ns = time.perf_counter_ns()
         

@@ -115,6 +115,7 @@ class GpuPreprocessor(Preprocessor):
             frame_timestamp_ns = getattr(frame, "timestamp_ns", None)
             if frame_timestamp_ns is not None:
                 telemetry.add_metrics({FRAME_TIMESTAMP_NS: int(frame_timestamp_ns)})
+            telemetry.add_metrics({"frame_width": frame_width, "frame_height": frame_height})
 
         # For raw NV12 frames, skip the full-frame decode: each fused kernel
         # handles its own crop/letterbox directly from the Y/UV device pointers.
