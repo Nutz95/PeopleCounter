@@ -3,10 +3,10 @@ fusion_strategy: ASYNC_OVERLAY
 models:
   yolo_global:
     enabled: true
-    engine: models/tensorrt/yolo26m-seg-fp16-mixed.engine  # YOLOv8m FP16 mixed — better recall
+    engine: models/tensorrt/yolo26x-seg-fp8-qdq.engine  # YOLOv8x FP8-QDQ — max accuracy global
   yolo_tiles:
     enabled: false  # disabled — use yolo_global only; re-enable when density tiling is ready
-    engine: models/tensorrt/yolo26m-seg-fp16-mixed.engine  # YOLOv8m FP16 mixed
+    engine: models/tensorrt/yolo26n-seg-fp8-qdq.engine  # YOLOv8n FP8-QDQ — fast tiling
   density:
     enabled: true
     engine: models/tensorrt/dm_count_qnrf.engine
