@@ -271,6 +271,15 @@ class TensorRTExecutionContext:
         prepared: list[Any] = []
         if not isinstance(raw_inputs, list):
             return prepared
+
+        # Determine the dtype the engine expects for its first input tensor.
+        engine_input_dtype = torch.float32  # safe default (all current engines use fp32)
+        if trt is not None and self.engine_loader.engine is not None:
+            input_names = self._tensor_names(mode=trt.TensorIOMode.INPUT)
+            if input_names:
+                trt_dtype = self.engine_loader.engine.get_tensor_dtype(input_names[0])
+                engine_input_dtype = self._torch_dtype(trt_dtype) or torch.float32
+
         for item in raw_inputs:
             tensor = getattr(item, "tensor_ref", None)
             if tensor is None or not isinstance(tensor, torch.Tensor):
@@ -279,8 +288,8 @@ class TensorRTExecutionContext:
                 continue
             if tensor.ndim == 3:
                 tensor = tensor.unsqueeze(0)
-            if tensor.dtype != torch.float16:
-                tensor = tensor.to(dtype=torch.float16)
+            if tensor.dtype != engine_input_dtype:
+                tensor = tensor.to(dtype=engine_input_dtype)
             prepared.append(tensor.contiguous())
         if not prepared:
             return prepared
