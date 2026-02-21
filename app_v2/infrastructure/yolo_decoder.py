@@ -22,6 +22,12 @@ class YoloDecoder(Postprocessor):
     def __init__(self, person_class_id: int = 0, confidence_threshold: float = 0.25) -> None:
         self.person_class_id = person_class_id
         self.confidence_threshold = confidence_threshold
+        # Seg-mask extraction requires a GPU→CPU copy (costly on the hot path).
+        # Enable only when a seg-model is actually loaded and the UI toggle is on.
+        self.seg_mask_enabled: bool = False
+        # detections_gpu summary requires a GPU→CPU sync (.item()) — only
+        # needed for integration-test assertions, not the live pipeline.
+        self.person_summary_enabled: bool = False
 
     def process(self, frame_id: int, outputs: dict[str, Any], *, tile_plan: Any = None) -> dict[str, Any]:
         """Return normalized bounding boxes plus metadata for the aggregator.
@@ -47,7 +53,11 @@ class YoloDecoder(Postprocessor):
         """
         tensors = outputs.get("output_tensors", []) if isinstance(outputs, dict) else []
         detections = self._decode_detections(tensors, tile_plan=tile_plan)
-        person_summary = self._decode_person_detections_gpu(tensors)
+        person_summary = (
+            self._decode_person_detections_gpu(tensors)
+            if self.person_summary_enabled
+            else {"available": False, "reason": "disabled"}
+        )
 
         # Segmentation mask: global model only (single-batch prototype tensor).
         # Tiling passes produce N-batch proto tensors; skip to avoid coordinate
@@ -64,7 +74,8 @@ class YoloDecoder(Postprocessor):
             )
         )
         if (
-            is_global_mode
+            self.seg_mask_enabled
+            and is_global_mode
             and len(tensors) >= 2
             and torch is not None
             and isinstance(tensors[1], torch.Tensor)

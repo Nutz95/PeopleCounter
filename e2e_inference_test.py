@@ -72,9 +72,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--frames",   type=int, default=1,  help="Number of frames to process.")
     p.add_argument(
         "--output", "-o",
-        default="/workspace/e2e_result",
+        default="/app/app_v2/tests/integration/pipeline/artifacts/e2e_result",
         metavar="PATH",
-        help="Output path prefix (no extension). .png and .json will be appended.",
+        help="Output path prefix (no extension). .png and .json will be appended. "
+             "Inside Docker the workspace is mounted at /app.",
     )
     p.add_argument(
         "--conf", type=float, default=0.25, help="YOLO confidence threshold."

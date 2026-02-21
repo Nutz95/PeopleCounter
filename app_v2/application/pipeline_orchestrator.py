@@ -309,8 +309,10 @@ class PipelineOrchestrator:
         url_lower = url.lower()
         if url_lower.startswith("http://") or url_lower.startswith("https://"):
             opts = {
-                "probesize": "200000",
-                "analyzeduration": "500000",
+                # 2 MB: large enough to capture a full 4K keyframe with
+                # embedded SPS/PPS so FFmpeg can reliably detect pix_fmt.
+                "probesize": "2000000",
+                "analyzeduration": "2000000",
                 "reconnect": "1",
                 "reconnect_streamed": "1",
                 "reconnect_delay_max": "2",

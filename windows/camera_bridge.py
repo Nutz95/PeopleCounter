@@ -487,8 +487,10 @@ def start_ffmpeg_stream(
                 cmd += ["-g", "1"]
 
     # Output as MPEG-TS to stdout.
-    # +resend_headers replays PAT/PMT before every IDR frame so a new client
-    # (or a reader that missed the initial headers) can sync on any keyframe.
+    # dump_extra: re-inject SPS/PPS NAL units before every IDR keyframe so
+    # that NVDEC / any client that connects mid-stream can always resync.
+    # (mpegts +resend_headers only replays PAT/PMT – NOT the H.264 SPS/PPS.)
+    cmd += ["-bsf:v", "dump_extra"]
     cmd += ["-f", "mpegts", "-mpegts_flags", "+resend_headers", "-"]
     logger.info("Launching FFmpeg bridge: %s", " ".join(cmd))
     print("[i] Démarrage de FFmpeg pour streamer le flux H.264 …")
@@ -593,9 +595,16 @@ def start_ffmpeg_stream_file(
             cmd += ["-rc", "vbr_hq", "-preset", "llhq", "-bf", "0"]
         if encoder.startswith("h264_qsv"):
             cmd += ["-bf", "0", "-async_depth", "1"]  # async_depth=1 minimises initial buffering
-    # GOP: keyframe every 2 s for fast NVDEC resync after packet corruption.
-    gop_frames = max(1, fps * 2)
-    cmd += ["-g", str(gop_frames), "-keyint_min", str(gop_frames)]
+    # For image sources every frame is a keyframe (GOP=1) so a connecting
+    # decoder like NVDEC always finds a valid IDR immediately.
+    # For live-camera sources keep a 2-second GOP for efficiency.
+    if is_image:
+        cmd += ["-g", "1"]
+        if encoder == "libx264":
+            cmd += ["-keyint_min", "1"]
+    else:
+        gop_frames = max(1, fps * 2)
+        cmd += ["-g", str(gop_frames), "-keyint_min", str(gop_frames)]
 
     # For images, limit output rate to *fps* via -fps_mode so FFmpeg doesn't
     # try to emit 25 × fps duplicate frames due to loop expansion.
@@ -603,6 +612,9 @@ def start_ffmpeg_stream_file(
         cmd += ["-fps_mode", "vfr"]
 
     cmd += ["-an"]  # no audio
+    # dump_extra: re-inject SPS/PPS before every IDR so NVDEC can resync
+    # even when it connects mid-stream or after a stream_loop restart.
+    cmd += ["-bsf:v", "dump_extra"]
     cmd += ["-f", "mpegts", "-mpegts_flags", "+resend_headers", "-"]
 
     logger.info("Launching FFmpeg file bridge: %s", " ".join(cmd))
