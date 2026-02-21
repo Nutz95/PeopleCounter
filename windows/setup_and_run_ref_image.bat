@@ -1,0 +1,35 @@
+@echo off
+SETLOCAL EnableDelayedExpansion
+
+echo ---------------------------------------------------------
+echo Initialisation du Bridge Python
+echo ---------------------------------------------------------
+
+:: Vérifier si Python est installé
+python --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Python n'est pas installe ou pas dans le PATH.
+    echo Veuillez installer Python depuis python.org.
+    pause
+    exit /b
+)
+
+:: Création du venv s'il n'existe pas
+if not exist "venv_bridge" (
+    echo [+] Creation de l'environnement virtuel venv_bridge...
+    python -m venv venv_bridge
+)
+
+:: Installation des paquets
+echo [+] Verification des dependances...
+call venv_bridge\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install flask opencv-python
+
+echo.
+echo [+] Lancement du bridge...
+:: Récupérer le chemin complet du fichier image
+for %%I in ("%~dp0\ref_images\people_walking.jpg") do set FULL_PATH=%%~fI
+venv_bridge\Scripts\python.exe camera_bridge.py --input-file "%FULL_PATH%" --resolution 4K --fps 30 --bitrate 20000 --encoder h264_qsv
+
+pause
