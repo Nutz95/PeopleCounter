@@ -554,7 +554,24 @@ def test_e2e_visual_detection_snapshot() -> None:
                     try:
                         import numpy as np_
                         raw = np_.frombuffer(base64.b64decode(mask_b64), dtype=np_.uint8).reshape(mh, mw)
-                        mask_img = Image.fromarray(raw, mode="L").resize((frame_w, frame_h), Image.NEAREST)
+                        # Un-letterbox: the model letterboxes the frame into 640×640
+                        # space with black padding.  The mask is in that same padded
+                        # space (scaled to 160×160).  Crop out the content region
+                        # first so the mask aligns with the actual frame pixels.
+                        _lbox_s = min(640.0 / frame_w, 640.0 / frame_h)
+                        _cw     = frame_w * _lbox_s          # content px in 640-space
+                        _ch     = frame_h * _lbox_s
+                        _px     = (640.0 - _cw) / 2.0       # left/right pad
+                        _py     = (640.0 - _ch) / 2.0       # top/bottom pad
+                        _m2m    = mw / 640.0                 # mask-space/640
+                        _cx1    = int(round(_px * _m2m))
+                        _cy1    = int(round(_py * _m2m))
+                        _cx2    = min(int(round((_px + _cw) * _m2m)), mw)
+                        _cy2    = min(int(round((_py + _ch) * _m2m)), mh)
+                        mask_content = raw[_cy1:_cy2, _cx1:_cx2]
+                        mask_img = Image.fromarray(mask_content, mode="L").resize(
+                            (frame_w, frame_h), Image.BILINEAR
+                        )
                         overlay = Image.new("RGBA", (frame_w, frame_h), (0, 0, 0, 0))
                         green = Image.new("RGBA", (frame_w, frame_h), (42, 223, 100, 90))
                         overlay.paste(green, mask=mask_img)

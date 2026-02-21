@@ -147,8 +147,10 @@ class YoloDecoder(Postprocessor):
 
             ncols = rows.shape[-1]
 
-            if ncols == 6:
-                # ── Post-NMS: [N, 6] = [x1, y1, x2, y2, conf, cls_id] ─────
+            if ncols >= 6 and rows.shape[0] <= 1000:
+                # ── Post-NMS output: [x1, y1, x2, y2, conf, cls_id, (mask coefs…)] ──
+                # Row count ≤ 1000 is the reliable discriminator: raw YOLO always has
+                # 8400 anchors while post-NMS engines cap at 300–1000 detections.
                 dets = self._decode_postnms(rows)
             elif ncols > 4:
                 # ── Raw YOLOv8: [N, 4+C] = [cx, cy, w, h, s0, s1, …] ──────
