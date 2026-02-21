@@ -151,8 +151,12 @@ class NvdecDecoder:
         url = (self.stream_url or "").lower()
         if url.startswith("http://") or url.startswith("https://"):
             return {
-                "probesize": "200000",
-                "analyzeduration": "500000",
+                # 2 MB: large enough to capture a full 4K keyframe so FFmpeg
+                # can reliably detect pix_fmt from the SPS/PPS NAL units.
+                # (200 KB was too small for h264_qsv @ 20 Mbps → empty pix_fmt)
+                "probesize": "2000000",
+                # 2 s upper bound; analysis stops earlier once format is known.
+                "analyzeduration": "2000000",
                 "reconnect": "1",
                 "reconnect_streamed": "1",
                 "reconnect_delay_max": "2",

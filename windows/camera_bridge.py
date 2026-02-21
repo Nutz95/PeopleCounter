@@ -572,6 +572,11 @@ def start_ffmpeg_stream_file(
     elif is_image:
         cmd += ["-r", str(fps)]
 
+    # Force standard YUV 4:2:0 (TV range) so PyNvCodec can always recognise
+    # the pixel format — h264_qsv/nvenc may default to yuvj420p (full-range)
+    # which PyNvCodec doesn't support.
+    cmd += ["-pix_fmt", "yuv420p"]
+
     # Configure encoder
     if encoder == "libx264":
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency"]
@@ -587,7 +592,7 @@ def start_ffmpeg_stream_file(
         if encoder.startswith("h264_nvenc"):
             cmd += ["-rc", "vbr_hq", "-preset", "llhq", "-bf", "0"]
         if encoder.startswith("h264_qsv"):
-            cmd += ["-bf", "0", "-async_depth", "4"]
+            cmd += ["-bf", "0", "-async_depth", "1"]  # async_depth=1 minimises initial buffering
     # GOP: keyframe every 2 s for fast NVDEC resync after packet corruption.
     gop_frames = max(1, fps * 2)
     cmd += ["-g", str(gop_frames), "-keyint_min", str(gop_frames)]
