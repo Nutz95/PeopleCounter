@@ -48,7 +48,7 @@ class YoloTilingTRT(InferenceModel):
                 }
             )
             decode_start_ns = time.perf_counter_ns()
-            decoded = self._decoder.process(frame_id, raw_outputs)
+            decoded = self._decoder.process(frame_id, raw_outputs, tile_plan=tile_plan)
             decode_ms = (time.perf_counter_ns() - decode_start_ns) / 1_000_000.0
             infer_ms = (time.perf_counter_ns() - start_ns) / 1_000_000.0
             return {
@@ -57,6 +57,9 @@ class YoloTilingTRT(InferenceModel):
                 "prediction": raw_outputs,
                 "segmentation": raw_outputs.get("segmentation") if isinstance(raw_outputs, dict) else None,
                 "detections": decoded.get("detections", []),
+                "seg_mask_raw": decoded.get("seg_mask_raw"),
+                "seg_mask_w": decoded.get("seg_mask_w", 0),
+                "seg_mask_h": decoded.get("seg_mask_h", 0),
                 "inference_params": self._inference_params,
                 "person_class_id": int(self._inference_params.get("person_class_id", 0)),
                 "class_whitelist": list(self._inference_params.get("class_whitelist", [0])),

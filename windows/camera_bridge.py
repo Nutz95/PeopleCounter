@@ -523,55 +523,242 @@ def stream_ffmpeg_output(ffmpeg_proc: subprocess.Popen, broadcaster: StreamBroad
         stdout.close()
 
 
+def start_ffmpeg_stream_file(
+    ffmpeg_path: Path,
+    input_path: str,
+    out_width: int = 0,
+    out_height: int = 0,
+    fps: int = 30,
+    encoder: str = "libx264",
+    bitrate_kbps: int | None = None,
+) -> subprocess.Popen:
+    """Stream an image or video file as MPEG-TS.
+
+    * **Image** (``.jpg``, ``.png``, etc.) — looped endlessly at *fps* using
+      FFmpeg's ``-loop 1`` flag with the ``image2`` demuxer.
+    * **Video** — looped endlessly with ``-stream_loop -1 -re`` (respects source
+      framerate; ``-re`` throttles output to real-time).
+
+    The source is scaled (with letterboxing) to *out_width*×*out_height* when
+    those values are non-zero; otherwise the native resolution is kept.
+    """
+    input_lower = input_path.lower()
+    image_exts = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+    is_image = any(input_lower.endswith(ext) for ext in image_exts)
+
+    cmd = [str(ffmpeg_path)]
+
+    if is_image:
+        cmd += ["-loop", "1", "-framerate", str(fps), "-i", input_path]
+    else:
+        # Re-stream at real-time rate to emulate a live camera feed.
+        cmd += ["-stream_loop", "-1", "-re", "-i", input_path]
+
+    # Build scale/pad filter when output resolution is requested.
+    # pad=... adds black bars; setsar=1 fixes SAR so clients see square pixels.
+    vf_parts: list[str] = []
+    if out_width and out_height:
+        vf_parts.append(
+            f"scale={out_width}:{out_height}:force_original_aspect_ratio=decrease"
+        )
+        vf_parts.append(
+            f"pad={out_width}:{out_height}:(ow-iw)/2:(oh-ih)/2:black"
+        )
+        vf_parts.append("setsar=1")
+    if not is_image:
+        vf_parts.append(f"fps={fps}")
+    if vf_parts:
+        cmd += ["-vf", ",".join(vf_parts)]
+    elif is_image:
+        cmd += ["-r", str(fps)]
+
+    # Configure encoder
+    if encoder == "libx264":
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency"]
+        cmd += ["-x264-params", "repeat-headers=1"]
+        if bitrate_kbps:
+            cmd += ["-b:v", f"{bitrate_kbps}k", "-bufsize", f"{bitrate_kbps*2}k"]
+    else:
+        cmd += ["-c:v", encoder]
+        if bitrate_kbps:
+            maxrate = int(bitrate_kbps * 1.5)
+            bufsize = int(bitrate_kbps * 2)
+            cmd += ["-b:v", f"{bitrate_kbps}k", "-maxrate", f"{maxrate}k", "-bufsize", f"{bufsize}k"]
+        if encoder.startswith("h264_nvenc"):
+            cmd += ["-rc", "vbr_hq", "-preset", "llhq", "-bf", "0"]
+        if encoder.startswith("h264_qsv"):
+            cmd += ["-bf", "0", "-async_depth", "4"]
+    # GOP: keyframe every 2 s for fast NVDEC resync after packet corruption.
+    gop_frames = max(1, fps * 2)
+    cmd += ["-g", str(gop_frames), "-keyint_min", str(gop_frames)]
+
+    # For images, limit output rate to *fps* via -fps_mode so FFmpeg doesn't
+    # try to emit 25 × fps duplicate frames due to loop expansion.
+    if is_image:
+        cmd += ["-fps_mode", "vfr"]
+
+    cmd += ["-an"]  # no audio
+    cmd += ["-f", "mpegts", "-mpegts_flags", "+resend_headers", "-"]
+
+    logger.info("Launching FFmpeg file bridge: %s", " ".join(cmd))
+    print("[i] Démarrage de FFmpeg pour streamer le fichier…")
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+    )
+    threading.Thread(target=drain_ffmpeg_stderr, args=(proc.stderr,), daemon=True).start()
+    return proc
+
+
 if __name__ == "__main__":
+    import argparse
+
+    RESOLUTIONS = {
+        "4K":    (3840, 2160),
+        "1440p": (2560, 1440),
+        "1080p": (1920, 1080),
+        "720p":  (1280, 720),
+    }
+
+    def _parse_args() -> argparse.Namespace:
+        p = argparse.ArgumentParser(
+            description="Windows camera/file → MPEG-TS HTTP bridge for PeopleCounter.",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+        p.add_argument(
+            "--input-file", "-i",
+            metavar="PATH",
+            help="Path to an image (.jpg/.png) or video file to stream instead of a camera. "
+                 "Images are looped endlessly; videos are looped with -stream_loop -1.",
+        )
+        p.add_argument(
+            "--resolution", "-r",
+            choices=list(RESOLUTIONS),
+            default=None,
+            help="Output resolution (scale/letterbox the source). Default: keep source resolution.",
+        )
+        p.add_argument(
+            "--fps",
+            type=int,
+            default=30,
+            metavar="N",
+            help="Output framerate (used for image source or to cap a video source).",
+        )
+        p.add_argument(
+            "--bitrate",
+            type=int,
+            default=None,
+            metavar="KBPS",
+            help="Target video bitrate in kbps. Default: encoder-specific (15000 for HW, 25000 for x264).",
+        )
+        p.add_argument(
+            "--encoder", "-e",
+            default=None,
+            metavar="ENC",
+            help="H.264 encoder (h264_nvenc / h264_qsv / libx264). Auto-detected when omitted.",
+        )
+        p.add_argument(
+            "--port",
+            type=int,
+            default=PORT,
+            metavar="N",
+            help=f"HTTP listen port (default {PORT}).",
+        )
+        return p.parse_args()
+
     logging.basicConfig(level=logging.DEBUG, format="[%(levelname)s] %(message)s")
     logging.getLogger("urllib3").setLevel(logging.ERROR)
+
+    args = _parse_args()
     ffmpeg_path = ensure_ffmpeg()
     if ffmpeg_path is None:
         sys.exit(1)
 
-    device = choose_device(ffmpeg_path)
-    if device is None:
-        sys.exit(1)
+    # ── Choose encoder ────────────────────────────────────────────────────────
+    if args.encoder:
+        encoder = args.encoder
+    else:
+        encoder = choose_encoder(ffmpeg_path)
 
-    options = query_device_options(ffmpeg_path, device)
-    width, height, fps, gop1 = choose_stream_settings(options)
-    encoder = choose_encoder(ffmpeg_path)
-    bitrate_kbps = choose_bitrate_for_encoder(encoder)
+    bitrate_kbps = args.bitrate or choose_bitrate_for_encoder(encoder)
     ip = get_ip()
 
     broadcaster = StreamBroadcaster()
     StreamRequestHandler.broadcaster = broadcaster
-    http_server = ThreadingHTTPServer(("0.0.0.0", PORT), StreamRequestHandler)
+    listen_port = args.port
+    http_server = ThreadingHTTPServer(("0.0.0.0", listen_port), StreamRequestHandler)
     server_thread = threading.Thread(target=http_server.serve_forever, daemon=True)
     server_thread.start()
-    logger.info("HTTP broadcaster listening on port %s", PORT)
+    logger.info("HTTP broadcaster listening on port %s", listen_port)
 
     print("\n" + "="*60)
-    print("      WINDOWS CAMERA BRIDGE POUR DOCKER (H.264 via FFmpeg)")
+    if args.input_file:
+        print("      WINDOWS FILE BRIDGE POUR DOCKER (H.264 via FFmpeg)")
+    else:
+        print("      WINDOWS CAMERA BRIDGE POUR DOCKER (H.264 via FFmpeg)")
     print("="*60)
-    print(f"\n[+] Flux disponible sur : http://{ip}:{PORT}/video_feed")
-    display_input = device.input_name
-    input_note = f" (entrée: {display_input})" if display_input != device.friendly_name else ""
-    print(f"[+] Périphérique utilisé : {device.friendly_name}{input_note}")
-    print(f"[+] Mode retenu : {width}x{height} @ {fps} fps")
-    print(f"[+] Commande de test : ffprobe http://{ip}:{PORT}/video_feed")
-    print(f"\n[!] COMMANDE A COPIER DANS LE TERMINAL WSL :")
-    print(f"    ./run_app.sh http://{ip}:{PORT}/video_feed")
-    print("\n" + "="*60)
+    print(f"\n[+] Flux disponible sur : http://{ip}:{listen_port}/video_feed")
+    print(f"[+] Encodeur sélectionné : {encoder} @ {bitrate_kbps} kbps")
 
     try:
         while True:
-            ffmpeg_proc = start_ffmpeg_stream(
-                ffmpeg_path,
-                device.input_name,
-                width,
-                height,
-                fps,
-                gop1=gop1,
-                encoder=encoder,
-                bitrate_kbps=bitrate_kbps,
-            )
+            if args.input_file:
+                # ── File source mode ──────────────────────────────────────────
+                input_path = args.input_file
+                tgt_w, tgt_h = RESOLUTIONS.get(args.resolution, (0, 0)) if args.resolution else (0, 0)
+                fps = args.fps
+
+                print(f"[+] Source  : {input_path}")
+                if tgt_w:
+                    print(f"[+] Sortie  : {tgt_w}×{tgt_h} @ {fps} fps")
+                else:
+                    print(f"[+] Sortie  : résolution native @ {fps} fps")
+
+                ffmpeg_proc = start_ffmpeg_stream_file(
+                    ffmpeg_path,
+                    input_path,
+                    out_width=tgt_w,
+                    out_height=tgt_h,
+                    fps=fps,
+                    encoder=encoder,
+                    bitrate_kbps=bitrate_kbps,
+                )
+            else:
+                # ── Camera source mode (interactive) ──────────────────────────
+                device = choose_device(ffmpeg_path)
+                if device is None:
+                    sys.exit(1)
+
+                options = query_device_options(ffmpeg_path, device)
+                # Honour --resolution if given; otherwise let user choose interactively.
+                if args.resolution:
+                    tgt_w, tgt_h = RESOLUTIONS[args.resolution]
+                    fps = args.fps
+                    gop1 = False
+                    width, height = tgt_w, tgt_h
+                else:
+                    width, height, fps, gop1 = choose_stream_settings(options)
+
+                display_input = device.input_name
+                input_note = f" (entrée: {display_input})" if display_input != device.friendly_name else ""
+                print(f"[+] Périphérique utilisé : {device.friendly_name}{input_note}")
+                print(f"[+] Mode retenu : {width}×{height} @ {fps} fps")
+                print(f"[!] COMMANDE A COPIER DANS LE TERMINAL WSL :")
+                print(f"    ./run_app.sh http://{ip}:{listen_port}/video_feed")
+
+                ffmpeg_proc = start_ffmpeg_stream(
+                    ffmpeg_path,
+                    device.input_name,
+                    width,
+                    height,
+                    fps,
+                    gop1=gop1,
+                    encoder=encoder,
+                    bitrate_kbps=bitrate_kbps,
+                )
+
             try:
                 stream_ffmpeg_output(ffmpeg_proc, broadcaster)
             except KeyboardInterrupt:

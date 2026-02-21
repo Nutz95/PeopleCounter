@@ -31,11 +31,14 @@
         <img id="video-feed" src="/api/video" alt="Video feed" />
         <!-- Detection / mask overlay canvas -->
         <canvas id="mask-canvas" class="mask-overlay"></canvas>
+        <!-- Segmentation overlay — union of per-person prototype masks (YOLO-seg) -->
+        <canvas id="seg-canvas"  class="mask-overlay" style="opacity:0.6;"></canvas>
 
         <!-- Top-left: latency chip -->
         <div class="fps-status" id="latency-chip">— ms</div>
-        <!-- Top-right: FPS chip -->
+        <!-- Top-right: SSE fps / display fps -->
         <div class="fps-chip" id="fps-chip">— fps</div>
+        <div class="fps-chip" id="display-fps-chip" style="top:2.5rem;">— disp</div>
 
         <!-- Bottom-left: pipeline stage breakdown -->
         <div class="video-overlay-controls" id="stage-breakdown">
@@ -56,7 +59,15 @@
       <div class="control-group">
         <label class="toggle">
           <input type="checkbox" id="mask-toggle" checked>
-          Masque de fusion (bounding boxes)
+          Bounding boxes
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="seg-toggle">
+          Masque segmentation (YOLO-seg)
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="preview-only-toggle">
+          Prévisualisation seule (sans overlay)
         </label>
       </div>
     </section>
@@ -127,7 +138,13 @@
     const e2eHist    = [];
     const tilesHist  = [];
     const fpsTs      = [];     // raw timestamps for FPS estimation
-    let   showMask   = true;   // ON by default — toggle checkbox below
+    let   showMask      = true;   // ON by default — toggle checkbox below
+    let   showSeg        = false;  // segmentation overlay (YOLO-seg proto masks)
+    let   previewOnly    = false;  // when true: hide all overlays (pure display perf test)
+
+    // Display-FPS tracking (rendered frames per second via WebCodecs/rAF)
+    const _dispFpsTs = [];
+    const $displayFpsChip = document.getElementById('display-fps-chip');
 
     // Rolling-average buckets: { t: timestamp_ms, v: value }[]
     const _smooth = {
@@ -163,6 +180,8 @@
     const $ovTiles      = document.getElementById('ov-tiles');
     const maskCanvas    = document.getElementById('mask-canvas');
     const maskCtx       = maskCanvas.getContext('2d');
+    const segCanvas     = document.getElementById('seg-canvas');
+    const segCtx        = segCanvas.getContext('2d');
     const latChart      = document.getElementById('latency-chart');
     const latCtx        = latChart.getContext('2d');
 
@@ -175,6 +194,19 @@
     document.getElementById('mask-toggle').addEventListener('change', e => {
       showMask = e.target.checked;
       if (!showMask) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    });
+
+    document.getElementById('seg-toggle').addEventListener('change', e => {
+      showSeg = e.target.checked;
+      if (!showSeg) segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
+    });
+
+    document.getElementById('preview-only-toggle').addEventListener('change', e => {
+      previewOnly = e.target.checked;
+      if (previewOnly) {
+        maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
+      }
     });
 
     // ── SSE connection ─────────────────────────────────────────────
@@ -259,9 +291,13 @@
       $ovGlobal.textContent     = `global  ${avgGlobal.toFixed(1)} ms`;
       $ovTiles.textContent      = `tiles   ${avgTiles.toFixed(1)} ms`;
 
-      // ── Mask overlay ─────────────────────────────────────────────
-      if (showMask) drawMask(payload);
-      else maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+      // ── Overlays ─────────────────────────────────────────────────
+      if (!previewOnly) {
+        if (showMask) drawMask(payload);
+        else maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        if (showSeg)  drawSegMask(payload);
+        else segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
+      }
 
       // ── History & chart ──────────────────────────────────────────
       if (hasTelemetry) {
@@ -343,6 +379,67 @@
             maskCtx.fillText(label, bx + 4, by - 4);
           }
         }
+      }
+    }
+
+    // ── Segmentation mask overlay (YOLO-seg proto masks) ──────────────────────
+    // Packed-RGBA trick: write 4 bytes in a single Int32 write via shared ArrayBuffer
+    // → ~4× faster than per-channel byte assignment.
+    // Canvas RGBA memory order: R G B A → little-endian Int32 = 0xAABBGGRR
+    // Teal 50% alpha: R=0x2A G=0xDF B=0xA5 A=0x80 → Int32LE = 0x80A5DF2A
+    const _SEG_PIXEL_ON = 0x80A5DF2A;
+    const _segOffscreen = document.createElement('canvas');
+
+    function drawSegMask(payload) {
+      const layout = _computeLayout();
+      if (!layout) return;
+      const { W, H, srcW, srcH, dispW, dispH, dispX, dispY } = layout;
+      segCanvas.width  = W;
+      segCanvas.height = H;
+      segCtx.clearRect(0, 0, W, H);
+
+      for (const p of payload) {
+        if (!p || !p.seg_mask_raw || !p.seg_mask_w || !p.seg_mask_h) continue;
+        const mw  = p.seg_mask_w | 0;
+        const mh  = p.seg_mask_h | 0;
+        const nPx = mw * mh;
+
+        // Resize offscreen canvas only when dimensions change.
+        if (_segOffscreen.width !== mw || _segOffscreen.height !== mh) {
+          _segOffscreen.width  = mw;
+          _segOffscreen.height = mh;
+        }
+        const offCtx  = _segOffscreen.getContext('2d');
+        const imgData = offCtx.createImageData(mw, mh);
+
+        // Decode base64 → binary string
+        const bStr = atob(p.seg_mask_raw);
+        if (bStr.length < nPx) continue;
+
+        // Fill RGBA via Int32 packed writes (4× faster than per-channel bytes)
+        const int32 = new Int32Array(imgData.data.buffer);
+        for (let i = 0; i < nPx; i++) {
+          int32[i] = bStr.charCodeAt(i) > 128 ? _SEG_PIXEL_ON : 0;
+        }
+        offCtx.putImageData(imgData, 0, 0);
+
+        // Crop letterbox padding from 640-space proto → stretch to display area.
+        const modelSz = 640;
+        const mScale  = Math.min(modelSz / srcW, modelSz / srcH);
+        const prepW   = srcW * mScale;
+        const prepH   = srcH * mScale;
+        const padX    = (modelSz - prepW) / 2;
+        const padY    = (modelSz - prepH) / 2;
+        const mpadX   = padX  * mw / modelSz;
+        const mpadY   = padY  * mh / modelSz;
+        const mCntW   = prepW * mw / modelSz;
+        const mCntH   = prepH * mh / modelSz;
+
+        segCtx.drawImage(
+          _segOffscreen,
+          mpadX, mpadY, mCntW, mCntH,   // source region in proto mask
+          dispX, dispY, dispW, dispH,    // dest: video display area
+        );
       }
     }
 
@@ -466,7 +563,7 @@
         try { ws && ws.close(); } catch(e) {}
         try { decoder && decoder.close(); } catch(e) {}
         while (renderQueue.length) renderQueue.shift()?.close?.();
-        decoder = null; ws = null; wall0 = null; pts0 = null;
+        decoder = null; ws = null;
       }
 
       // ── Render loop ───────────────────────────────────────────────
@@ -484,6 +581,14 @@
           const frame = renderQueue.shift();
           ctx.drawImage(frame, 0, 0, videoCanvas.width, videoCanvas.height);
           frame.close();
+          // Track display FPS (actual rendered frames per second)
+          const now = performance.now();
+          _dispFpsTs.push(now);
+          while (_dispFpsTs.length && now - _dispFpsTs[0] > 2000) _dispFpsTs.shift();
+          const dFps = _dispFpsTs.length > 1
+            ? Math.round((_dispFpsTs.length - 1) / ((now - _dispFpsTs[0]) / 1000))
+            : 0;
+          $displayFpsChip.textContent = dFps ? `${dFps} disp` : '— disp';
         }
         rafId = requestAnimationFrame(renderLoop);
       }

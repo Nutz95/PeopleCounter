@@ -48,26 +48,44 @@ class YoloTilingParallelTRT(InferenceModel):
         tile_count = len(tiles)
         tiles_per_group = math.ceil(tile_count / self._groups)
         
-        partitions: list[list[Any]] = []
+        # partitions: list of (tile_start_index, tiles_subset)
+        partitions: list[tuple[int, list[Any]]] = []
         for g in range(self._groups):
             start_idx = g * tiles_per_group
             end_idx = min(start_idx + tiles_per_group, tile_count)
             if start_idx < tile_count:
-                partitions.append(tiles[start_idx:end_idx])
+                partitions.append((start_idx, tiles[start_idx:end_idx]))
             else:
-                partitions.append([])
+                partitions.append((start_idx, []))
         
         # Execute groups in parallel
         futures = []
-        for group_idx, partition in enumerate(partitions):
+        for group_idx, (tile_start, partition) in enumerate(partitions):
             if not partition:
                 continue
+            # Build a sub-plan with only this group's tasks so the decoder can
+            # remap each tile's local coordinates to global frame coordinates.
+            group_plan: Any | None = None
+            if tile_plan is not None:
+                try:
+                    from app_v2.core.preprocessor_types.preprocess_plan import PreprocessPlan as _PP  # noqa: PLC0415
+                    sub_tasks = tile_plan.tasks[tile_start : tile_start + len(partition)]
+                    group_plan = _PP(
+                        model_name=tile_plan.model_name,
+                        frame_width=tile_plan.frame_width,
+                        frame_height=tile_plan.frame_height,
+                        tasks=sub_tasks,
+                        metadata=tile_plan.metadata,
+                    )
+                except Exception:
+                    pass
             future = self._executor.submit(
                 self._execute_group,
                 frame_id=frame_id,
                 group_idx=group_idx,
                 tiles=partition,
                 preprocess_events=list(preprocess_events or []),
+                tile_plan=group_plan,
             )
             futures.append((group_idx, future))
         
@@ -101,6 +119,9 @@ class YoloTilingParallelTRT(InferenceModel):
             "prediction": {"status": "ok"},
             "segmentation": None,
             "detections": all_detections,
+            "seg_mask_raw": None,
+            "seg_mask_w": 0,
+            "seg_mask_h": 0,
             "inference_params": self._inference_params,
             "person_class_id": int(self._inference_params.get("person_class_id", 0)),
             "class_whitelist": list(self._inference_params.get("class_whitelist", [0])),
@@ -114,7 +135,7 @@ class YoloTilingParallelTRT(InferenceModel):
             "max_group_ms": float(max_group_ms),
         }
 
-    def _execute_group(self, frame_id: int, group_idx: int, tiles: list[Any], preprocess_events: list[Any] | None = None) -> dict[str, Any]:
+    def _execute_group(self, frame_id: int, group_idx: int, tiles: list[Any], preprocess_events: list[Any] | None = None, tile_plan: Any | None = None) -> dict[str, Any]:
         """Execute inference for one group of tiles on a dedicated TRT context."""
         stream_key = f"model:{self._name}:g{group_idx}"
         group_start_ns = time.perf_counter_ns()
@@ -132,7 +153,7 @@ class YoloTilingParallelTRT(InferenceModel):
                 }
             )
             decode_start_ns = time.perf_counter_ns()
-            decoded = self._decoder.process(frame_id, raw_outputs)
+            decoded = self._decoder.process(frame_id, raw_outputs, tile_plan=tile_plan)
             decode_ms = (time.perf_counter_ns() - decode_start_ns) / 1_000_000.0
             group_ms = (time.perf_counter_ns() - group_start_ns) / 1_000_000.0
             

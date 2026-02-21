@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import base64
 from typing import Any, Sequence
 
 try:
     import torch
 except Exception:  # pragma: no cover
     torch = None  # type: ignore[assignment]
+
+try:
+    import numpy as np  # type: ignore[import]
+except Exception:  # pragma: no cover
+    np = None  # type: ignore[assignment]
 
 from app_v2.core.postprocessor import Postprocessor
 
@@ -42,12 +48,42 @@ class YoloDecoder(Postprocessor):
         tensors = outputs.get("output_tensors", []) if isinstance(outputs, dict) else []
         detections = self._decode_detections(tensors, tile_plan=tile_plan)
         person_summary = self._decode_person_detections_gpu(tensors)
+
+        # Segmentation mask: global model only (single-batch prototype tensor).
+        # Tiling passes produce N-batch proto tensors; skip to avoid coordinate
+        # remapping complexity.
+        seg_mask_raw: str | None = None
+        seg_mask_w: int = 0
+        seg_mask_h: int = 0
+        is_global_mode = (
+            tile_plan is None
+            or (
+                hasattr(tile_plan, "metadata")
+                and isinstance(tile_plan.metadata, dict)
+                and tile_plan.metadata.get("mode") == "global"
+            )
+        )
+        if (
+            is_global_mode
+            and len(tensors) >= 2
+            and torch is not None
+            and isinstance(tensors[1], torch.Tensor)
+            and tensors[1].ndim == 4
+            and tensors[1].shape[0] == 1
+        ):
+            seg_data = self._decode_seg_mask(tensors)
+            if seg_data is not None:
+                seg_mask_raw, seg_mask_w, seg_mask_h = seg_data
+
         return {
             "frame_id": frame_id,
             "detections": detections,
             "detections_gpu": person_summary,
             "person_class_id": self.person_class_id,
             "output_count": len(tensors),
+            "seg_mask_raw": seg_mask_raw,
+            "seg_mask_w": seg_mask_w,
+            "seg_mask_h": seg_mask_h,
         }
 
     def _decode_detections(self, tensors: Sequence[Any], *, tile_plan: Any = None) -> list[dict[str, Any]]:
@@ -318,6 +354,60 @@ class YoloDecoder(Postprocessor):
                 "label": det["label"],
             })
         return result
+
+    def _decode_seg_mask(self, tensors: Sequence[Any]) -> tuple[str, int, int] | None:
+        """Compute a combined person segmentation mask for YOLO-seg models.
+
+        Requires two output tensors:
+
+        * ``tensors[0]``: ``[1, 4 + n_cls + n_coefs, 8400]`` — detections.
+        * ``tensors[1]``: ``[1, n_coefs, H, W]``             — prototype masks
+          (typically 160 × 160).
+
+        Returns ``(base64_bytes, width, height)`` where *base64_bytes* encodes a
+        flat uint8 array (0 = background, 255 = person pixel) of size ``W × H``,
+        or ``None`` when masks cannot be computed.
+        """
+        if torch is None or np is None:
+            return None
+        det_t   = tensors[0]
+        proto_t = tensors[1]
+        if not isinstance(det_t, torch.Tensor) or not isinstance(proto_t, torch.Tensor):
+            return None
+
+        n_coefs = int(proto_t.shape[1])
+        mh      = int(proto_t.shape[2])
+        mw      = int(proto_t.shape[3])
+        if n_coefs < 1:
+            return None
+
+        with torch.no_grad():
+            rows = self._to_rows(det_t.detach().float())
+            if rows.numel() == 0:
+                return None
+            n_features = rows.shape[-1]
+            # Layout: [cx, cy, w, h, score_c0 … score_cN, coef_0 … coef_K-1]
+            # Mask coefficients occupy the *last* n_coefs columns.
+            coef_start = n_features - n_coefs
+            if coef_start <= 4 + self.person_class_id:
+                return None  # too few feature columns — not a seg model
+
+            person_scores = rows[:, 4 + self.person_class_id]
+            person_mask   = person_scores >= self.confidence_threshold
+            if not person_mask.any():
+                return None
+
+            coefs  = rows[person_mask, coef_start:].float()   # [N, n_coefs]
+            protos = proto_t[0].float()                        # [n_coefs, mh, mw]
+
+            # Per-person mask: sigmoid(coefs @ protos.reshape(n_coefs, mh*mw))
+            # → [N, mh*mw]; take union across all persons via max.
+            combined = torch.sigmoid(coefs @ protos.reshape(n_coefs, -1))  # [N, mh*mw]
+            binary   = (combined.max(0).values > 0.5).cpu().numpy().reshape(mh, mw)
+            mask_u8  = (binary.astype(np.uint8) * 255)
+
+        raw_b64 = base64.b64encode(mask_u8.tobytes()).decode()
+        return raw_b64, mw, mh
 
     def _decode_person_detections_gpu(self, tensors: Sequence[Any]) -> dict[str, Any]:
         if torch is None:

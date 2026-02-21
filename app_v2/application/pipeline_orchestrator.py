@@ -309,8 +309,8 @@ class PipelineOrchestrator:
         url_lower = url.lower()
         if url_lower.startswith("http://") or url_lower.startswith("https://"):
             opts = {
-                "probesize": "5000000",
-                "analyzeduration": "10000000",
+                "probesize": "200000",
+                "analyzeduration": "500000",
                 "reconnect": "1",
                 "reconnect_streamed": "1",
                 "reconnect_delay_max": "2",

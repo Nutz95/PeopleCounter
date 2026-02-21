@@ -151,8 +151,8 @@ class NvdecDecoder:
         url = (self.stream_url or "").lower()
         if url.startswith("http://") or url.startswith("https://"):
             return {
-                "probesize": "5000000",
-                "analyzeduration": "10000000",
+                "probesize": "200000",
+                "analyzeduration": "500000",
                 "reconnect": "1",
                 "reconnect_streamed": "1",
                 "reconnect_delay_max": "2",
