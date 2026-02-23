@@ -595,16 +595,15 @@ def start_ffmpeg_stream_file(
             cmd += ["-rc", "vbr_hq", "-preset", "llhq", "-bf", "0"]
         if encoder.startswith("h264_qsv"):
             cmd += ["-bf", "0", "-async_depth", "1"]  # async_depth=1 minimises initial buffering
-    # For image sources every frame is a keyframe (GOP=1) so a connecting
-    # decoder like NVDEC always finds a valid IDR immediately.
-    # For live-camera sources keep a 2-second GOP for efficiency.
-    if is_image:
-        cmd += ["-g", "1"]
-        if encoder == "libx264":
-            cmd += ["-keyint_min", "1"]
-    else:
-        gop_frames = max(1, fps * 2)
-        cmd += ["-g", str(gop_frames), "-keyint_min", str(gop_frames)]
+    # Force GOP=1 for all file sources (images AND looped videos):
+    # every frame is an IDR so PyNvCodec/NVDEC and ffprobe can find SPS/PPS
+    # in the very first packet — no "unspecified size" probe errors, no
+    # "non-existing PPS 0 referenced" on mid-GOP connects or loop restarts.
+    cmd += ["-g", "1"]
+    if encoder == "libx264":
+        cmd += ["-keyint_min", "1"]
+    elif encoder.startswith("h264_nvenc"):
+        cmd += ["-forced-idr", "1"]
 
     # For images, limit output rate to *fps* via -fps_mode so FFmpeg doesn't
     # try to emit 25 × fps duplicate frames due to loop expansion.
