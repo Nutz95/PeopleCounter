@@ -19,6 +19,9 @@ class YoloGlobalTRT(InferenceModel):
             person_class_id=int(self._inference_params.get("person_class_id", 0)),
             confidence_threshold=float(self._inference_params.get("confidence_threshold", 0.25)),
         )
+        self._decoder.seg_mask_clip_to_bbox = bool(
+            self._inference_params.get("seg_mask_clip_to_bbox", True)
+        )
 
     @property
     def name(self) -> str:

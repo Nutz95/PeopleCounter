@@ -6,6 +6,7 @@ yolo_global:
   max_detections: 300
   class_whitelist:
     - 0
+  seg_mask_clip_to_bbox: true  # clip each person mask to its bbox region; eliminates prototype leakage
 
 yolo_tiles:
   person_class_id: 0
@@ -15,3 +16,4 @@ yolo_tiles:
   max_detections: 300
   class_whitelist:
     - 0
+  seg_mask_clip_to_bbox: true

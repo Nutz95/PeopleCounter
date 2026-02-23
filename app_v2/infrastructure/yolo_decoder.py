@@ -25,6 +25,9 @@ class YoloDecoder(Postprocessor):
         # Seg-mask extraction requires a GPU→CPU copy (costly on the hot path).
         # Enable only when a seg-model is actually loaded and the UI toggle is on.
         self.seg_mask_enabled: bool = False
+        # Clip each person's mask contribution to their bbox region before
+        # combining.  Eliminates prototype activations that leak outside bbox.
+        self.seg_mask_clip_to_bbox: bool = True
         # detections_gpu summary requires a GPU→CPU sync (.item()) — only
         # needed for integration-test assertions, not the live pipeline.
         self.person_summary_enabled: bool = False
@@ -82,7 +85,7 @@ class YoloDecoder(Postprocessor):
             and tensors[1].ndim == 4
             and tensors[1].shape[0] == 1
         ):
-            seg_data = self._decode_seg_mask(tensors)
+            seg_data = self._decode_seg_mask(tensors, clip_to_bbox=self.seg_mask_clip_to_bbox)
             if seg_data is not None:
                 seg_mask_raw, seg_mask_w, seg_mask_h = seg_data
 
@@ -368,14 +371,21 @@ class YoloDecoder(Postprocessor):
             })
         return result
 
-    def _decode_seg_mask(self, tensors: Sequence[Any]) -> tuple[str, int, int] | None:
+    def _decode_seg_mask(
+        self, tensors: Sequence[Any], *, clip_to_bbox: bool = True
+    ) -> tuple[str, int, int] | None:
         """Compute a combined person segmentation mask for YOLO-seg models.
 
-        Requires two output tensors:
+        Supports both output formats:
 
-        * ``tensors[0]``: ``[1, 4 + n_cls + n_coefs, 8400]`` — detections.
-        * ``tensors[1]``: ``[1, n_coefs, H, W]``             — prototype masks
-          (typically 160 × 160).
+        * **Post-NMS** ``[1, N, 6+K]``: ``[x1, y1, x2, y2, conf, cls_id, coef…]``
+          (N ≤ 1000, bboxes in absolute 640-px space).
+        * **Raw YOLOv8** ``[1, 4+C+K, 8400]``: ``[cx, cy, w, h, score_c0…, coef…]``.
+        * ``tensors[1]``: ``[1, K, H, W]`` — prototype masks (typically 160×160).
+
+        When *clip_to_bbox* is ``True`` (default), each person's mask contribution
+        is zeroed outside their bounding box region in mask space, eliminating
+        prototype activations that leak outside detected persons.
 
         Returns ``(base64_bytes, width, height)`` where *base64_bytes* encodes a
         flat uint8 array (0 = background, 255 = person pixel) of size ``W × H``,
@@ -399,25 +409,74 @@ class YoloDecoder(Postprocessor):
             if rows.numel() == 0:
                 return None
             n_features = rows.shape[-1]
-            # Layout: [cx, cy, w, h, score_c0 … score_cN, coef_0 … coef_K-1]
-            # Mask coefficients occupy the *last* n_coefs columns.
-            coef_start = n_features - n_coefs
-            if coef_start <= 4 + self.person_class_id:
-                return None  # too few feature columns — not a seg model
+            n_rows     = rows.shape[0]
 
-            person_scores = rows[:, 4 + self.person_class_id]
-            person_mask   = person_scores >= self.confidence_threshold
-            if not person_mask.any():
-                return None
+            # ── Format detection ──────────────────────────────────────────────
+            # Post-NMS: n_rows ≤ 1000  →  [x1, y1, x2, y2, conf, cls_id, coef…]
+            # Raw YOLO: n_rows = 8400  →  [cx, cy, w, h, score_c0…, coef…]
+            is_postnms = n_features >= 6 and n_rows <= 1000
+
+            if is_postnms:
+                coef_start = 6
+                conf_col   = rows[:, 4]
+                cls_col    = rows[:, 5]
+                person_mask = (
+                    (conf_col >= self.confidence_threshold)
+                    & (cls_col.round().long() == int(self.person_class_id))
+                )
+                if not person_mask.any():
+                    return None
+                # bboxes in absolute 640-px space (x1, y1, x2, y2)
+                bboxes_px = rows[person_mask, :4]
+            else:
+                coef_start = n_features - n_coefs
+                if coef_start <= 4 + self.person_class_id:
+                    return None  # too few columns — not a seg model
+                person_scores = rows[:, 4 + self.person_class_id]
+                person_mask   = person_scores >= self.confidence_threshold
+                if not person_mask.any():
+                    return None
+                # Convert cx, cy, w, h → x1, y1, x2, y2 in 640-px space
+                r = rows[person_mask]
+                cx, cy, w, h = r[:, 0], r[:, 1], r[:, 2], r[:, 3]
+                bboxes_px = torch.stack(
+                    [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], dim=1
+                )
+
+            # Guard against coef count mismatch (e.g. different model variants)
+            actual_n_coefs = n_features - coef_start
+            if actual_n_coefs != n_coefs:
+                coef_start     = n_features - n_coefs
+                actual_n_coefs = n_coefs
 
             coefs  = rows[person_mask, coef_start:].float()   # [N, n_coefs]
             protos = proto_t[0].float()                        # [n_coefs, mh, mw]
 
-            # Per-person mask: sigmoid(coefs @ protos.reshape(n_coefs, mh*mw))
-            # → [N, mh*mw]; take union across all persons via max.
-            combined = torch.sigmoid(coefs @ protos.reshape(n_coefs, -1))  # [N, mh*mw]
-            binary   = (combined.max(0).values > 0.5).cpu().numpy().reshape(mh, mw)
-            mask_u8  = (binary.astype(np.uint8) * 255)
+            # Compute per-person masks: [N, mh, mw] bool
+            per_person = (
+                torch.sigmoid(coefs @ protos.reshape(n_coefs, -1))  # [N, mh*mw]
+                .reshape(-1, mh, mw)
+                > 0.5
+            )
+
+            if clip_to_bbox:
+                # Zero each person's mask outside their bbox in mask space.
+                # bboxes_px are in absolute 640-px coordinates; scale to mh×mw.
+                sx = mw / 640.0
+                sy = mh / 640.0
+                clip_masks = torch.zeros_like(per_person)
+                for i in range(per_person.shape[0]):
+                    x1 = max(0,  int(bboxes_px[i, 0].item() * sx))
+                    y1 = max(0,  int(bboxes_px[i, 1].item() * sy))
+                    x2 = min(mw, int(bboxes_px[i, 2].item() * sx + 0.5))
+                    y2 = min(mh, int(bboxes_px[i, 3].item() * sy + 0.5))
+                    if x2 > x1 and y2 > y1:
+                        clip_masks[i, y1:y2, x1:x2] = True
+                per_person = per_person & clip_masks
+
+            # Union across all persons → binary [mh, mw] → uint8
+            binary  = per_person.any(0).cpu().numpy()
+            mask_u8 = binary.astype(np.uint8) * 255
 
         raw_b64 = base64.b64encode(mask_u8.tobytes()).decode()
         return raw_b64, mw, mh
