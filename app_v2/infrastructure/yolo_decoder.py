@@ -62,9 +62,6 @@ class YoloDecoder(Postprocessor):
             else {"available": False, "reason": "disabled"}
         )
 
-        # Segmentation mask: global model only (single-batch prototype tensor).
-        # Tiling passes produce N-batch proto tensors; skip to avoid coordinate
-        # remapping complexity.
         seg_mask_raw: str | None = None
         seg_mask_w: int = 0
         seg_mask_h: int = 0
@@ -76,6 +73,12 @@ class YoloDecoder(Postprocessor):
                 and tile_plan.metadata.get("mode") == "global"
             )
         )
+        is_tiles_mode = (
+            tile_plan is not None
+            and hasattr(tile_plan, "metadata")
+            and isinstance(tile_plan.metadata, dict)
+            and tile_plan.metadata.get("mode") == "tiles"
+        )
         if (
             self.seg_mask_enabled
             and is_global_mode
@@ -85,7 +88,23 @@ class YoloDecoder(Postprocessor):
             and tensors[1].ndim == 4
             and tensors[1].shape[0] == 1
         ):
+            # Global model: single-batch [1, 32, mh, mw] prototype tensor.
             seg_data = self._decode_seg_mask(tensors, clip_to_bbox=self.seg_mask_clip_to_bbox)
+            if seg_data is not None:
+                seg_mask_raw, seg_mask_w, seg_mask_h = seg_data
+        elif (
+            self.seg_mask_enabled
+            and is_tiles_mode
+            and len(tensors) >= 2
+            and torch is not None
+            and isinstance(tensors[1], torch.Tensor)
+            and tensors[1].ndim == 4
+            and tensors[1].shape[0] > 1
+        ):
+            # Tiles model: batched [N, 32, mh, mw] prototype tensor.
+            seg_data = self._decode_seg_mask_tiled(
+                tensors, tile_plan, clip_to_bbox=self.seg_mask_clip_to_bbox
+            )
             if seg_data is not None:
                 seg_mask_raw, seg_mask_w, seg_mask_h = seg_data
 
@@ -283,7 +302,9 @@ class YoloDecoder(Postprocessor):
                 if rows.numel() == 0:
                     continue
                 ncols = rows.shape[-1]
-                if ncols == 6:
+                if ncols >= 6 and rows.shape[0] <= 1000:
+                    # Post-NMS: [x1,y1,x2,y2, conf, cls_id, (32 mask coefs...)]
+                    # Row count ≤ 1000 is the discriminator (raw YOLO always has 8400 anchors).
                     tile_dets = self._decode_postnms(rows)
                 elif ncols > 4:
                     tile_dets = self._decode_raw_yolov8(rows)
@@ -320,7 +341,7 @@ class YoloDecoder(Postprocessor):
                 from torchvision.ops import nms as _nms  # type: ignore[import]
                 boxes = torch.tensor([[d["bbox"][0], d["bbox"][1], d["bbox"][2], d["bbox"][3]] for d in all_dets])
                 scores = torch.tensor([d["conf"] for d in all_dets])
-                keep = _nms(boxes, scores, iou_threshold=0.45).tolist()
+                keep = _nms(boxes, scores, iou_threshold=0.30).tolist()
                 all_dets = [all_dets[k] for k in keep]
             except Exception:
                 pass
@@ -480,6 +501,129 @@ class YoloDecoder(Postprocessor):
 
         raw_b64 = base64.b64encode(mask_u8.tobytes()).decode()
         return raw_b64, mw, mh
+
+    def _decode_seg_mask_tiled(
+        self,
+        tensors: Sequence[Any],
+        plan: Any,
+        *,
+        clip_to_bbox: bool = True,
+    ) -> tuple[str, int, int] | None:
+        """Compute combined person seg mask for a batched tile inference run.
+
+        Each tile ``i`` contributes a ``[32, mh, mw]`` proto slice.  Person
+        masks are computed in 160×160 tile space, optionally clipped to their
+        bbox, and painted into a global mask canvas whose scale matches
+        ``mh / tile_size`` (= 0.25 for the typical 160/640 case):
+
+            canvas_size = round(frame_size * mask_scale)
+
+        Masks from overlapping tiles are OR-merged, which is correct since the
+        body silhouettes of the same person are consistent between tiles.
+        """
+        if np is None or torch is None:
+            return None
+        if len(tensors) < 2:
+            return None
+        det_t   = tensors[0]   # [N_tiles, 300, 38] — post-NMS batch
+        proto_t = tensors[1]   # [N_tiles, 32, mh, mw]
+        if not isinstance(det_t, torch.Tensor) or not isinstance(proto_t, torch.Tensor):
+            return None
+        if proto_t.ndim != 4 or det_t.ndim != 3:
+            return None
+
+        n_tiles = det_t.shape[0]
+        n_coefs = int(proto_t.shape[1])
+        mh      = int(proto_t.shape[2])
+        mw      = int(proto_t.shape[3])
+        fw = plan.frame_width
+        fh = plan.frame_height
+
+        # Proto mask covers tile_size × tile_size pixels → scale mh/tile_size.
+        # Tiles are always 640×640 (target_width == target_height == 640).
+        mask_scale = mh / 640.0
+        canvas_h = max(1, round(fh * mask_scale))
+        canvas_w = max(1, round(fw * mask_scale))
+        canvas = torch.zeros((canvas_h, canvas_w), dtype=torch.bool, device=det_t.device)
+
+        with torch.no_grad():
+            for i in range(n_tiles):
+                if i >= len(plan.tasks):
+                    break
+                task = plan.tasks[i]
+
+                det_slice   = det_t[i].float()    # [300, 38]
+                proto_slice = proto_t[i].float()  # [32, mh, mw]
+
+                rows      = self._to_rows(det_slice)    # → [300, 38]
+                n_features = rows.shape[-1]
+                n_rows     = rows.shape[0]
+
+                is_postnms = n_features >= 6 and n_rows <= 1000
+                if is_postnms:
+                    coef_start = 6
+                    conf_col   = rows[:, 4]
+                    cls_col    = rows[:, 5]
+                    person_mask = (
+                        (conf_col >= self.confidence_threshold)
+                        & (cls_col.round().long() == int(self.person_class_id))
+                    )
+                    if not person_mask.any():
+                        continue
+                    bboxes_px = rows[person_mask, :4]  # xyxy in 640-px tile space
+                else:
+                    coef_start = n_features - n_coefs
+                    if coef_start <= 4 + self.person_class_id:
+                        continue
+                    person_scores = rows[:, 4 + self.person_class_id]
+                    person_mask   = person_scores >= self.confidence_threshold
+                    if not person_mask.any():
+                        continue
+                    r = rows[person_mask]
+                    cx, cy, w, h = r[:, 0], r[:, 1], r[:, 2], r[:, 3]
+                    bboxes_px = torch.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], dim=1)
+
+                if n_features - coef_start != n_coefs:
+                    coef_start = n_features - n_coefs
+
+                coefs  = rows[person_mask, coef_start:].float()  # [N, n_coefs]
+                protos = proto_slice                               # [n_coefs, mh, mw]
+
+                per_person = (
+                    torch.sigmoid(coefs @ protos.reshape(n_coefs, -1))
+                    .reshape(-1, mh, mw)
+                    > 0.5
+                )
+
+                if clip_to_bbox:
+                    sx = mw / 640.0
+                    sy = mh / 640.0
+                    clip_masks = torch.zeros_like(per_person)
+                    for j in range(per_person.shape[0]):
+                        x1 = max(0,  int(bboxes_px[j, 0].item() * sx))
+                        y1 = max(0,  int(bboxes_px[j, 1].item() * sy))
+                        x2 = min(mw, int(bboxes_px[j, 2].item() * sx + 0.5))
+                        y2 = min(mh, int(bboxes_px[j, 3].item() * sy + 0.5))
+                        if x2 > x1 and y2 > y1:
+                            clip_masks[j, y1:y2, x1:x2] = True
+                    per_person = per_person & clip_masks
+
+                # Union of all person masks for this tile → [mh, mw] bool
+                tile_union = per_person.any(0)
+
+                # Paste into global canvas at the tile's position
+                cx_start = round(task.source_x * mask_scale)
+                cy_start = round(task.source_y * mask_scale)
+                cx_end   = min(canvas_w, cx_start + mw)
+                cy_end   = min(canvas_h, cy_start + mh)
+                copy_w   = cx_end - cx_start
+                copy_h   = cy_end - cy_start
+                if copy_w > 0 and copy_h > 0:
+                    canvas[cy_start:cy_end, cx_start:cx_end] |= tile_union[:copy_h, :copy_w]
+
+        mask_u8 = canvas.cpu().numpy().astype(np.uint8) * 255
+        raw_b64 = base64.b64encode(mask_u8.tobytes()).decode()
+        return raw_b64, canvas_w, canvas_h
 
     def _decode_person_detections_gpu(self, tensors: Sequence[Any]) -> dict[str, Any]:
         if torch is None:

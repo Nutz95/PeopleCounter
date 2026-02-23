@@ -406,7 +406,7 @@ def test_pipeline_e2e_real_stream_trt_opt_in_shape_guard() -> None:
 
 
 def test_e2e_visual_detection_snapshot() -> None:
-    """Decode 1 frame from the live stream, run global YOLO, save annotated PNG.
+    """Decode 1 frame from the live stream, run YOLO (global or tiles), save annotated PNG.
 
     Output: app_v2/tests/integration/pipeline/artifacts/e2e_visual_snapshot.png
     (visible on the host — the workspace is bind-mounted to /app inside Docker).
@@ -435,32 +435,56 @@ def test_e2e_visual_detection_snapshot() -> None:
     from app_v2.infrastructure.stream_pool import SimpleStreamPool
 
     real_cfg = load_pipeline_config()
-    global_model_cfg = real_cfg.get("models", {}).get("yolo_global", {})
-    if not global_model_cfg.get("enabled", False):
-        pytest.skip("yolo_global not enabled in pipeline.yaml")
+    models_cfg = real_cfg.get("models", {})
+    global_model_cfg = models_cfg.get("yolo_global", {})
+    tiles_model_cfg  = models_cfg.get("yolo_tiles", {})
 
-    engine_path = global_model_cfg.get("engine", "")
+    use_global = bool(global_model_cfg.get("enabled", False))
+    use_tiles  = bool(tiles_model_cfg.get("enabled", False))
+    if not use_global and not use_tiles:
+        pytest.skip("Neither yolo_global nor yolo_tiles is enabled in pipeline.yaml")
+
     project_root = Path(__file__).parents[4]  # /app inside Docker
-    engine_full = project_root / engine_path if not os.path.isabs(engine_path) else Path(engine_path)
-    if not engine_full.exists():
-        pytest.skip(f"Engine not found: {engine_full}")
 
-    # Global-only config — tiles off, no separate tiles preprocess branch
-    global_only_cfg: dict[str, Any] = {
-        **real_cfg,
-        "models": {"yolo_global": global_model_cfg},
-        "preprocess_branches": {"yolo_global_preprocess": True},
-        "preprocess": {
-            "yolo_global": real_cfg.get("preprocess", {}).get(
-                "yolo_global",
-                {"target_width": 640, "target_height": 640, "mode": "global", "overlap": 0.0},
-            )
-        },
-        "yolo_tiles_parallel": {"enabled": False},
-    }
+    if use_global:
+        engine_path = global_model_cfg.get("engine", "")
+        engine_full = project_root / engine_path if not os.path.isabs(engine_path) else Path(engine_path)
+        if not engine_full.exists():
+            pytest.skip(f"Engine not found: {engine_full}")
+        run_cfg: dict[str, Any] = {
+            **real_cfg,
+            "models": {"yolo_global": global_model_cfg},
+            "preprocess_branches": {"yolo_global_preprocess": True},
+            "preprocess": {
+                "yolo_global": real_cfg.get("preprocess", {}).get(
+                    "yolo_global",
+                    {"target_width": 640, "target_height": 640, "mode": "global", "overlap": 0.0},
+                )
+            },
+            "yolo_tiles_parallel": {"enabled": False},
+        }
+        active_mode = "global"
+    else:
+        engine_path = tiles_model_cfg.get("engine", "")
+        engine_full = project_root / engine_path if not os.path.isabs(engine_path) else Path(engine_path)
+        if not engine_full.exists():
+            pytest.skip(f"Engine not found: {engine_full}")
+        run_cfg = {
+            **real_cfg,
+            "models": {"yolo_tiles": tiles_model_cfg},
+            "preprocess_branches": {"yolo_tiles_preprocess": True},
+            "preprocess": {
+                "yolo_tiles": real_cfg.get("preprocess", {}).get(
+                    "yolo_tiles",
+                    {"target_width": 640, "target_height": 640, "mode": "tiles", "overlap": 0.2},
+                )
+            },
+            "yolo_tiles_parallel": {"enabled": False},
+        }
+        active_mode = "tiles"
 
-    controller = InferenceStreamController(global_only_cfg)
-    models = ModelBuilder(global_only_cfg, controller, SimpleStreamPool()).build_models()
+    controller = InferenceStreamController(run_cfg)
+    models = ModelBuilder(run_cfg, controller, SimpleStreamPool()).build_models()
     if not models:
         pytest.skip("No models built from real config")
 
@@ -484,6 +508,7 @@ def test_e2e_visual_detection_snapshot() -> None:
     frame_h = 0
     results: list[dict[str, Any]] = []
     frame_rgb = None
+    last_tile_plan: Any = None
 
     decoder.start()
     try:
@@ -501,7 +526,7 @@ def test_e2e_visual_detection_snapshot() -> None:
         frame_h = getattr(frame, "height", 0) or 1080
 
         preprocessor = GpuPreprocessor()
-        preprocessor.configure(global_only_cfg)
+        preprocessor.configure(run_cfg)
         output = preprocessor.build_output(frame_id=1, frame=frame)
 
         # --- All GPU work first ---
@@ -516,6 +541,7 @@ def test_e2e_visual_detection_snapshot() -> None:
             n_det = len(pred.get("detections", []))
             print(f"  [e2e-snapshot] {model.name}: {n_det} detections")
             results.append(pred)
+        last_tile_plan = tile_plan  # save for visualization
 
         # --- GPU→CPU copy only after ALL inference is done ---
         try:
@@ -554,30 +580,46 @@ def test_e2e_visual_detection_snapshot() -> None:
                     try:
                         import numpy as np_
                         raw = np_.frombuffer(base64.b64decode(mask_b64), dtype=np_.uint8).reshape(mh, mw)
-                        # Un-letterbox: the model letterboxes the frame into 640×640
-                        # space with black padding.  The mask is in that same padded
-                        # space (scaled to 160×160).  Crop out the content region
-                        # first so the mask aligns with the actual frame pixels.
-                        _lbox_s = min(640.0 / frame_w, 640.0 / frame_h)
-                        _cw     = frame_w * _lbox_s          # content px in 640-space
-                        _ch     = frame_h * _lbox_s
-                        _px     = (640.0 - _cw) / 2.0       # left/right pad
-                        _py     = (640.0 - _ch) / 2.0       # top/bottom pad
-                        _m2m    = mw / 640.0                 # mask-space/640
-                        _cx1    = int(round(_px * _m2m))
-                        _cy1    = int(round(_py * _m2m))
-                        _cx2    = min(int(round((_px + _cw) * _m2m)), mw)
-                        _cy2    = min(int(round((_py + _ch) * _m2m)), mh)
-                        mask_content = raw[_cy1:_cy2, _cx1:_cx2]
-                        mask_img = Image.fromarray(mask_content, mode="L").resize(
-                            (frame_w, frame_h), Image.BILINEAR
-                        )
+                        if r.get("model") == "yolo_tiles" or active_mode == "tiles":
+                            # Tiled mask is already in global frame coordinates
+                            # (canvas_w × canvas_h = round(fw * 0.25) × round(fh * 0.25)).
+                            # Resize directly to full frame — no letterbox un-crop needed.
+                            mask_img = Image.fromarray(raw, mode="L").resize(
+                                (frame_w, frame_h), Image.BILINEAR
+                            )
+                        else:
+                            # Global model: mask is in 160×160 letterboxed space.
+                            # Crop out the padding region first so the overlay aligns.
+                            _lbox_s = min(640.0 / frame_w, 640.0 / frame_h)
+                            _cw     = frame_w * _lbox_s
+                            _ch     = frame_h * _lbox_s
+                            _px     = (640.0 - _cw) / 2.0
+                            _py     = (640.0 - _ch) / 2.0
+                            _m2m    = mw / 640.0
+                            _cx1    = int(round(_px * _m2m))
+                            _cy1    = int(round(_py * _m2m))
+                            _cx2    = min(int(round((_px + _cw) * _m2m)), mw)
+                            _cy2    = min(int(round((_py + _ch) * _m2m)), mh)
+                            mask_content = raw[_cy1:_cy2, _cx1:_cx2]
+                            mask_img = Image.fromarray(mask_content, mode="L").resize(
+                                (frame_w, frame_h), Image.BILINEAR
+                            )
                         overlay = Image.new("RGBA", (frame_w, frame_h), (0, 0, 0, 0))
-                        green = Image.new("RGBA", (frame_w, frame_h), (42, 223, 100, 90))
-                        overlay.paste(green, mask=mask_img)
+                        red = Image.new("RGBA", (frame_w, frame_h), (220, 50, 50, 105))
+                        overlay.paste(red, mask=mask_img)
                         img = Image.alpha_composite(img, overlay)
                     except Exception as exc_mask:
                         print(f"  [e2e-snapshot] mask overlay skipped: {exc_mask}")
+
+            # --- Tile boundaries (yellow) ---
+            if active_mode == "tiles" and last_tile_plan is not None:
+                draw_t = ImageDraw.Draw(img)
+                for task in last_tile_plan.tasks:
+                    tx1 = task.source_x
+                    ty1 = task.source_y
+                    tx2 = task.source_x + task.source_width
+                    ty2 = task.source_y + task.source_height
+                    draw_t.rectangle([tx1, ty1, tx2, ty2], outline=(255, 220, 0, 200), width=2)
 
             # --- Bounding boxes ---
             draw = ImageDraw.Draw(img)
