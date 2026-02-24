@@ -5,10 +5,10 @@ models:
     enabled: false  # disabled — using yolo_tiles only
     engine: models/tensorrt/yolo26x-seg-fp8-qdq.engine  # YOLOv8x FP8-QDQ — max accuracy global
   yolo_tiles:
-    enabled: true
+    enabled: false
     engine: models/tensorrt/yolo26n-seg-fp8-qdq.engine  # YOLOv8n FP8-QDQ — fast tiling (batch 1..32)
   density:
-    enabled: true
+    enabled: false
     engine: models/tensorrt/dm_count_qnrf_1920x1088_b1.engine
     # 4K → 1920×1088 global resize, single inference (batch=1, ~24 ms ✔️)
     # For full-resolution 2×2 tiling (~92 ms) swap to:
@@ -25,8 +25,8 @@ yolo_tiles_parallel:
   groups: 2
 
 inference_streams:
-  yolo: true
-  density: true
+  yolo: false
+  density: false
 
 density:
   tiling: 1
@@ -41,8 +41,8 @@ streams:
 
 preprocess_branches:
   yolo_global_preprocess: false  # disabled with yolo_global
-  yolo_tiles_preprocess: true
-  density_preprocess: true
+  yolo_tiles_preprocess: false
+  density_preprocess: false
 
 tensor_pool:
   max_per_key: 64

@@ -36,9 +36,9 @@
 
         <!-- Top-left: latency chip -->
         <div class="fps-status" id="latency-chip">— ms</div>
-        <!-- Top-right: SSE fps / display fps -->
+        <!-- Top-right: inference fps / video decode fps -->
         <div class="fps-chip" id="fps-chip">— fps</div>
-        <div class="fps-chip" id="display-fps-chip" style="top:2.5rem;">— disp</div>
+        <div class="fps-chip" id="display-fps-chip" style="top:2.8rem;">— fps</div>
 
         <!-- Bottom-left: pipeline stage breakdown -->
         <div class="video-overlay-controls" id="stage-breakdown">
@@ -57,18 +57,45 @@
 
       <!-- Controls below the video -->
       <div class="control-group">
-        <label class="toggle">
-          <input type="checkbox" id="mask-toggle" checked>
-          Bounding boxes
-        </label>
-        <label class="toggle">
-          <input type="checkbox" id="seg-toggle">
-          Masque segmentation (YOLO-seg)
-        </label>
-        <label class="toggle">
-          <input type="checkbox" id="preview-only-toggle">
-          Prévisualisation seule (sans overlay)
-        </label>
+
+        <!-- ── Mode selector ──────────────────────────────────────────── -->
+        <div class="control-section">
+          <div class="control-section-label">Mode d'inférence</div>
+          <div class="mode-pills" id="mode-pills">
+            <!-- Populated dynamically from /api/config -->
+          </div>
+          <div class="mode-loading" id="mode-loading" style="display:none">
+            <span class="mode-loading-spinner">⟳</span> Chargement du mode…
+          </div>
+        </div>
+
+        <!-- ── Contextual overlay options (shown per mode) ────────────── -->
+        <div class="control-section" id="overlay-section" style="display:none">
+          <div class="control-section-label">Overlays</div>
+          <div class="overlay-toggles">
+            <label class="toggle" id="overlay-bbox" style="display:none">
+              <input type="checkbox" id="mask-toggle" checked>
+              Bounding boxes
+            </label>
+            <label class="toggle" id="overlay-seg" style="display:none">
+              <input type="checkbox" id="seg-toggle">
+              Masques segmentation
+            </label>
+            <label class="toggle" id="overlay-heatmap" style="display:none">
+              <input type="checkbox" id="heatmap-toggle" checked>
+              Heatmap densité
+            </label>
+          </div>
+        </div>
+
+        <!-- ── Preview-only (always visible) ─────────────────────────── -->
+        <div class="control-section">
+          <label class="toggle">
+            <input type="checkbox" id="preview-only-toggle">
+            Prévisualisation seule (désactiver tous les overlays)
+          </label>
+        </div>
+
       </div>
     </section>
 
@@ -137,10 +164,15 @@
     // ── State ──────────────────────────────────────────────────────
     const e2eHist    = [];
     const tilesHist  = [];
-    const fpsTs      = [];     // raw timestamps for FPS estimation
-    let   showMask      = true;   // ON by default — toggle checkbox below
-    let   showSeg        = false;  // segmentation overlay (YOLO-seg proto masks)
-    let   previewOnly    = false;  // when true: hide all overlays (pure display perf test)
+    const fpsTs      = [];     // raw timestamps for FPS estimation (from SSE)
+    let   showMask      = true;
+    let   showSeg       = false;
+    let   showHeatmap   = true;
+    let   previewOnly   = false;
+
+    // Current inference mode received from /api/config
+    let   _activeMode   = 'passthrough';
+    let   _modeChanging = false;   // true while waiting for orchestrator to apply
 
     // Display-FPS tracking (rendered frames per second via WebCodecs/rAF)
     const _dispFpsTs = [];
@@ -186,11 +218,10 @@
     const latCtx        = latChart.getContext('2d');
 
     // Source video dimensions received from the server via telemetry.
-    // Cached here so drawMask() is correct from the very first SSE event.
     let _videoSrcW = 0;
     let _videoSrcH = 0;
 
-    // ── Mask toggle ────────────────────────────────────────────────
+    // ── Toggle handlers ────────────────────────────────────────────
     document.getElementById('mask-toggle').addEventListener('change', e => {
       showMask = e.target.checked;
       if (!showMask) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
@@ -201,6 +232,10 @@
       if (!showSeg) segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
     });
 
+    document.getElementById('heatmap-toggle').addEventListener('change', e => {
+      showHeatmap = e.target.checked;
+    });
+
     document.getElementById('preview-only-toggle').addEventListener('change', e => {
       previewOnly = e.target.checked;
       if (previewOnly) {
@@ -208,6 +243,101 @@
         segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
       }
     });
+
+    // ── Mode UI ────────────────────────────────────────────────────
+    const _modeLabels = {};   // filled from /api/config
+    const _modeOverlays = {}; // filled from /api/config
+
+    function _updateOverlaySection(mode) {
+      const overlays = _modeOverlays[mode] || [];
+      const $section = document.getElementById('overlay-section');
+      $section.style.display = overlays.length > 0 ? '' : 'none';
+      document.getElementById('overlay-bbox').style.display    = overlays.includes('bbox')    ? '' : 'none';
+      document.getElementById('overlay-seg').style.display     = overlays.includes('seg')     ? '' : 'none';
+      document.getElementById('overlay-heatmap').style.display = overlays.includes('heatmap') ? '' : 'none';
+
+      // Reset checkbox defaults based on available overlays
+      if (!overlays.includes('bbox')) {
+        showMask = false;
+        document.getElementById('mask-toggle').checked = false;
+      }
+      if (!overlays.includes('heatmap')) {
+        showHeatmap = false;
+        document.getElementById('heatmap-toggle').checked = false;
+      }
+    }
+
+    function _renderModePills(availableModes, activeMode) {
+      const $pills = document.getElementById('mode-pills');
+      $pills.innerHTML = '';
+      for (const m of availableModes) {
+        const btn = document.createElement('button');
+        btn.className = 'mode-pill' + (m === activeMode ? ' mode-pill--active' : '');
+        btn.dataset.mode = m;
+        btn.textContent = _modeLabels[m] || m;
+        btn.addEventListener('click', () => _requestModeChange(m));
+        $pills.appendChild(btn);
+      }
+    }
+
+    function _setActivePill(mode) {
+      document.querySelectorAll('.mode-pill').forEach(btn => {
+        btn.classList.toggle('mode-pill--active', btn.dataset.mode === mode);
+      });
+    }
+
+    async function _requestModeChange(newMode) {
+      if (newMode === _activeMode || _modeChanging) return;
+      _modeChanging = true;
+      document.getElementById('mode-loading').style.display = '';
+      document.querySelectorAll('.mode-pill').forEach(b => b.disabled = true);
+
+      try {
+        const res = await fetch('/api/mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: newMode }),
+        });
+        const json = await res.json();
+        if (json.ok) {
+          // Optimistic UI update
+          _activeMode = newMode;
+          _setActivePill(newMode);
+          _updateOverlaySection(newMode);
+          // Clear metric display while new models warm up
+          $countValue.textContent = '—';
+          $e2eValue.textContent   = '—';
+          $tilesValue.textContent = '—';
+          $globalValue.textContent= '—';
+        }
+      } catch (err) {
+        console.warn('Mode change failed:', err);
+      } finally {
+        // Keep loading indicator for 1.5 s to cover engine load time
+        setTimeout(() => {
+          _modeChanging = false;
+          document.getElementById('mode-loading').style.display = 'none';
+          document.querySelectorAll('.mode-pill').forEach(b => b.disabled = false);
+        }, 1500);
+      }
+    }
+
+    // Load config from server and initialise the UI
+    async function _loadConfig() {
+      try {
+        const res  = await fetch('/api/config');
+        const cfg  = await res.json();
+        Object.assign(_modeLabels,   cfg.mode_labels   || {});
+        Object.assign(_modeOverlays, cfg.mode_overlays || {});
+        _activeMode = cfg.mode || 'passthrough';
+        _renderModePills(cfg.available_modes || ['passthrough'], _activeMode);
+        _updateOverlaySection(_activeMode);
+      } catch(e) {
+        // Server not up yet or no config endpoint — stay in passthrough
+        _renderModePills(['passthrough'], 'passthrough');
+      }
+    }
+    _loadConfig();
 
     // ── SSE connection ─────────────────────────────────────────────
     const sse = new EventSource('/api/stream');
@@ -217,6 +347,32 @@
       try { msg = JSON.parse(e.data); } catch { return; }
       if (!msg || !msg.frame_id) return;
 
+      // ── Passthrough heartbeat ─────────────────────────────────────
+      // No inference payload — just count FPS from the frame flow.
+      if (msg.passthrough) {
+        const now = Date.now();
+        fpsTs.push(now);
+        while (fpsTs.length && now - fpsTs[0] > 2000) fpsTs.shift();
+        const fps = fpsTs.length > 1
+          ? Math.round((fpsTs.length - 1) / ((now - fpsTs[0]) / 1000))
+          : 0;
+        $connStatus.textContent = '⬤ Live';
+        $connStatus.style.color = 'var(--accent)';
+        $fpsChip.textContent    = fps ? `${fps} fps` : '— fps';
+        $latencyChip.textContent = `frame ${msg.frame_id}`;
+        $latencyChip.style.background = 'rgba(42,223,165,0.12)';
+        $frameLabel.textContent = `frame ${msg.frame_id}`;
+        // In passthrough, metrics are N/A
+        $e2eValue.textContent     = '—';
+        $fpsDerived.textContent   = fps ? `${fps} fps` : '— fps';
+        $countValue.textContent   = '—';
+        $preprocValue.textContent = '—';
+        $tilesValue.textContent   = '—';
+        $globalValue.textContent  = '—';
+        $fusionValue.textContent  = '—';
+        return;
+      }
+
       const payload = Array.isArray(msg.payload) ? msg.payload : [];
       const tel     = (payload.find(p => p && p.telemetry) || {}).telemetry || {};
 
@@ -225,8 +381,6 @@
       if (tel.frame_height > 0) _videoSrcH = tel.frame_height;
 
       // ── Person count ─────────────────────────────────────────────
-      // Use max across models to avoid double-counting the same person
-      // (yolo_global and yolo_tiles independently detect the same person).
       let count = 0;
       for (const p of payload) {
         if (!p) continue;
@@ -241,10 +395,9 @@
       const global_  = +(tel.inference_model_yolo_global_ms     ?? 0);
       const fusion   = +(tel.fusion_wait_ms                     ?? 0);
 
-      // Skip frames with no telemetry (density-only events when fusion fires late)
       const hasTelemetry = e2e > 0 || tiles > 0 || global_ > 0;
 
-      // ── FPS (from publication events, not inference rate) ────────
+      // ── FPS ──────────────────────────────────────────────────────
       const now = Date.now();
       if (hasTelemetry) {
         fpsTs.push(now);
@@ -254,7 +407,7 @@
         ? Math.round((fpsTs.length - 1) / ((now - fpsTs[0]) / 1000))
         : 0;
 
-      // ── Compute rolling averages (only update when telemetry present) ─
+      // ── Compute rolling averages ──────────────────────────────────
       const avgE2e    = hasTelemetry ? rollAvg(_smooth.e2e,    e2e)    : (e2eHist.length ? e2eHist[e2eHist.length-1] : 0);
       const avgTiles  = hasTelemetry ? rollAvg(_smooth.tiles,  tiles)  : 0;
       const avgGlobal = hasTelemetry ? rollAvg(_smooth.global, global_): 0;
@@ -265,7 +418,7 @@
       $connStatus.textContent  = '⬤ Live';
       $connStatus.style.color  = 'var(--accent)';
 
-      $countValue.textContent  = count;  // raw count — no smoothing
+      $countValue.textContent  = count;
       $frameLabel.textContent  = `frame ${msg.frame_id}`;
 
       $e2eValue.textContent    = avgE2e.toFixed(1);
@@ -588,7 +741,7 @@
           const dFps = _dispFpsTs.length > 1
             ? Math.round((_dispFpsTs.length - 1) / ((now - _dispFpsTs[0]) / 1000))
             : 0;
-          $displayFpsChip.textContent = dFps ? `${dFps} disp` : '— disp';
+          $displayFpsChip.textContent = dFps ? `${dFps} fps vid` : '— fps vid';
         }
         rafId = requestAnimationFrame(renderLoop);
       }

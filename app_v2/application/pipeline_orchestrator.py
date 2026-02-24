@@ -50,7 +50,7 @@ class PipelineOrchestrator:
         self.inference_controller = InferenceStreamController(self.config)
         self.model_builder = ModelBuilder(self.config, self.inference_controller, self.stream_pool)
         self.fusion_strategy = fusion_strategy or SimpleFusionStrategy()
-        self.publisher = publisher or FlaskStreamServer()
+        self.publisher = publisher or FlaskStreamServer(initial_config=self.config)
         self.aggregator = ResultAggregator(self.fusion_strategy, self.publisher)
         self.performance_tracker = PerformanceTracker()
         self.max_frames = max_frames
@@ -171,10 +171,19 @@ class PipelineOrchestrator:
                     if self._video_stream is not None:
                         self._video_stream.synchronize()
                     self.aggregator.discard_frame(frame_id)
+                    # Emit a lightweight SSE heartbeat so the browser can count FPS
+                    if isinstance(self.publisher, FlaskStreamServer):
+                        self.publisher.publish_passthrough_frame(frame_id)
 
                 self.scheduler.acknowledge(frame_id)
                 self.performance_tracker.clear(frame_id)
                 self._frame_counter += 1
+
+                # ── Runtime mode change (applied between frames) ────────────
+                if isinstance(self.publisher, FlaskStreamServer):
+                    pending_mode = self.publisher.get_and_clear_pending_mode()
+                    if pending_mode is not None:
+                        self._apply_mode_change(pending_mode)
         except StopIteration:
             log_info(LogChannel.GLOBAL, "Frame source signaled completion")
         except Exception as exc:
@@ -199,6 +208,55 @@ class PipelineOrchestrator:
             log_info(LogChannel.GLOBAL, f"FlaskStreamServer started on {self.publisher.host}:{self.publisher.port}")
         except Exception as exc:
             log_warning(LogChannel.GLOBAL, f"FlaskStreamServer failed to start: {exc}")
+
+    def _apply_mode_change(self, new_mode: str) -> None:
+        """Hot-swap inference models between frames."""
+        from app_v2.infrastructure.flask_stream_server import _INFERENCE_MODES, _PREPROCESS_BRANCH_MAP
+
+        mode_state = _INFERENCE_MODES.get(new_mode)
+        if mode_state is None:
+            log_warning(LogChannel.GLOBAL, f"Unknown mode '{new_mode}' — ignoring")
+            return
+
+        # Close existing models cleanly
+        for model in self._models:
+            try:
+                model.close()
+            except Exception as exc:
+                log_warning(LogChannel.GLOBAL, f"Model close error during mode switch: {exc}")
+        self._models = []
+
+        # Update config in-place
+        models_cfg = self.config.setdefault("models", {})
+        branches_cfg = self.config.setdefault("preprocess_branches", {})
+        for model_name, enabled in mode_state.items():
+            if model_name in models_cfg:
+                models_cfg[model_name]["enabled"] = enabled
+            branch_key = _PREPROCESS_BRANCH_MAP.get(model_name)
+            if branch_key:
+                branches_cfg[branch_key] = enabled
+
+        # Rebuild inference components
+        self.inference_controller = InferenceStreamController(self.config)
+        self.model_builder = ModelBuilder(self.config, self.inference_controller, self.stream_pool)
+        self._models = self.model_builder.build_models()
+
+        # Reconfigure preprocessor for the new branches
+        self.preprocessor.configure(self.config)
+
+        # Update fusion strategy expected model count
+        if isinstance(self.fusion_strategy, SimpleFusionStrategy):
+            self.fusion_strategy.expected_count = len(self._models)
+
+        # Notify publisher
+        if isinstance(self.publisher, FlaskStreamServer):
+            self.publisher.set_active_mode(new_mode)
+            self.publisher.update_available_modes(self.config)
+
+        log_info(
+            LogChannel.GLOBAL,
+            f"Mode switched to '{new_mode}' — {len(self._models)} model(s) active",
+        )
 
     def _shutdown(self) -> None:
         self._video_executor.shutdown(wait=False)

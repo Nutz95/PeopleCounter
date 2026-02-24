@@ -317,13 +317,90 @@ main.page-column {
 }
 
 .control-group {
-  margin-top: 22px;
-  padding: 18px;
+  padding: 18px 20px;
   border-radius: 16px;
   background: var(--panel-strong);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: column;
+  gap: 16px;
+}
+
+/* ── Control sections inside the control group ──────────────────── */
+.control-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.control-section-label {
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* ── Mode pills ──────────────────────────────────────────────────── */
+.mode-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mode-pill {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.75);
+  padding: 7px 16px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.15s ease;
+  white-space: nowrap;
+}
+
+.mode-pill:hover:not(:disabled) {
+  background: rgba(42, 223, 165, 0.10);
+  border-color: rgba(42, 223, 165, 0.5);
+  color: #d8f8ee;
+  transform: translateY(-1px);
+}
+
+.mode-pill--active {
+  background: rgba(42, 223, 165, 0.18) !important;
+  border-color: rgba(42, 223, 165, 0.85) !important;
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+
+.mode-pill:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Mode loading indicator ─────────────────────────────────────── */
+.mode-loading {
+  font-size: 0.85rem;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mode-loading-spinner {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Overlay toggles ─────────────────────────────────────────────── */
+.overlay-toggles {
+  display: flex;
+  flex-wrap: wrap;
   gap: 14px;
 }
 

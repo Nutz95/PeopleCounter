@@ -9,6 +9,58 @@ from typing import Any, Sequence
 
 from app_v2.core.result_publisher import ResultPublisher
 
+# ---------------------------------------------------------------------------
+# Inference mode registry
+# Each mode maps to {model_name: enabled} and {preprocess_branch: enabled}.
+# ---------------------------------------------------------------------------
+_INFERENCE_MODES: dict[str, dict[str, bool]] = {
+    "passthrough":          {"yolo_global": False, "yolo_tiles": False, "density": False},
+    "density":              {"yolo_global": False, "yolo_tiles": False, "density": True},
+    "yolo_global":          {"yolo_global": True,  "yolo_tiles": False, "density": False},
+    "yolo_tiles":           {"yolo_global": False, "yolo_tiles": True,  "density": False},
+    "density_yolo_global":  {"yolo_global": True,  "yolo_tiles": False, "density": True},
+    "density_yolo_tiles":   {"yolo_global": False, "yolo_tiles": True,  "density": True},
+}
+
+_PREPROCESS_BRANCH_MAP: dict[str, str] = {
+    "yolo_global": "yolo_global_preprocess",
+    "yolo_tiles":  "yolo_tiles_preprocess",
+    "density":     "density_preprocess",
+}
+
+# Labels and overlay options surfaced to the frontend via /api/config
+_MODE_LABELS: dict[str, str] = {
+    "passthrough":         "Passthrough",
+    "density":             "Densité",
+    "yolo_global":         "YOLO Global",
+    "yolo_tiles":          "YOLO Tiling",
+    "density_yolo_global": "YOLO Global + Densité",
+    "density_yolo_tiles":  "YOLO Tiling + Densité",
+}
+
+# Which overlay checkboxes are relevant per mode
+_MODE_OVERLAYS: dict[str, list[str]] = {
+    "passthrough":         [],
+    "density":             ["heatmap"],
+    "yolo_global":         ["bbox", "seg"],
+    "yolo_tiles":          ["bbox", "seg"],
+    "density_yolo_global": ["bbox", "seg", "heatmap"],
+    "density_yolo_tiles":  ["bbox", "seg", "heatmap"],
+}
+
+
+def detect_mode_from_config(config: dict[str, Any]) -> str:
+    """Return the mode string matching the enabled models in a pipeline config."""
+    models_cfg = config.get("models", {})
+    state = {
+        name: bool(models_cfg.get(name, {}).get("enabled", False))
+        for name in ("yolo_global", "yolo_tiles", "density")
+    }
+    for mode_name, mode_state in _INFERENCE_MODES.items():
+        if mode_state == state:
+            return mode_name
+    return "passthrough"  # fallback
+
 
 try:
     from flask import Flask, Response, jsonify, render_template, stream_with_context
@@ -44,7 +96,12 @@ _PLACEHOLDER_JPEG = (
 class FlaskStreamServer(ResultPublisher):
     """Publishes fused payloads via SSE and MJPEG to connected browser clients."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 5000) -> None:
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 5000,
+        initial_config: dict[str, Any] | None = None,
+    ) -> None:
         self.host = host
         self.port = port
         # Set by PipelineOrchestrator when WebCodecsServer is started.
@@ -59,6 +116,12 @@ class FlaskStreamServer(ResultPublisher):
         # MJPEG: latest JPEG frame bytes
         self._last_jpeg: bytes = _PLACEHOLDER_JPEG
         self._video_lock = threading.Lock()
+        # Inference mode state
+        self._mode_lock = threading.Lock()
+        _cfg = initial_config or {}
+        self._active_mode: str = detect_mode_from_config(_cfg)
+        self._pending_mode: str | None = None
+        self._available_modes: list[str] = self._compute_available_modes(_cfg)
 
         assets_root = Path(__file__).resolve().parent / "flask_server"
         self._template_dir = assets_root / "templates"
@@ -82,6 +145,36 @@ class FlaskStreamServer(ResultPublisher):
         @self._app.get("/health")
         def health() -> Any:
             return jsonify({"status": "ok"})
+
+        @self._app.get("/api/config")
+        def api_config() -> Any:
+            with self._mode_lock:
+                mode     = self._active_mode
+                pending  = self._pending_mode
+                available = list(self._available_modes)
+            return jsonify({
+                "mode":            mode,
+                "pending_mode":    pending,
+                "available_modes": available,
+                "mode_labels":     _MODE_LABELS,
+                "mode_overlays":   _MODE_OVERLAYS,
+            })
+
+        @self._app.post("/api/mode")
+        def api_set_mode() -> Any:
+            from flask import request  # local import to avoid top-level issues
+            body = request.get_json(silent=True) or {}
+            requested = body.get("mode", "")
+            with self._mode_lock:
+                available = list(self._available_modes)
+                current   = self._active_mode
+            if requested not in available:
+                return jsonify({"ok": False, "error": f"mode '{requested}' not available"}), 400
+            if requested == current:
+                return jsonify({"ok": True, "mode": requested, "changed": False})
+            with self._mode_lock:
+                self._pending_mode = requested
+            return jsonify({"ok": True, "mode": requested, "changed": True})
 
         @self._app.get("/api/last")
         def api_last() -> Any:
@@ -171,3 +264,67 @@ class FlaskStreamServer(ResultPublisher):
         """Update the MJPEG frame buffer with a freshly encoded JPEG."""
         with self._video_lock:
             self._last_jpeg = jpeg_bytes
+
+    # ------------------------------------------------------------------
+    # Inference mode management (called from pipeline loop thread)
+    # ------------------------------------------------------------------
+
+    def get_and_clear_pending_mode(self) -> str | None:
+        """Return and consume any pending mode change requested via /api/mode."""
+        with self._mode_lock:
+            mode = self._pending_mode
+            self._pending_mode = None
+            return mode
+
+    def set_active_mode(self, mode: str) -> None:
+        """Record the mode that is now active (called after mode switch completes)."""
+        with self._mode_lock:
+            self._active_mode = mode
+
+    def update_available_modes(self, config: dict[str, Any]) -> None:
+        """Recompute available modes after a config update."""
+        modes = self._compute_available_modes(config)
+        with self._mode_lock:
+            self._available_modes = modes
+
+    def publish_passthrough_frame(self, frame_id: int) -> None:
+        """Lightweight SSE heartbeat emitted in passthrough mode (no inference payload)."""
+        data = {"frame_id": frame_id, "payload": [], "passthrough": True}
+        serialised = json.dumps(data)
+        with self._sse_lock:
+            clients = list(self._sse_clients)
+        for q in clients:
+            try:
+                q.put_nowait(serialised)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _compute_available_modes(config: dict[str, Any]) -> list[str]:
+        """Return mode names whose required engines are all present on disk."""
+        models_cfg = config.get("models", {})
+        project_root = Path(__file__).resolve().parents[2]
+
+        def has_engine(model_name: str) -> bool:
+            engine = models_cfg.get(model_name, {}).get("engine", "")
+            if not engine:
+                return False
+            p = Path(engine)
+            if not p.is_absolute():
+                p = project_root / p
+            return p.exists()
+
+        have = {name: has_engine(name) for name in ("yolo_global", "yolo_tiles", "density")}
+
+        available = ["passthrough"]
+        if have["density"]:
+            available.append("density")
+        if have["yolo_global"]:
+            available.append("yolo_global")
+        if have["yolo_tiles"]:
+            available.append("yolo_tiles")
+        if have["yolo_global"] and have["density"]:
+            available.append("density_yolo_global")
+        if have["yolo_tiles"] and have["density"]:
+            available.append("density_yolo_tiles")
+        return available
