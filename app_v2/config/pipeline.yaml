@@ -1,4 +1,4 @@
-fusion_strategy: ASYNC_OVERLAY
+fusion_strategy: RAW_STREAM_WITH_METADATA # ASYNC_OVERLAY
 
 models:
   yolo_global:

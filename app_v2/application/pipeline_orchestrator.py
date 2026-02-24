@@ -13,12 +13,13 @@ from app_v2.application.processing_graph import ProcessingGraph
 from app_v2.application.performance_tracker import PerformanceTracker
 from app_v2.application.result_aggregator import ResultAggregator
 from app_v2.config import load_pipeline_config
-from app_v2.core.fusion_strategy import FusionStrategy, SimpleFusionStrategy
+from app_v2.core.strategies import FusionStrategy, RawStreamFusionStrategy, SimpleFusionStrategy
 from app_v2.core.frame_source import FrameSource
 from app_v2.core.result_publisher import ResultPublisher
+from app_v2.enums import FusionStrategyType
 from app_v2.infrastructure.cuda_preprocessor import CudaPreprocessor
 from app_v2.infrastructure.density_decoder import DensityDecoder
-from app_v2.infrastructure.flask_stream_server import FlaskStreamServer
+from app_v2.infrastructure.flask_server.server import FlaskStreamServer
 from app_v2.infrastructure.nvdec_packet_forwarder import NvdecPacketForwarder
 from app_v2.infrastructure.stream_pool import SimpleStreamPool
 from app_v2.infrastructure.webcodecs_server import WebCodecsServer
@@ -50,7 +51,18 @@ class PipelineOrchestrator:
         self.stream_pool = SimpleStreamPool()
         self.inference_controller = InferenceStreamController(self.config)
         self.model_builder = ModelBuilder(self.config, self.inference_controller, self.stream_pool)
-        self.fusion_strategy = fusion_strategy or SimpleFusionStrategy()
+        if fusion_strategy is not None:
+            self.fusion_strategy = fusion_strategy
+        else:
+            _strategy_name = self.config.get("fusion_strategy", "ASYNC_OVERLAY")
+            try:
+                _strategy_type = FusionStrategyType(_strategy_name)
+            except ValueError:
+                _strategy_type = FusionStrategyType.ASYNC_OVERLAY
+            if _strategy_type == FusionStrategyType.RAW_STREAM_WITH_METADATA:
+                self.fusion_strategy = RawStreamFusionStrategy()
+            else:
+                self.fusion_strategy = SimpleFusionStrategy(strategy_type=_strategy_type)
         self.publisher = publisher or FlaskStreamServer(initial_config=self.config)
         self.aggregator = ResultAggregator(self.fusion_strategy, self.publisher)
         self.performance_tracker = PerformanceTracker()
@@ -106,6 +118,7 @@ class PipelineOrchestrator:
         # Ensure the fusion strategy waits for ALL models before publishing
         # a frame — otherwise we get one SSE event per model (3×) and the
         # ring-buffer release hooks fire before downstream models finish.
+        # Not applicable for RAW_STREAM_WITH_METADATA which publishes per-model.
         if isinstance(self.fusion_strategy, SimpleFusionStrategy) and self._models:
             self.fusion_strategy.expected_count = len(self._models)
         self._running = True
@@ -149,7 +162,19 @@ class PipelineOrchestrator:
 
                 output = self.preprocessor.build_output(frame_id, frame)
                 self.aggregator.attach_telemetry(frame_id, output.telemetry)
-                self.aggregator.attach_release_hook(frame_id, output.release_all)
+
+                if isinstance(self.fusion_strategy, RawStreamFusionStrategy):
+                    # RAW_STREAM_WITH_METADATA: release the NVDEC ring-buffer slot
+                    # and preprocessed tensor pool *immediately* — before inference.
+                    # The video frame has already been handed off to _video_stream
+                    # (GPU async), so we only need to wait for that work to finish
+                    # before releasing.  Inference uses CPU-side tensor slices that
+                    # remain valid after the GPU release.
+                    if self._video_stream is not None:
+                        self._video_stream.synchronize()
+                    output.release_all()
+                else:
+                    self.aggregator.attach_release_hook(frame_id, output.release_all)
                 for model in self._models:
                     processed = output.flatten_inputs(model.name)
                     tile_plan = output.plans.get(model.name)
@@ -173,9 +198,10 @@ class PipelineOrchestrator:
                 # Wait for the video GPU work first (NV12→RGB kernel) to avoid a
                 # race where the decoder overwrites the ring slot mid-conversion.
                 if not self._models:
-                    if self._video_stream is not None:
-                        self._video_stream.synchronize()
-                    self.aggregator.discard_frame(frame_id)
+                    if not isinstance(self.fusion_strategy, RawStreamFusionStrategy):
+                        if self._video_stream is not None:
+                            self._video_stream.synchronize()
+                        self.aggregator.discard_frame(frame_id)
                     # Emit a lightweight SSE heartbeat so the browser can count FPS
                     if isinstance(self.publisher, FlaskStreamServer):
                         self.publisher.publish_passthrough_frame(frame_id)
@@ -216,7 +242,7 @@ class PipelineOrchestrator:
 
     def _apply_mode_change(self, new_mode: str) -> None:
         """Hot-swap inference models between frames."""
-        from app_v2.infrastructure.flask_stream_server import _INFERENCE_MODES, _PREPROCESS_BRANCH_MAP
+        from app_v2.infrastructure.flask_server.mode_registry import _INFERENCE_MODES, _PREPROCESS_BRANCH_MAP
 
         mode_state = _INFERENCE_MODES.get(new_mode)
         if mode_state is None:

@@ -11,7 +11,7 @@ import pytest
 
 from app_v2.config.test_config import load_test_config
 from app_v2.application.pipeline_orchestrator import PipelineOrchestrator
-from app_v2.core.fusion_strategy import FusionStrategy, SimpleFusionStrategy
+from app_v2.core.strategies import FusionStrategy, SimpleFusionStrategy
 from app_v2.enums import FusionStrategyType
 from app_v2.core.result_publisher import ResultPublisher
 from app_v2.infrastructure.gpu_preprocessor import GpuPreprocessor

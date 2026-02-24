@@ -234,7 +234,8 @@ class DensityTRT(InferenceModel):
                 idx = futures[fut]
                 row_results[idx] = fut.result()
 
-        torch.cuda.synchronize()
+        # No torch.cuda.synchronize() here — the implicit sync happens when
+        # torch.cat() / .sum() read from the in-flight GPU tensors below.
         infer_ms = (time.perf_counter_ns() - start_ns) / 1_000_000.0
 
         # Concatenate row outputs → [N_tiles, 1, H_out, W_out]

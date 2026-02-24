@@ -6,7 +6,7 @@ from typing import Any
 
 from app_v2.application.result_aggregator import ResultAggregator
 from app_v2.core.frame_telemetry import FrameTelemetry
-from app_v2.core.fusion_strategy import FusionStrategy, SimpleFusionStrategy
+from app_v2.core.strategies import FusionStrategy, SimpleFusionStrategy
 from app_v2.enums import FusionStrategyType
 from app_v2.core.result_publisher import ResultPublisher
 

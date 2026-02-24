@@ -203,15 +203,17 @@ class YoloDecoder(Postprocessor):
         rows = rows[mask]
         if rows.shape[0] == 0:
             return []
-        coords = rows[:, :4].cpu()
-        if float(coords.max()) > 2.0:
+        coords = rows[:, :4]
+        if float(coords.max().item()) > 2.0:
             coords = coords / 640.0
         coords = coords.clamp(0.0, 1.0)
-        result: list[dict[str, Any]] = []
-        for i in range(rows.shape[0]):
-            x1, y1, x2, y2 = coords[i].tolist()
-            result.append({"bbox": [x1, y1, x2, y2], "conf": round(float(rows[i, 4]), 4), "label": "person"})
-        return result
+        # Single host transfer for all coordinates and confidences.
+        coords_list = coords.tolist()
+        confs_list  = rows[:, 4].tolist()
+        return [
+            {"bbox": [x1, y1, x2, y2], "conf": round(c, 4), "label": "person"}
+            for (x1, y1, x2, y2), c in zip(coords_list, confs_list)
+        ]
 
     def _decode_raw_yolov8(self, rows: Any) -> list[dict[str, Any]]:
         """Decode raw YOLOv8 ``[N, 4+C]`` tensor (no NMS applied by the engine).
@@ -261,16 +263,13 @@ class YoloDecoder(Postprocessor):
         x2 = (lx2 / 640.0).clamp(0.0, 1.0)
         y2 = (ly2 / 640.0).clamp(0.0, 1.0)
 
-        coords = torch.stack([x1, y1, x2, y2], dim=1).cpu()
-        result: list[dict[str, Any]] = []
-        for i in range(coords.shape[0]):
-            bx1, by1, bx2, by2 = coords[i].tolist()
-            result.append({
-                "bbox": [bx1, by1, bx2, by2],
-                "conf": round(float(scores_f[i]), 4),
-                "label": "person",
-            })
-        return result
+        # Single host transfer for all coordinates and confidences.
+        coords_list = torch.stack([x1, y1, x2, y2], dim=1).tolist()
+        confs_list  = scores_f.tolist()
+        return [
+            {"bbox": [bx1, by1, bx2, by2], "conf": round(c, 4), "label": "person"}
+            for (bx1, by1, bx2, by2), c in zip(coords_list, confs_list)
+        ]
 
     def _decode_tiled_yolov8_global(self, tensor: Any, plan: Any) -> list[dict[str, Any]]:
         """Decode batched tile tensor to global frame coordinates ``[0, 1]``.

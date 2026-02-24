@@ -183,7 +183,13 @@ class TensorRTExecutionContext:
         }
 
     def _enqueue_and_sync(self, stream: Any) -> Dict[str, Any]:
-        """Launch ``execute_async_v3`` and synchronise the stream.
+        """Launch ``execute_async_v3`` on the stream (no host-side sync).
+
+        The output tensors are valid GPU tensors whose data will be ready when
+        the stream reaches that point.  The caller (decoder) will implicitly
+        synchronize at the moment it reads data to CPU (e.g. .tolist()).  This
+        avoids a premature host stall that would prevent NVDEC and preprocessing
+        from overlapping with the current inference kernel.
 
         Returns a dict with ``enqueue_ms`` + ``stream_sync_ms`` on success,
         or ``error`` (str) on failure.
@@ -194,11 +200,9 @@ class TensorRTExecutionContext:
         enqueue_ms = (self._perf_counter_ns() - enqueue_start_ns) / 1_000_000.0
         if not ok:
             return {"error": "execute_async_v3 failed"}
-        sync_start_ns = self._perf_counter_ns()
-        if hasattr(stream, "synchronize"):
-            stream.synchronize()
-        stream_sync_ms = (self._perf_counter_ns() - sync_start_ns) / 1_000_000.0
-        return {"enqueue_ms": enqueue_ms, "stream_sync_ms": stream_sync_ms}
+        # No stream.synchronize() here — output tensors are in-flight on the
+        # CUDA stream and will be implicitly synced when the decoder reads them.
+        return {"enqueue_ms": enqueue_ms, "stream_sync_ms": 0.0}
 
     def _execute_via_graph(
         self,
@@ -224,11 +228,7 @@ class TensorRTExecutionContext:
         if not outputs:
             return None
 
-        sync_start_ns = self._perf_counter_ns()
-        if hasattr(stream, "synchronize"):
-            stream.synchronize()
-        stream_sync_ms = (self._perf_counter_ns() - sync_start_ns) / 1_000_000.0
-
+        # No stream.synchronize() — implicit sync happens at decoder read time.
         return {
             "status": "ok",
             "outputs": outputs,
@@ -237,7 +237,7 @@ class TensorRTExecutionContext:
             "engine_path": self._metadata.get("path"),
             "prepare_batch_ms": 0.0,  # filled by caller
             "enqueue_ms": float(enqueue_ms),
-            "stream_sync_ms": float(stream_sync_ms),
+            "stream_sync_ms": 0.0,
             "cuda_graph": True,
         }
 

@@ -145,23 +145,22 @@ class TestDensityDecode:
 
 class TestDensityDecoder:
 
-    def test_stitch_produces_correct_canvas_size(self) -> None:
+    def test_hotspot_extraction_returns_nonzero_for_uniform_tiles(self) -> None:
+        """With uniform tile density, _extract_hotspots should return hotspots."""
         pytest.importorskip("torch")
-        import base64
-        import numpy as np
         import torch
         from app_v2.infrastructure.density_decoder import DensityDecoder
 
         plan = _make_tile_plan(rows=3, cols=6, fw=3840, fh=2160, tw=640, th=720)
         tiles = [torch.ones(1, 45, 40) * 0.1 for _ in range(18)]
-
-        b64, w, h = DensityDecoder._stitch_heatmap(tiles, plan)
-        assert b64 is not None
-        assert w == 3840 // 4   # 960
-        assert h == 2160 // 4   # 540
-        raw = np.frombuffer(base64.b64decode(b64), dtype=np.uint8).reshape(h, w)
-        assert raw.shape == (h, w)
-        assert raw.max() == 255, "max should be normalised to 255"
+        dec = DensityDecoder()
+        result = dec.process(1, {"density_tiles": tiles, "density_count": 180.0, "tile_plan": plan})
+        assert isinstance(result["hotspots"], list)
+        # Uniform map: at least some peaks should be found
+        assert len(result["hotspots"]) > 0
+        for hs in result["hotspots"]:
+            assert 0.0 <= hs["x"] <= 1.0
+            assert 0.0 <= hs["y"] <= 1.0
 
     def test_decoder_process_no_tiles(self) -> None:
         from app_v2.infrastructure.density_decoder import DensityDecoder
@@ -169,7 +168,7 @@ class TestDensityDecoder:
         result = dec.process(42, {"density_tiles": [], "density_count": 0.0, "tile_plan": None})
         assert result["frame_id"] == 42
         assert result["density_count"] == 0.0
-        assert result["heatmap_raw"] is None
+        assert result["hotspots"] == []
 
     def test_decoder_process_with_tiles(self) -> None:
         pytest.importorskip("torch")
@@ -185,9 +184,13 @@ class TestDensityDecoder:
         )
         assert result["model"] == "density"
         assert result["density_count"] == 324.0
-        assert isinstance(result["heatmap_raw"], str)
-        assert result["heatmap_w"] == 960
-        assert result["heatmap_h"] == 540
+        assert isinstance(result["hotspots"], list)
+        assert len(result["hotspots"]) > 0
+        # Each hotspot must have normalised x/y in [0,1] and a weight w in [0,1]
+        for hs in result["hotspots"]:
+            assert 0.0 <= hs["x"] <= 1.0
+            assert 0.0 <= hs["y"] <= 1.0
+            assert 0.0 <= hs["w"] <= 1.0
 
 
 # ── DensityTRT.infer via mock context ─────────────────────────────────────────

@@ -6,7 +6,7 @@ yolo_global:
   max_detections: 300
   class_whitelist:
     - 0
-  seg_mask_enabled: true       # decode per-person segmentation masks from proto tensors
+  seg_mask_enabled: false      # decode per-person segmentation masks from proto tensors (expensive — enable only when seg overlay is needed)
   seg_mask_clip_to_bbox: true  # clip each person mask to its bbox region; eliminates prototype leakage
 
 yolo_tiles:
@@ -17,5 +17,5 @@ yolo_tiles:
   max_detections: 300
   class_whitelist:
     - 0
-  seg_mask_enabled: true       # decode per-person segmentation masks from proto tensors
+  seg_mask_enabled: false      # decode per-person segmentation masks from proto tensors (expensive — enable only when seg overlay is needed)
   seg_mask_clip_to_bbox: true

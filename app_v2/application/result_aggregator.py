@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import time
 from typing import Any
 
-from app_v2.core.fusion_strategy import FusionStrategy
+from app_v2.core.strategies import FusionStrategy
 from app_v2.core.result_publisher import ResultPublisher
 from app_v2.core.frame_telemetry import FrameTelemetry
 from app_v2.core.telemetry_keys import (

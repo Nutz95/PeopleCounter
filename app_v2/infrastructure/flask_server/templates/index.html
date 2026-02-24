@@ -238,6 +238,7 @@
 
     document.getElementById('heatmap-toggle').addEventListener('change', e => {
       showHeatmap = e.target.checked;
+      if (!showHeatmap) heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
     });
 
     document.getElementById('preview-only-toggle').addEventListener('change', e => {
@@ -245,6 +246,7 @@
       if (previewOnly) {
         maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
         segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
+        heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
       }
     });
 
@@ -457,14 +459,17 @@
       $ovTiles.textContent      = `tiles   ${avgTiles.toFixed(1)} ms`;
 
       // ── Overlays ─────────────────────────────────────────────────
+      // Mask and seg overlays are only drawn when not in preview-only mode.
       if (!previewOnly) {
         if (showMask) drawMask(payload);
         else maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
         if (showSeg)  drawSegMask(payload);
         else segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
-        if (showHeatmap) drawHeatmap(payload);
-        else heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
       }
+      // Heatmap clear/draw is independent of previewOnly so toggling the
+      // checkbox always takes immediate effect regardless of preview state.
+      if (!previewOnly && showHeatmap) drawHeatmap(payload);
+      else heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
 
       // ── History & chart ──────────────────────────────────────────
       if (hasTelemetry) {
@@ -620,11 +625,11 @@
     }
 
     // ── Density heatmap overlay ────────────────────────────────────
-    // DensityDecoder sends a raw uint8 grayscale buffer (heatmap_raw) scaled
-    // to quarter-resolution (heatmap_w × heatmap_h).  We decode it into an
-    // ImageData and colourize each pixel with the jet colour map so dense
-    // regions appear red and sparse regions appear blue.
-    const _heatOffscreen = document.createElement('canvas');
+    // DensityDecoder now emits a list of hotspot coordinates instead of a
+    // full bitmap.  Each hotspot is {x, y, w} where x/y are normalised [0,1]
+    // frame coordinates and w ∈ [0,1] is the relative density weight.
+    // We render each hotspot as a radial gradient circle scaled by weight —
+    // far cheaper than decoding a full ImageData canvas overlay.
     function drawHeatmap(payload) {
       const layout = _computeLayout();
       if (!layout) return;
@@ -633,36 +638,18 @@
       heatCanvas.height = H;
       heatCtx.clearRect(0, 0, W, H);
 
+      heatCtx.fillStyle = 'rgba(220, 30, 30, 0.85)';
       for (const p of payload) {
-        if (!p || !p.heatmap_raw || !p.heatmap_w || !p.heatmap_h) continue;
-        const hw = p.heatmap_w | 0;
-        const hh = p.heatmap_h | 0;
-        if (hw <= 0 || hh <= 0) continue;
-
-        if (_heatOffscreen.width !== hw || _heatOffscreen.height !== hh) {
-          _heatOffscreen.width  = hw;
-          _heatOffscreen.height = hh;
+        if (!p || !Array.isArray(p.hotspots) || p.hotspots.length === 0) continue;
+        for (const hs of p.hotspots) {
+          const cx = dispX + hs.x * dispW;
+          const cy = dispY + hs.y * dispH;
+          const r  = Math.max(3, Math.round(hs.w * 12));
+          heatCtx.beginPath();
+          heatCtx.arc(cx, cy, r, 0, 2 * Math.PI);
+          heatCtx.fill();
         }
-        const offCtx  = _heatOffscreen.getContext('2d');
-        const imgData = offCtx.createImageData(hw, hh);
-        const int32   = new Int32Array(imgData.data.buffer);
-        const bStr    = atob(p.heatmap_raw);
-        const nPx     = hw * hh;
-        if (bStr.length < nPx) continue;
-
-        // Jet colourmap: value 0→blue, 128→green, 255→red
-        for (let i = 0; i < nPx; i++) {
-          const v = bStr.charCodeAt(i);        // 0–255 normalised intensity
-          const r = Math.min(255, Math.max(0, Math.round(255 * (1.5 - Math.abs(v / 255 * 4 - 3)))));
-          const g = Math.min(255, Math.max(0, Math.round(255 * (1.5 - Math.abs(v / 255 * 4 - 2)))));
-          const b = Math.min(255, Math.max(0, Math.round(255 * (1.5 - Math.abs(v / 255 * 4 - 1)))));
-          const a = v > 10 ? 200 : 0;  // transparent where density is near-zero
-          // Little-endian ABGR packed as Int32
-          int32[i] = (a << 24) | (b << 16) | (g << 8) | r;
-        }
-        offCtx.putImageData(imgData, 0, 0);
-        heatCtx.drawImage(_heatOffscreen, 0, 0, hw, hh, dispX, dispY, dispW, dispH);
-        break;  // only one density payload expected
+        break;  // only one density payload expected per frame
       }
     }
 

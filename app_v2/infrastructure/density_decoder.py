@@ -1,121 +1,154 @@
 from __future__ import annotations
 
-import base64
 from typing import Any
 
 from app_v2.core.postprocessor import Postprocessor
 
+# Canvas resolution relative to the original frame.
+# 1/4 scale gives enough granularity for per-person peak separation in 4K scenes.
+_CANVAS_DOWNSCALE: int = 4
+
+# NMS kernel: small value keeps peaks close together, allowing dense crowd scenes
+# to produce many distinct hotspots (one per person at fine scale).
+_NMS_KERNEL: int = 3
+
+# Minimum density value to be considered a real peak (filters absolute zeros).
+_DENSITY_THRESHOLD: float = 1e-6
+
 
 class DensityDecoder(Postprocessor):
-    """Transforms DM-Count tile outputs into a stitched heatmap and count.
+    """Transforms DM-Count tile outputs into a count and hotspot coordinate list.
 
-    DM-Count outputs a [B, 1, H_out, W_out] density map where summing all
-    pixels gives the crowd count.  For 4K tiling (6 cols × 3 rows = 18 tiles,
-    no overlap, each 640×720 input): H_out ≈ 45, W_out ≈ 40, global heatmap
-    ≈ 270×240 pixels before resizing.
+    All tensor operations stay on GPU until the final scalar extraction, which
+    is a single .tolist() call across all hotspots.  No bitmaps, no base64,
+    no CPU-side loops over density maps.
+
+    Return format:
+        {
+            "frame_id": int,
+            "model":    "density",
+            "density_count": float,
+            "hotspots": [{"x": float, "y": float, "w": float}, ...],
+        }
+
+    hotspots are sorted by density weight descending.  x/y are normalised
+    frame coordinates [0, 1].  w is the relative density weight [0, 1].
+    There is no cap on the number of hotspots — dense crowd scenes with
+    hundreds of people will produce hundreds of hotspots.
     """
 
     def process(self, frame_id: int, outputs: dict[str, Any]) -> dict[str, Any]:
-        """Stitch per-tile density maps, return count + base64-encoded heatmap.
-
-        Expected ``outputs`` keys (from ``DensityTRT.infer()``):
-            density_tiles  – list[Tensor[1, H_out, W_out]] fp32
-            density_count  – float total people count across all tiles
-            tile_plan      – PreprocessPlan (for spatial reconstruction)
-        """
         density_tiles = outputs.get("density_tiles", [])
         total_count   = float(outputs.get("density_count", 0.0))
         tile_plan     = outputs.get("tile_plan")
 
-        heatmap_b64: str | None = None
-        heatmap_w = 0
-        heatmap_h = 0
-
+        hotspots: list[dict[str, float]] = []
         if density_tiles and tile_plan is not None:
-            heatmap_b64, heatmap_w, heatmap_h = self._stitch_heatmap(density_tiles, tile_plan)
+            hotspots = _extract_hotspots(density_tiles, tile_plan)
 
         return {
             "frame_id": frame_id,
             "model": "density",
             "density_count": total_count,
-            "heatmap_raw": heatmap_b64,
-            "heatmap_w": heatmap_w,
-            "heatmap_h": heatmap_h,
+            "hotspots": hotspots,
         }
 
-    # ── helpers ──────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _stitch_heatmap(
-        density_tiles: list[Any],
-        tile_plan: Any,
-    ) -> tuple[str | None, int, int]:
-        """Composite per-tile density maps into a global frame heatmap.
+def _extract_hotspots(
+    density_tiles: list[Any],
+    tile_plan: Any,
+) -> list[dict[str, float]]:
+    """GPU-resident hotspot extraction.  All tensor work stays on the GPU device
+    of the input tiles; only the final coordinate list is transferred to host
+    via a single .tolist() call.
 
-        The output is a quarter-resolution canvas (frame_w//4 × frame_h//4) to
-        keep memory and bandwidth reasonable.  Values are scaled to [0, 255]
-        uint8 and base64-encoded, matching the seg-mask contract.
+    Returns an empty list on any error so the pipeline never crashes.
+    """
+    try:
+        import torch
+        import torch.nn.functional as F
+    except ModuleNotFoundError:
+        return []
 
-        Returns (base64_str, width, height) or (None, 0, 0) on error.
-        """
-        try:
-            import torch
-            import numpy as np
-        except ModuleNotFoundError:
-            return None, 0, 0
+    fw     = getattr(tile_plan, "frame_width",  0)
+    fh     = getattr(tile_plan, "frame_height", 0)
+    tasks  = getattr(tile_plan, "tasks",        ())
+    if fw <= 0 or fh <= 0 or not tasks:
+        return []
 
-        fw = getattr(tile_plan, "frame_width", 0)
-        fh = getattr(tile_plan, "frame_height", 0)
-        tasks = getattr(tile_plan, "tasks", ())
-        if fw <= 0 or fh <= 0 or not tasks:
-            return None, 0, 0
+    # Resolve GPU device from first available CUDA tile; fall back to CPU.
+    device: torch.device = torch.device("cpu")
+    for t in density_tiles:
+        if isinstance(t, torch.Tensor) and t.is_cuda:
+            device = t.device
+            break
 
-        # Quarter-resolution global canvas
-        canvas_w = max(1, fw // 4)
-        canvas_h = max(1, fh // 4)
-        canvas = torch.zeros(canvas_h, canvas_w, dtype=torch.float32)
+    canvas_w = max(1, fw // _CANVAS_DOWNSCALE)
+    canvas_h = max(1, fh // _CANVAS_DOWNSCALE)
+    canvas   = torch.zeros(canvas_h, canvas_w, dtype=torch.float32, device=device)
 
-        for i, task in enumerate(tasks):
-            if i >= len(density_tiles):
-                break
-            tile_map = density_tiles[i]  # [1, H_out, W_out] or [H_out, W_out]
-            if tile_map is None:
+    for i, task in enumerate(tasks):
+        if i >= len(density_tiles):
+            break
+        tile_map = density_tiles[i]
+        if tile_map is None:
+            continue
+        if not isinstance(tile_map, torch.Tensor):
+            try:
+                tile_map = torch.as_tensor(tile_map, dtype=torch.float32, device=device)
+            except Exception:
                 continue
-            if isinstance(tile_map, torch.Tensor):
-                tile_map = tile_map.squeeze()  # → [H_out, W_out]
-                if tile_map.dim() == 0:
-                    continue
-                tile_map = tile_map.float().cpu()
-            else:
-                try:
-                    tile_map = torch.as_tensor(tile_map, dtype=torch.float32).squeeze()
-                except Exception:
-                    continue
 
-            # Destination region in canvas coords
-            dst_x1 = int(round(task.source_x / fw * canvas_w))
-            dst_y1 = int(round(task.source_y / fh * canvas_h))
-            dst_x2 = int(round((task.source_x + task.source_width)  / fw * canvas_w))
-            dst_y2 = int(round((task.source_y + task.source_height) / fh * canvas_h))
-            dst_x2 = min(dst_x2, canvas_w)
-            dst_y2 = min(dst_y2, canvas_h)
-            dst_w = max(1, dst_x2 - dst_x1)
-            dst_h = max(1, dst_y2 - dst_y1)
+        tile_map = tile_map.squeeze().float()
+        if tile_map.dim() == 0:
+            continue
+        if tile_map.device != device:
+            tile_map = tile_map.to(device, non_blocking=True)
 
-            # Resize tile density map to the canvas region
-            resized = torch.nn.functional.interpolate(
-                tile_map.unsqueeze(0).unsqueeze(0),
-                size=(dst_h, dst_w),
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze()  # [dst_h, dst_w]
+        dst_x1 = int(round(task.source_x / fw * canvas_w))
+        dst_y1 = int(round(task.source_y / fh * canvas_h))
+        dst_x2 = min(int(round((task.source_x + task.source_width)  / fw * canvas_w)), canvas_w)
+        dst_y2 = min(int(round((task.source_y + task.source_height) / fh * canvas_h)), canvas_h)
+        dst_w  = max(1, dst_x2 - dst_x1)
+        dst_h  = max(1, dst_y2 - dst_y1)
 
-            canvas[dst_y1:dst_y1 + dst_h, dst_x1:dst_x1 + dst_w] += resized
+        resized = F.interpolate(
+            tile_map.unsqueeze(0).unsqueeze(0),
+            size=(dst_h, dst_w),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze()
+        canvas[dst_y1:dst_y1 + dst_h, dst_x1:dst_x1 + dst_w].add_(resized)
 
-        # Normalise to [0, 255] uint8 for transport
-        c_max = float(canvas.max().item())
-        if c_max > 0:
-            canvas = canvas / c_max
-        arr = (canvas.numpy() * 255).astype("uint8")
-        b64 = base64.b64encode(arr.tobytes()).decode("ascii")
-        return b64, canvas_w, canvas_h
+    global_max = float(canvas.max().item())   # single scalar — negligible sync cost
+    if global_max <= 0:
+        return []
+
+    # GPU-side non-maximum suppression.
+    # max_pool2d marks each cell with the maximum in its neighbourhood;
+    # cells equal to the pool result are local maxima by definition.
+    padding = _NMS_KERNEL // 2
+    pooled  = F.max_pool2d(
+        canvas.unsqueeze(0).unsqueeze(0),
+        kernel_size=_NMS_KERNEL, stride=1, padding=padding,
+    ).squeeze()
+    peaks_mask   = (canvas >= pooled - 1e-8) & (canvas > _DENSITY_THRESHOLD)
+    peak_indices = peaks_mask.nonzero(as_tuple=False)   # [N, 2]: (row, col) on GPU
+    if peak_indices.numel() == 0:
+        return []
+
+    peak_vals  = canvas[peak_indices[:, 0], peak_indices[:, 1]]
+
+    # Sort by weight descending, entirely on GPU.
+    sorted_idx   = peak_vals.argsort(descending=True)
+    peak_indices = peak_indices[sorted_idx]
+    peak_vals    = peak_vals[sorted_idx]
+
+    # Single host transfer: normalised x/y coords and relative weights.
+    xs = ((peak_indices[:, 1].float() + 0.5) / canvas_w).tolist()
+    ys = ((peak_indices[:, 0].float() + 0.5) / canvas_h).tolist()
+    ws = (peak_vals / global_max).tolist()
+
+    return [{"x": x, "y": y, "w": w} for x, y, w in zip(xs, ys, ws)]
+
+
