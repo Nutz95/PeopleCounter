@@ -14,3 +14,8 @@ class InputSpec:
     target_height: int
     mode: PreprocessMode
     overlap: float = 0.0
+    # Optional: size of each tile crop in the source frame before resize to
+    # target_width × target_height.  0 means equal to target (no pre-resize).
+    # Used for density tiles: e.g. source 1920×1080 → model input 640×720.
+    source_tile_width: int = 0
+    source_tile_height: int = 0

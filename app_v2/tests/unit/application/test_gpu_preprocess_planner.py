@@ -46,3 +46,33 @@ def test_gpu_preprocess_planner_tiling_plan_has_multiple_tasks() -> None:
     assert plan.metadata["cols"] >= 1
     assert plan.tasks[0].metadata["row"] == 0
     assert plan.tasks[0].metadata["col"] == 0
+
+
+def test_gpu_preprocess_planner_density_2x2_tiles_1920x1088() -> None:
+    """2×2 tiling: 1920×1088 over 4K (3840×2160) → exactly 4 tiles, no rescaling."""
+    planner = GpuPreprocessPlanner()
+    spec = InputSpec(
+        model_name="density",
+        target_width=1920,
+        target_height=1088,
+        mode=PreprocessMode.TILES,
+        overlap=0.0,
+    )
+
+    plan = planner.build_plan(frame_width=3840, frame_height=2160, spec=spec)
+
+    assert plan.metadata["cols"] == 2
+    assert plan.metadata["rows"] == 2
+    assert plan.metadata["task_count"] == 4
+    assert len(plan.tasks) == 4
+    # All tiles must pass the 1920×1088 size at TARGET — no rescaling
+    for task in plan.tasks:
+        assert task.target_width == 1920
+        assert task.target_height == 1088
+        assert task.source_width == 1920
+        assert task.source_height == 1088
+    # Tile origins
+    assert plan.tasks[0].source_x == 0    and plan.tasks[0].source_y == 0
+    assert plan.tasks[1].source_x == 1920 and plan.tasks[1].source_y == 0
+    assert plan.tasks[2].source_x == 0    and plan.tasks[2].source_y > 0
+    assert plan.tasks[3].source_x == 1920 and plan.tasks[3].source_y > 0

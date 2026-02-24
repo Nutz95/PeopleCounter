@@ -21,6 +21,13 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "preprocess_serial_overhead_ms": 2.0,
         "inference_model_yolo_global_ms": 14.0,
         "inference_model_yolo_tiles_ms": 18.0,
+        # density runs on an independent async stream — does not block YOLO pipeline
+        # measured: ~92ms for both configs (FP16) — proportional to total pixels processed
+        # 2×2 @ 1920×1088 (default): 92ms, no rescaling, better accuracy
+        # 6×3 @  640×720 (legacy) : 92ms, same latency
+        # for < 30ms: FP8 quantization required (provide --calib-dir UCF-QNRF)
+        "inference_model_density_ms": 100.0,
+        "preprocess_model_density_ms": 8.0,
         "inference_model_sum_ms": 26.0,
         "inference_model_max_ms": 18.0,
         "fusion_wait_ms": 20.0,
@@ -49,6 +56,10 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "preprocess_sync_ms": 13.0,
         "inference_model_yolo_global_ms": 15.0,
         "inference_model_yolo_tiles_ms": 20.0,
+        # density runs on an independent async stream — does not block YOLO pipeline
+        # measured: ~92ms for 18-tile FP16 batch on RTX 5060 Ti
+        "inference_model_density_ms": 100.0,
+        "preprocess_model_density_ms": 8.0,
         "inference_model_sum_ms": 30.0,
         "inference_model_max_ms": 20.0,
         # fusion_wait ≈ tiles_inference_ms − global_inference_ms in ASYNC_OVERLAY.
@@ -73,6 +84,9 @@ DEFAULT_STAGE_BUDGET_MS_BY_STRATEGY: dict[str, dict[str, float]] = {
         "preprocess_serial_overhead_ms": 2.0,
         "inference_model_yolo_global_ms": 12.0,
         "inference_model_yolo_tiles_ms": 16.0,
+        # density runs on an independent async stream — does not block YOLO pipeline
+        "inference_model_density_ms": 100.0,
+        "preprocess_model_density_ms": 8.0,
         "inference_model_sum_ms": 24.0,
         "inference_model_max_ms": 16.0,
         "fusion_wait_ms": 5.0,
@@ -261,6 +275,7 @@ def render_perf_budget_html(
 
     inf_global = float(report.checked.get("inference_model_yolo_global_ms", (0.0, 0.0))[0])
     inf_tiles = float(report.checked.get("inference_model_yolo_tiles_ms", (0.0, 0.0))[0])
+    inf_density = float(report.checked.get("inference_model_density_ms", (0.0, 0.0))[0])
     e2e_ms = float(report.checked.get("end_to_end_ms", (0.0, 0.0))[0])
     nvdec_ms = float(report.checked.get("nvdec_ms", (0.0, 0.0))[0])
     fusion_wait_ms = float(report.checked.get("fusion_wait_ms", (0.0, 0.0))[0])
@@ -378,10 +393,11 @@ def render_perf_budget_html(
         <div class="label">Note: <b>preprocess_sync_ms</b> = temps réel d'exécution GPU du preprocess tiles (stream.synchronize() bloque le CPU). Pour le réduire: supprimer le host-sync et utiliser des CUDA events (inference_stream.wait_event) pour ordonnancer sans bloquer le CPU.</div>
     </div>
     <div class="group">
-        <div class="label">Comparaison inférence YOLO</div>
+        <div class="label">Comparaison inférence YOLO + Density</div>
         <ul>
             <li><b>inference_model_yolo_global_ms</b> = {inf_global:.3f} ms</li>
             <li><b>inference_model_yolo_tiles_ms</b> = {inf_tiles:.3f} ms</li>
+            <li><b>inference_model_density_ms</b> = {inf_density:.3f} ms (stream indépendant, ne bloque pas YOLO)</li>
         </ul>
     </div>
     <div class="group">

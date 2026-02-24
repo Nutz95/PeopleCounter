@@ -260,6 +260,7 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
                     telemetry_frame_id = current_frame
             if item.get("model") in {"yolo_global", "yolo_tiles"}:
                 yolo_payloads.append(item)
+            if item.get("model") in {"yolo_global", "yolo_tiles", "density"}:
                 infer_ms = item.get("inference_ms")
                 model_name = item.get("model")
                 if isinstance(model_name, str) and isinstance(infer_ms, (int, float)):
@@ -295,6 +296,7 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
 
     telemetry_snapshot["inference_model_yolo_global_ms"] = float(latest_frame_inference.get("yolo_global", 0.0))
     telemetry_snapshot["inference_model_yolo_tiles_ms"] = float(latest_frame_inference.get("yolo_tiles", 0.0))
+    telemetry_snapshot["inference_model_density_ms"] = float(latest_frame_inference.get("density", 0.0))
     telemetry_snapshot["inference_model_sum_ms"] = float(
         telemetry_snapshot["inference_model_yolo_global_ms"] + telemetry_snapshot["inference_model_yolo_tiles_ms"]
     )
@@ -312,6 +314,7 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
         "inference_model_max_ms",
         "inference_model_yolo_global_ms",
         "inference_model_yolo_tiles_ms",
+        "inference_model_density_ms",
         "inference_prepare_batch_yolo_global_ms",
         "inference_prepare_batch_yolo_tiles_ms",
         "inference_enqueue_yolo_global_ms",
@@ -320,6 +323,10 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
         "inference_stream_sync_yolo_tiles_ms",
         "inference_decode_yolo_global_ms",
         "inference_decode_yolo_tiles_ms",
+        "inference_prepare_batch_density_ms",
+        "inference_enqueue_density_ms",
+        "inference_stream_sync_density_ms",
+        "inference_decode_density_ms",
         "end_to_end_ms",
     ]
     history: dict[str, list[float]] = defaultdict(list)
@@ -330,6 +337,7 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
         model_values = inference_by_frame.get(frame_id, {})
         sample["inference_model_yolo_global_ms"] = float(model_values.get("yolo_global", 0.0))
         sample["inference_model_yolo_tiles_ms"] = float(model_values.get("yolo_tiles", 0.0))
+        sample["inference_model_density_ms"] = float(model_values.get("density", 0.0))
         sample["inference_model_sum_ms"] = float(sample["inference_model_yolo_global_ms"]) + float(sample["inference_model_yolo_tiles_ms"])
         sample["inference_model_max_ms"] = max(float(sample["inference_model_yolo_global_ms"]), float(sample["inference_model_yolo_tiles_ms"]))
         
@@ -344,6 +352,11 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
             sample["inference_enqueue_yolo_tiles_ms"] = breakdown["yolo_tiles"].get("enqueue_ms", 0.0)
             sample["inference_stream_sync_yolo_tiles_ms"] = breakdown["yolo_tiles"].get("stream_sync_ms", 0.0)
             sample["inference_decode_yolo_tiles_ms"] = breakdown["yolo_tiles"].get("decode_ms", 0.0)
+        if "density" in breakdown:
+            sample["inference_prepare_batch_density_ms"] = breakdown["density"].get("prepare_batch_ms", 0.0)
+            sample["inference_enqueue_density_ms"] = breakdown["density"].get("enqueue_ms", 0.0)
+            sample["inference_stream_sync_density_ms"] = breakdown["density"].get("stream_sync_ms", 0.0)
+            sample["inference_decode_density_ms"] = breakdown["density"].get("decode_ms", 0.0)
         
         for key in history_metrics:
             value = sample.get(key)
@@ -446,6 +459,28 @@ def test_e2e_visual_detection_snapshot() -> None:
 
     project_root = Path(__file__).parents[4]  # /app inside Docker
 
+    # ── density: optionally include if engine exists ──────────────────────────
+    density_model_cfg = real_cfg.get("models", {}).get("density", {})
+    density_engine_path = density_model_cfg.get("engine", "")
+    density_engine_full = (
+        project_root / density_engine_path
+        if density_engine_path and not os.path.isabs(density_engine_path)
+        else Path(density_engine_path) if density_engine_path else None
+    )
+    density_enabled = (
+        bool(density_model_cfg.get("enabled", False))
+        and density_engine_full is not None
+        and density_engine_full.exists()
+    )
+    density_models_extra = {"density": density_model_cfg} if density_enabled else {}
+    density_preprocess_extra = (
+        {"density": real_cfg.get("preprocess", {}).get(
+            "density", {"target_width": 1920, "target_height": 1088, "mode": "global", "overlap": 0.0}
+        )}
+        if density_enabled else {}
+    )
+    density_branch_extra = {"density_preprocess": True} if density_enabled else {}
+
     if use_global:
         engine_path = global_model_cfg.get("engine", "")
         engine_full = project_root / engine_path if not os.path.isabs(engine_path) else Path(engine_path)
@@ -453,13 +488,14 @@ def test_e2e_visual_detection_snapshot() -> None:
             pytest.skip(f"Engine not found: {engine_full}")
         run_cfg: dict[str, Any] = {
             **real_cfg,
-            "models": {"yolo_global": global_model_cfg},
-            "preprocess_branches": {"yolo_global_preprocess": True},
+            "models": {"yolo_global": global_model_cfg, **density_models_extra},
+            "preprocess_branches": {"yolo_global_preprocess": True, **density_branch_extra},
             "preprocess": {
                 "yolo_global": real_cfg.get("preprocess", {}).get(
                     "yolo_global",
                     {"target_width": 640, "target_height": 640, "mode": "global", "overlap": 0.0},
-                )
+                ),
+                **density_preprocess_extra,
             },
             "yolo_tiles_parallel": {"enabled": False},
         }
@@ -471,13 +507,14 @@ def test_e2e_visual_detection_snapshot() -> None:
             pytest.skip(f"Engine not found: {engine_full}")
         run_cfg = {
             **real_cfg,
-            "models": {"yolo_tiles": tiles_model_cfg},
-            "preprocess_branches": {"yolo_tiles_preprocess": True},
+            "models": {"yolo_tiles": tiles_model_cfg, **density_models_extra},
+            "preprocess_branches": {"yolo_tiles_preprocess": True, **density_branch_extra},
             "preprocess": {
                 "yolo_tiles": real_cfg.get("preprocess", {}).get(
                     "yolo_tiles",
                     {"target_width": 640, "target_height": 640, "mode": "tiles", "overlap": 0.2},
-                )
+                ),
+                **density_preprocess_extra,
             },
             "yolo_tiles_parallel": {"enabled": False},
         }
@@ -530,6 +567,7 @@ def test_e2e_visual_detection_snapshot() -> None:
         output = preprocessor.build_output(frame_id=1, frame=frame)
 
         # --- All GPU work first ---
+        last_tile_plan: Any = None
         for model in models:
             processed = output.flatten_inputs(model.name)
             tile_plan = output.plans.get(model.name)
@@ -539,9 +577,29 @@ def test_e2e_visual_detection_snapshot() -> None:
                 tile_plan=tile_plan,
             )
             n_det = len(pred.get("detections", []))
-            print(f"  [e2e-snapshot] {model.name}: {n_det} detections")
+            density_count = pred.get("density_count")
+            if density_count is not None:
+                print(f"  [e2e-snapshot] {model.name}: density_count={density_count:.1f}  "
+                      f"infer={pred.get('inference_ms',0):.1f}ms")
+            else:
+                print(f"  [e2e-snapshot] {model.name}: {n_det} detections  "
+                      f"infer={pred.get('inference_ms',0):.1f}ms  "
+                      f"decode={pred.get('decode_ms',0):.1f}ms")
             results.append(pred)
-        last_tile_plan = tile_plan  # save for visualization
+            # For density model: call DensityDecoder to build the heatmap for snapshot
+            if model.name == "density":
+                try:
+                    from app_v2.infrastructure.density_decoder import DensityDecoder as _DD
+                    dec_result = _DD().process(frame_id=1, outputs=pred)
+                    results[-1] = {**pred, **dec_result}  # merge heatmap_raw etc.
+                    print(f"  [e2e-snapshot] density heatmap: "
+                          f"{dec_result.get('heatmap_w')}x{dec_result.get('heatmap_h')} "
+                          f"count={dec_result.get('density_count', 0):.1f}")
+                except Exception as exc_dec:
+                    print(f"  [e2e-snapshot] density decoder skipped: {exc_dec}")
+            # Save the YOLO tile plan for tile-boundary visualization
+            if model.name.startswith("yolo") and tile_plan is not None:
+                last_tile_plan = tile_plan
 
         # --- GPU→CPU copy only after ALL inference is done ---
         try:
@@ -611,6 +669,43 @@ def test_e2e_visual_detection_snapshot() -> None:
                     except Exception as exc_mask:
                         print(f"  [e2e-snapshot] mask overlay skipped: {exc_mask}")
 
+            # --- Density heatmap overlay (orange, plasma-like) ---
+            for r in results:
+                heat_b64 = r.get("heatmap_raw")
+                hw = r.get("heatmap_w", 0)
+                hh = r.get("heatmap_h", 0)
+                if isinstance(heat_b64, str) and hw > 0 and hh > 0:
+                    try:
+                        import numpy as np_
+                        raw_h = np_.frombuffer(base64.b64decode(heat_b64), dtype=np_.uint8).reshape(hh, hw)
+                        # Plasma colormap: purple→blue→orange→yellow (false-color density)
+                        try:
+                            from matplotlib import colormaps as _cm
+                            plasma = _cm.get_cmap("plasma")
+                            colored = (plasma(raw_h.astype(np_.float32) / 255.0)[:, :, :3] * 255).astype(np_.uint8)
+                            # Alpha = 60% where density > 0, transparent where background
+                            alpha = np_.where(raw_h > 5, 153, 0).astype(np_.uint8)  # 153/255 ≈ 60%
+                            rgba = np_.dstack([colored, alpha])
+                            heat_ov_small = Image.fromarray(rgba, mode="RGBA")
+                            heat_ov = heat_ov_small.resize((frame_w, frame_h), Image.BILINEAR)
+                        except ImportError:
+                            # Fallback: orange monochrome overlay
+                            heat_img = Image.fromarray(raw_h, mode="L").resize(
+                                (frame_w, frame_h), Image.BILINEAR
+                            )
+                            heat_ov = Image.new("RGBA", (frame_w, frame_h), (0, 0, 0, 0))
+                            orange = Image.new("RGBA", (frame_w, frame_h), (255, 140, 0, 153))
+                            heat_ov.paste(orange, mask=heat_img)
+                        img = Image.alpha_composite(img, heat_ov)
+                        density_count = r.get("density_count", 0)
+                        draw_h = ImageDraw.Draw(img)
+                        # White bg rectangle for readability
+                        txt = f"Density: {density_count:.1f} people"
+                        draw_h.rectangle([8, 8, 8 + len(txt) * 9, 30], fill=(0, 0, 0, 180))
+                        draw_h.text((10, 10), txt, fill=(255, 230, 50, 255))
+                    except Exception as exc_heat:
+                        print(f"  [e2e-snapshot] density overlay skipped: {exc_heat}")
+
             # --- Tile boundaries (yellow) ---
             if active_mode == "tiles" and last_tile_plan is not None:
                 draw_t = ImageDraw.Draw(img)
@@ -658,11 +753,18 @@ def test_e2e_visual_detection_snapshot() -> None:
                         for det in r.get("detections", [])
                     ],
                     "detection_count": len(r.get("detections", [])),
+                    "density_count": r.get("density_count"),
                     "seg_mask_present": bool(r.get("seg_mask_raw")),
                     "seg_mask_w": r.get("seg_mask_w", 0),
                     "seg_mask_h": r.get("seg_mask_h", 0),
+                    "heatmap_present": bool(r.get("heatmap_raw")),
+                    "heatmap_w": r.get("heatmap_w", 0),
+                    "heatmap_h": r.get("heatmap_h", 0),
                     "inference_ms": r.get("inference_ms"),
                     "prepare_batch_ms": r.get("prepare_batch_ms"),
+                    "enqueue_ms": r.get("enqueue_ms"),
+                    "stream_sync_ms": r.get("stream_sync_ms"),
+                    "decode_ms": r.get("decode_ms"),
                 }
             json_path = artifacts_dir / "e2e_visual_snapshot.json"
             json_path.write_text(json.dumps(json_report, indent=2, default=str))

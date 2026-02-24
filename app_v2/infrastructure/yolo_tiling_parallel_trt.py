@@ -152,10 +152,11 @@ class YoloTilingParallelTRT(InferenceModel):
                     "preprocess_events": list(preprocess_events or []),
                 }
             )
-            decode_start_ns = time.perf_counter_ns()
+            gpu_done_ns = time.perf_counter_ns()   # ← GPU inference ends here
+            decode_start_ns = gpu_done_ns
             decoded = self._decoder.process(frame_id, raw_outputs, tile_plan=tile_plan)
             decode_ms = (time.perf_counter_ns() - decode_start_ns) / 1_000_000.0
-            group_ms = (time.perf_counter_ns() - group_start_ns) / 1_000_000.0
+            group_ms = (gpu_done_ns - group_start_ns) / 1_000_000.0  # CPU decode excluded
             
             return {
                 "detections": decoded.get("detections", []),

@@ -29,6 +29,10 @@ cd "$BASE_DIR"
 IMAGE_NAME="${IMAGE_NAME:-people-counter:gpu-final-nvdec}"
 SKIP_FP16="${SKIP_FP16:-0}"
 SKIP_FP8="${SKIP_FP8:-0}"
+SKIP_DENSITY="${SKIP_DENSITY:-0}"
+# DENSITY_CALIB_DIR: path to UCF-QNRF Train/img folder for FP8 calibration
+# Leave unset to build FP16 only (FP8 requires UCF-QNRF_ECCV18.zip dataset)
+DENSITY_CALIB_DIR="${DENSITY_CALIB_DIR:-}"
 SEG_MODELS="${SEG_MODELS:-yolo26n-seg yolo26s-seg yolo26m-seg yolo26l-seg yolo26x-seg}"
 
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
@@ -101,8 +105,45 @@ else
 fi
 
 echo ""
-echo "✅ All models prepared inside $IMAGE_NAME."
+echo "✅ All YOLO models prepared inside $IMAGE_NAME."
+
+# ---------------------------------------------------------------------------
+# Step 4 — DM-Count QNRF density model
+# ---------------------------------------------------------------------------
+if [[ "$SKIP_DENSITY" == "1" ]]; then
+    echo ""
+    echo "Step 4/4 — Density model skipped (SKIP_DENSITY=1)"
+else
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Step 4/4 — DM-Count QNRF density model (FP16 default)"
+    if [[ -n "$DENSITY_CALIB_DIR" ]]; then
+        echo "           FP8 calibration: $DENSITY_CALIB_DIR"
+    else
+        echo "           FP8 skipped — set DENSITY_CALIB_DIR to enable"
+        echo "           (download UCF-QNRF_ECCV18.zip from crcv.ucf.edu/data/ucf-qnrf/)"
+    fi
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    DENSITY_ARGS="--skip-fp8"
+    [[ -n "$DENSITY_CALIB_DIR" ]] && DENSITY_ARGS="--calib-dir $DENSITY_CALIB_DIR"
+
+    $DOCKER_RUN bash -c "set -e
+        # 640×720 reference engine (18 tiles, ~92 ms, high accuracy)
+        if [ -f 'models/tensorrt/dm_count_qnrf.engine' ]; then
+            echo '     [skip] density 640×720 engine already exists'
+        else
+            python3 prepare_density_models.py $DENSITY_ARGS --tile-size 640x720
+        fi
+        # 1920×1088 fast engine (4 tiles, 2×2 over 4K, to benchmark)
+        if [ -f 'models/tensorrt/dm_count_qnrf_1920x1088.engine' ]; then
+            echo '     [skip] density 1920×1088 engine already exists'
+        else
+            python3 prepare_density_models.py $DENSITY_ARGS --tile-size 1920x1088
+        fi"
+fi
+
 echo ""
 echo "Engines available in models/tensorrt/:"
 docker run --rm --gpus all -v "$PWD:/app" -w /app "$IMAGE_NAME" \
-    bash -c "ls -lh models/tensorrt/yolo26*-seg*.engine 2>/dev/null || echo '  (none found)'"
+    bash -c "ls -lh models/tensorrt/*.engine 2>/dev/null || echo '  (none found)'"

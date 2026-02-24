@@ -81,12 +81,16 @@ class InputSpecRegistry:
             raise ValueError("target dimensions must be positive integers")
         overlap = float(spec_cfg["overlap"])
         mode = self._parse_mode(spec_cfg["mode"])
+        source_tile_width  = int(spec_cfg.get("source_tile_width",  0))
+        source_tile_height = int(spec_cfg.get("source_tile_height", 0))
         return InputSpec(
             model_name=model_name,
             target_width=target_width,
             target_height=target_height,
             mode=mode,
             overlap=overlap,
+            source_tile_width=source_tile_width,
+            source_tile_height=source_tile_height,
         )
 
     @staticmethod
