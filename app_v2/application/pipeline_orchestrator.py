@@ -17,6 +17,7 @@ from app_v2.core.fusion_strategy import FusionStrategy, SimpleFusionStrategy
 from app_v2.core.frame_source import FrameSource
 from app_v2.core.result_publisher import ResultPublisher
 from app_v2.infrastructure.cuda_preprocessor import CudaPreprocessor
+from app_v2.infrastructure.density_decoder import DensityDecoder
 from app_v2.infrastructure.flask_stream_server import FlaskStreamServer
 from app_v2.infrastructure.nvdec_packet_forwarder import NvdecPacketForwarder
 from app_v2.infrastructure.stream_pool import SimpleStreamPool
@@ -55,6 +56,7 @@ class PipelineOrchestrator:
         self.performance_tracker = PerformanceTracker()
         self.max_frames = max_frames
         self._models = self.model_builder.build_models()
+        self._density_decoder = DensityDecoder()
         self._frame_counter = 0
         self._running = False
         # Dedicated CUDA stream for NV12→RGB conversion + resize (separate from
@@ -160,6 +162,9 @@ class PipelineOrchestrator:
                         )
                         if isinstance(prediction, dict):
                             prediction["_inference_done_ns"] = int(time.time_ns())
+                            # DM-Count density: convert raw GPU tiles → base64 heatmap
+                            if model.name == "density":
+                                prediction = self._density_decoder.process(frame_id, prediction)
                         self.processing_graph.register(model.name, {"frame_id": frame_id})
                         self.aggregator.collect(frame_id, prediction)
 

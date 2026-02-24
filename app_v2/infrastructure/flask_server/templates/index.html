@@ -33,6 +33,8 @@
         <canvas id="mask-canvas" class="mask-overlay"></canvas>
         <!-- Segmentation overlay — union of per-person prototype masks (YOLO-seg) -->
         <canvas id="seg-canvas"  class="mask-overlay" style="opacity:0.6;"></canvas>
+        <!-- Density heatmap overlay — colourised DM-Count density map -->
+        <canvas id="heat-canvas" class="mask-overlay" style="opacity:0.65;"></canvas>
 
         <!-- Top-left: latency chip -->
         <div class="fps-status" id="latency-chip">— ms</div>
@@ -89,7 +91,7 @@
         </div>
 
         <!-- ── Preview-only (always visible) ─────────────────────────── -->
-        <div class="control-section">
+        <div class="control-section" id="preview-only-row">
           <label class="toggle">
             <input type="checkbox" id="preview-only-toggle">
             Prévisualisation seule (désactiver tous les overlays)
@@ -214,6 +216,8 @@
     const maskCtx       = maskCanvas.getContext('2d');
     const segCanvas     = document.getElementById('seg-canvas');
     const segCtx        = segCanvas.getContext('2d');
+    const heatCanvas    = document.getElementById('heat-canvas');
+    const heatCtx       = heatCanvas.getContext('2d');
     const latChart      = document.getElementById('latency-chart');
     const latCtx        = latChart.getContext('2d');
 
@@ -256,15 +260,22 @@
       document.getElementById('overlay-seg').style.display     = overlays.includes('seg')     ? '' : 'none';
       document.getElementById('overlay-heatmap').style.display = overlays.includes('heatmap') ? '' : 'none';
 
-      // Reset checkbox defaults based on available overlays
-      if (!overlays.includes('bbox')) {
-        showMask = false;
-        document.getElementById('mask-toggle').checked = false;
-      }
-      if (!overlays.includes('heatmap')) {
-        showHeatmap = false;
-        document.getElementById('heatmap-toggle').checked = false;
-      }
+      // Enable overlays by default when entering a mode that supports them;
+      // disable them when leaving (keeps state clean on mode switch).
+      showMask = overlays.includes('bbox');
+      document.getElementById('mask-toggle').checked = showMask;
+
+      showSeg = overlays.includes('seg');
+      document.getElementById('seg-toggle').checked = showSeg;
+      if (!showSeg) segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
+
+      showHeatmap = overlays.includes('heatmap');
+      document.getElementById('heatmap-toggle').checked = showHeatmap;
+      if (!showHeatmap) heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
+
+      // "Prévisualisation seule" master toggle — only meaningful when there are overlays
+      const $previewRow = document.getElementById('preview-only-row');
+      if ($previewRow) $previewRow.style.display = overlays.length > 0 ? '' : 'none';
     }
 
     function _renderModePills(availableModes, activeMode) {
@@ -385,7 +396,8 @@
       for (const p of payload) {
         if (!p) continue;
         if (Array.isArray(p.detections)) count = Math.max(count, p.detections.length);
-        if (typeof p.count === 'number')  count = Math.max(count, p.count);
+        if (typeof p.count === 'number')         count = Math.max(count, p.count);
+        if (typeof p.density_count === 'number') count = Math.max(count, Math.round(p.density_count));
       }
 
       // ── Metrics from telemetry snapshot ──────────────────────────
@@ -450,6 +462,8 @@
         else maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
         if (showSeg)  drawSegMask(payload);
         else segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
+        if (showHeatmap) drawHeatmap(payload);
+        else heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
       }
 
       // ── History & chart ──────────────────────────────────────────
@@ -467,39 +481,48 @@
       $connStatus.style.color = '#f59e0b';
     };
 
-    // ── Mask overlay: draw detection bboxes ───────────────────────
-    function drawMask(payload) {
+    // ── Shared layout helper ──────────────────────────────────────
+    // Returns the letterbox display geometry for the current video canvas state.
+    // All overlay renderers (bbox, seg, heatmap) use the same layout so overlays
+    // are always aligned to the actual video content area.
+    // Returns null if the canvas is not yet laid out or source dims are unknown.
+    function _computeLayout() {
       const wrapper = maskCanvas.parentElement;
-      maskCanvas.width  = wrapper.clientWidth;
-      maskCanvas.height = wrapper.clientHeight;
+      const W = wrapper.clientWidth;
+      const H = wrapper.clientHeight;
+      if (W === 0 || H === 0) return null;
 
-      const W = maskCanvas.width;
-      const H = maskCanvas.height;
-      // Canvas not laid out yet (e.g. on startup before first layout pass).
-      if (W === 0 || H === 0) return;
-
-      maskCtx.clearRect(0, 0, W, H);
-
-      // ── Source video dimensions ────────────────────────────────────
       const canvasEl  = document.getElementById('video-canvas');
       const videoEl   = document.getElementById('video-feed');
       const useCanvas = canvasEl.style.display !== 'none';
-      const fallbackW = useCanvas ? canvasEl.width : (videoEl.naturalWidth  || 0);
+      const fallbackW = useCanvas ? canvasEl.width  : (videoEl.naturalWidth  || 0);
       const fallbackH = useCanvas ? canvasEl.height : (videoEl.naturalHeight || 0);
       const srcW = _videoSrcW || fallbackW;
       const srcH = _videoSrcH || fallbackH;
-      if (srcW <= 0 || srcH <= 0) return;
+      if (srcW <= 0 || srcH <= 0) return null;
 
-      // ── Display letterbox (CSS object-fit:contain) ─────────────────
-      // The video is fitted inside the wrapper with black bars on the shorter axis.
-      // Bboxes arrive as [0,1] fractions of the ORIGINAL frame — the server already
-      // un-letterboxed the preprocessing padding (global model) and remapped tile-
-      // local detections to global frame space, so no preprocessing math is needed here.
       const dispScale = Math.min(W / srcW, H / srcH);
-      const dispW = srcW * dispScale;      // displayed-content width  (px)
-      const dispH = srcH * dispScale;      // displayed-content height (px)
-      const dispX = (W - dispW) / 2;      // left black-bar offset    (px)
-      const dispY = (H - dispH) / 2;      // top  black-bar offset    (px)
+      const dispW = srcW * dispScale;
+      const dispH = srcH * dispScale;
+      const dispX = (W - dispW) / 2;
+      const dispY = (H - dispH) / 2;
+      return { W, H, srcW, srcH, dispW, dispH, dispX, dispY };
+    }
+
+    // ── Mask overlay: draw detection bboxes ───────────────────────
+    function drawMask(payload) {
+      const layout = _computeLayout();
+      if (!layout) return;
+      const { W, H, dispW, dispH, dispX, dispY } = layout;
+      maskCanvas.width  = W;
+      maskCanvas.height = H;
+      maskCtx.clearRect(0, 0, W, H);
+      maskCanvas.width  = W;
+      maskCanvas.height = H;
+      maskCtx.clearRect(0, 0, W, H);
+      maskCanvas.width  = W;
+      maskCanvas.height = H;
+      maskCtx.clearRect(0, 0, W, H);
 
       for (const p of payload) {
         if (!p || !Array.isArray(p.detections)) continue;
@@ -593,6 +616,53 @@
           mpadX, mpadY, mCntW, mCntH,   // source region in proto mask
           dispX, dispY, dispW, dispH,    // dest: video display area
         );
+      }
+    }
+
+    // ── Density heatmap overlay ────────────────────────────────────
+    // DensityDecoder sends a raw uint8 grayscale buffer (heatmap_raw) scaled
+    // to quarter-resolution (heatmap_w × heatmap_h).  We decode it into an
+    // ImageData and colourize each pixel with the jet colour map so dense
+    // regions appear red and sparse regions appear blue.
+    const _heatOffscreen = document.createElement('canvas');
+    function drawHeatmap(payload) {
+      const layout = _computeLayout();
+      if (!layout) return;
+      const { W, H, dispX, dispY, dispW, dispH } = layout;
+      heatCanvas.width  = W;
+      heatCanvas.height = H;
+      heatCtx.clearRect(0, 0, W, H);
+
+      for (const p of payload) {
+        if (!p || !p.heatmap_raw || !p.heatmap_w || !p.heatmap_h) continue;
+        const hw = p.heatmap_w | 0;
+        const hh = p.heatmap_h | 0;
+        if (hw <= 0 || hh <= 0) continue;
+
+        if (_heatOffscreen.width !== hw || _heatOffscreen.height !== hh) {
+          _heatOffscreen.width  = hw;
+          _heatOffscreen.height = hh;
+        }
+        const offCtx  = _heatOffscreen.getContext('2d');
+        const imgData = offCtx.createImageData(hw, hh);
+        const int32   = new Int32Array(imgData.data.buffer);
+        const bStr    = atob(p.heatmap_raw);
+        const nPx     = hw * hh;
+        if (bStr.length < nPx) continue;
+
+        // Jet colourmap: value 0→blue, 128→green, 255→red
+        for (let i = 0; i < nPx; i++) {
+          const v = bStr.charCodeAt(i);        // 0–255 normalised intensity
+          const r = Math.min(255, Math.max(0, Math.round(255 * (1.5 - Math.abs(v / 255 * 4 - 3)))));
+          const g = Math.min(255, Math.max(0, Math.round(255 * (1.5 - Math.abs(v / 255 * 4 - 2)))));
+          const b = Math.min(255, Math.max(0, Math.round(255 * (1.5 - Math.abs(v / 255 * 4 - 1)))));
+          const a = v > 10 ? 200 : 0;  // transparent where density is near-zero
+          // Little-endian ABGR packed as Int32
+          int32[i] = (a << 24) | (b << 16) | (g << 8) | r;
+        }
+        offCtx.putImageData(imgData, 0, 0);
+        heatCtx.drawImage(_heatOffscreen, 0, 0, hw, hh, dispX, dispY, dispW, dispH);
+        break;  // only one density payload expected
       }
     }
 

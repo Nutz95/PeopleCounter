@@ -1,9 +1,4 @@
-"""Backward-compatible shim — imports from the flask_server package.
-
-All logic has been moved to:
-  app_v2/infrastructure/flask_server/mode_registry.py  — mode constants
-  app_v2/infrastructure/flask_server/server.py         — FlaskStreamServer class
-"""
+"""flask_server package — web UI and SSE publisher."""
 from app_v2.infrastructure.flask_server.mode_registry import (
     _INFERENCE_MODES,
     _MODE_LABELS,
