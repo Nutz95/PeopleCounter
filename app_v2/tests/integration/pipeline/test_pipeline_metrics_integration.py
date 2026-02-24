@@ -103,6 +103,32 @@ def _pipeline_like_config() -> dict[str, Any]:
     }
 
 
+def _e2e_test_config() -> dict[str, Any]:
+    """Real pipeline config with at least one YOLO model force-enabled.
+
+    Integration tests that run the full PipelineOrchestrator must not depend on
+    the user's pipeline.yaml state — the user may legitimately disable all models
+    (passthrough mode).  This helper deep-copies the real config and ensures at
+    least yolo_tiles (or yolo_global as fallback) is enabled so inference runs
+    and payloads are published.
+    """
+    import copy
+    from app_v2.config import load_pipeline_config
+
+    cfg = copy.deepcopy(load_pipeline_config())
+    models: dict[str, Any] = cfg.setdefault("models", {})
+    preprocess_branches: dict[str, Any] = cfg.setdefault("preprocess_branches", {})
+
+    if "yolo_tiles" in models:
+        models["yolo_tiles"]["enabled"] = True
+        preprocess_branches["yolo_tiles_preprocess"] = True
+    elif "yolo_global" in models:
+        models["yolo_global"]["enabled"] = True
+        preprocess_branches["yolo_global_preprocess"] = True
+
+    return cfg
+
+
 def test_pipeline_metrics_snapshot_includes_stage_timings_and_pool_stats() -> None:
     try:
         import torch
@@ -239,6 +265,7 @@ def test_pipeline_e2e_real_stream_includes_inference_timings() -> None:
         max_frames=8,
         publisher=publisher,
         fusion_strategy=SimpleFusionStrategy(FusionStrategyType.STRICT_SYNC),
+        config=_e2e_test_config(),
     )
     orchestrator.run()
 
@@ -399,6 +426,7 @@ def test_pipeline_e2e_real_stream_trt_opt_in_shape_guard() -> None:
             max_frames=1,
             publisher=publisher,
             fusion_strategy=SimpleFusionStrategy(FusionStrategyType.STRICT_SYNC),
+            config=_e2e_test_config(),
         )
         orchestrator.run()
     finally:

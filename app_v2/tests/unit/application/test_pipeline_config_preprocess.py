@@ -5,6 +5,7 @@ from app_v2.config import load_pipeline_config
 
 
 def test_pipeline_preprocess_configuration_is_valid() -> None:
+    """Validates the SCHEMA of pipeline.yaml — independent of which models are enabled."""
     config = load_pipeline_config()
     streams = config.get("streams")
     assert isinstance(streams, dict) and streams, "streams block must exist in pipeline config"
@@ -42,6 +43,31 @@ def test_pipeline_preprocess_configuration_is_valid() -> None:
         assert isinstance(height, int) and height > 0, "target_height must be a positive int"
         assert isinstance(overlap, (int, float)) and overlap >= 0.0, "overlap must be non-negative"
 
+
+def test_pipeline_preprocess_registry_builds_spec_for_enabled_branch() -> None:
+    """Verifies InputSpecRegistry produces specs when a branch is enabled.
+
+    Uses a fixed inline config so the test never depends on the user's
+    pipeline.yaml state (all models may legitimately be disabled at runtime).
+    """
+    fixed_cfg: dict = {
+        "models": {
+            "yolo_global": {"enabled": True},
+        },
+        "preprocess_branches": {
+            "yolo_global_preprocess": True,
+            "yolo_tiles_preprocess": False,
+            "density_preprocess": False,
+        },
+        "preprocess": {
+            "yolo_global": {
+                "target_width": 640,
+                "target_height": 640,
+                "mode": "global",
+                "overlap": 0.0,
+            },
+        },
+    }
     registry = InputSpecRegistry()
-    registry.configure(config)
+    registry.configure(fixed_cfg)
     assert registry.all_specs(), "Registry should build specs for enabled preprocess entries"

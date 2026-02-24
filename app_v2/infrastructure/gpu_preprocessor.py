@@ -142,12 +142,16 @@ class GpuPreprocessor(Preprocessor):
             ]
             results = [f.result() for f in futures]
             t_dispatch_end = time.monotonic_ns()
-        else:
+        elif len(specs) == 1:
             t_dispatch_start = time.monotonic_ns()
             results = [
                 self._dispatch_one_spec(specs[0], frame, frame_width, frame_height, source_tensor)
             ]
             t_dispatch_end = time.monotonic_ns()
+        else:
+            # Passthrough mode: no active models — skip all preprocess work.
+            t_dispatch_start = t_dispatch_end = time.monotonic_ns()
+            results = []
 
         for model_name, plan, inputs, stream_id, stream_metrics, elapsed_ms in results:
             plans[model_name] = plan

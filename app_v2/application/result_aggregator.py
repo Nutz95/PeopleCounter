@@ -58,6 +58,17 @@ class ResultAggregator:
         if telemetry:
             self._telemetry[frame_id] = telemetry
 
+    def discard_frame(self, frame_id: int) -> None:
+        """Release all resources for a frame that had no inference payloads.
+
+        Used in passthrough mode (no active models) so the ring-buffer slot is
+        freed immediately instead of leaking until the aggregator is destroyed.
+        """
+        self._telemetry.pop(frame_id, None)
+        self._buffers.pop(frame_id, None)
+        self._collect_started_ns.pop(frame_id, None)
+        self._run_release_hooks(frame_id)
+
     def attach_release_hook(self, frame_id: int, hook: Any) -> None:
         if callable(hook):
             self._release_hooks[frame_id].append(hook)

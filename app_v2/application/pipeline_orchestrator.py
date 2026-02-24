@@ -39,9 +39,10 @@ class PipelineOrchestrator:
         max_frames: int | None = None,
         publisher: ResultPublisher | None = None,
         fusion_strategy: FusionStrategy | None = None,
+        config: dict[str, Any] | None = None,
     ) -> None:
         self.frame_source = frame_source
-        self.config = load_pipeline_config()
+        self.config = config if config is not None else load_pipeline_config()
         self.scheduler = FrameScheduler()
         self.processing_graph = ProcessingGraph()
         self.preprocessor = CudaPreprocessor()
@@ -161,6 +162,16 @@ class PipelineOrchestrator:
                             prediction["_inference_done_ns"] = int(time.time_ns())
                         self.processing_graph.register(model.name, {"frame_id": frame_id})
                         self.aggregator.collect(frame_id, prediction)
+
+                # Passthrough mode: no models active — ring slot never released via
+                # aggregator.collect() so we release it here immediately.
+                # Wait for the video GPU work first (NV12→RGB kernel) to avoid a
+                # race where the decoder overwrites the ring slot mid-conversion.
+                if not self._models:
+                    if self._video_stream is not None:
+                        self._video_stream.synchronize()
+                    self.aggregator.discard_frame(frame_id)
+
                 self.scheduler.acknowledge(frame_id)
                 self.performance_tracker.clear(frame_id)
                 self._frame_counter += 1

@@ -58,9 +58,15 @@ This is the streaming equivalent of adding more cars to a full motorway.
 ### D — 1920 × 1088, batch=1 (`dm_count_qnrf_1920x1088_b1.engine`)
 *Matches: 4K → downscale to 1920×1088, infer as single frame*
 
-| Batch | Resolution | Latency | fps-equiv | Notes |
-|------:|-----------|--------:|----------:|-------|
-| 1     | 1920×1088  | **23.78 ms** | 42.1 | 4K→1080p, single forward pass — **≤33 ms ✅** |
+| Batch | Resolution | Precision | Latency | fps-equiv | Notes |
+|------:|-----------|:----------|--------:|----------:|-------|
+| 1     | 1920×1088  | FP16      | **22.90 ms** | 43.7 | 4K→1080p, single forward pass — **≤33 ms ✅** — **current production** |
+| 1     | 1920×1088  | FP8 QDQ   | **21.79 ms** | 45.9 | Quantized with UCF-QNRF (32 imgs), 1.05× speedup — negligible gain |
+
+> **FP8 note**: Only ~5% improvement over FP16 on RTX 5060 Ti Blackwell.  
+> DM-Count (VGG16) is memory-bandwidth bound; FP8 halves weight storage but  
+> the DRAM bandwidth is already the bottleneck — the compute savings are masked.  
+> Production remains on the FP16 engine.
 
 ### E — 3840 × 2160, batch=1 (`dm_count_qnrf_3840x2160.engine`)
 *Matches: 4K native inference, simple crop (no resize — 3840×2160 is already mod-16)*
@@ -78,7 +84,7 @@ Total pixels → Latency (FP16 on RTX 5060 Ti)
 ─────────────────────────────────────────────────────
    460 800 px  (  b=1 × 640×720)   →   5.2 ms  🟢 fast
  2 088 960 px  (  b=4 × 640×720,
-               or b=1 × 1920×1088) →  21–24 ms  🟢 ≤33ms ✅
+               or b=1 × 1920×1088) →  21–23 ms  🟢 ≤33ms ✅  (FP16: 22.9 ms / FP8: 21.8 ms)
  3 110 400 px  (  b=6 × 640×720)   →  31   ms  🟡 ≤33ms ✅
  8 294 400 px  (  b=18 × 640×720,  →  92–97 ms  🔴 too slow
                or b=4 × 1920×1088,
@@ -97,7 +103,8 @@ Note: 4K native (3840×2160) runs slightly slower than
 |----------|--------|--------------|--------:|---------|---------|
 | **6×3 tiles** | 640×720 b=18 | extract 18 crops + resize | 92 ms | 100 % | ❌ rescaled |
 | **2×2 tiles** | 1920×1088 b=4 | extract 4 crops (native) | 92 ms | 100 % | ✅ native res |
-| **Resize → 1080p** | 1920×1088 b=1 | bilinear 4K→1920×1088 | ~23 ms | 100 % (lower res) | 🟡 rescaled once |
+| **Resize → 1080p** | 1920×1088 b=1 (FP16) | bilinear 4K→1920×1088 | 22.9 ms | 100 % (lower res) | 🟡 rescaled once — **production** |
+| **Resize → 1080p FP8** | 1920×1088 b=1 (FP8 QDQ) | bilinear 4K→1920×1088 | 21.8 ms | 100 % (lower res) | 🟡 rescaled once — minimal gain vs FP16 |
 | **4K native crop** | 3840×2160 b=1 | crop 4K to mod-16 (none needed) | ~92 ms | 100 % | ✅ native res |
 | **Partial 4 tiles** | 640×720 b=4 | 4 crops in ROI | ~20 ms | ~14 % | ✅ zones of interest |
 
@@ -111,22 +118,21 @@ Note: 4K native (3840×2160) runs slightly slower than
   the planner will generate the first 4 tiles (top-left 2×2 region by default).
 
 ### Global count at ~23 ms (full-frame, lower resolution)
-→ **1920×1088, batch=1**: resize 4K → 1920×1088 once, single inference.  
-  Acceptable for crowd estimation; some fine detail lost vs native resolution.
+→ **1920×1088, batch=1 FP16**: resize 4K → 1920×1088 once, single inference.  
+  Acceptable for crowd estimation; some fine detail lost vs native resolution.  
+  FP8 QDQ variant available (`dm_count_qnrf_1920x1088_b1-fp8-qdq.engine`) but provides  
+  only ~5% speedup (21.8 ms vs 22.9 ms) — not worth the accuracy trade-off.
 
 ### Best quality density map, no time constraint
 → **2×2 tiles at 1920×1088** (current default): 4 native-resolution tiles,  
   no rescaling, full spatial detail preserved. ~92 ms.
 
-### < 30 ms on full 4K frame (planned)
-→ **FP8 quantization** (TH1X FP8 Tensor Cores): expected 2–4× speedup  
-  → target ~23–46 ms for full frame.  
-  Requires UCF-QNRF Train/img dataset for calibration:  
-  ```bash
-  python3 prepare_density_models.py \
-      --tile-size 1920x1088 \
-      --calib-dir /path/to/UCF-QNRF/Train/img
-  ```
+### < 30 ms on full 4K frame — FP8 Result
+→ **FP8-QDQ engine built** (`dm_count_qnrf_1920x1088_b1-fp8-qdq.engine`)  
+  Calibrated on UCF-QNRF Train (32 images). Measured speedup: **1.05×** (21.79 ms vs 22.90 ms FP16).  
+  DM-Count is memory-BW bound on Blackwell; FP8 Tensor Cores don’t fully exploit the   
+  reduced weight footprint because DRAM bandwidth saturates first.  
+  **Conclusion**: production remains on FP16 engine.
 
 ---
 
@@ -136,10 +142,9 @@ Note: 4K native (3840×2160) runs slightly slower than
 |-------------|-----------|----------:|-----:|--------:|--------|
 | `dm_count_qnrf.engine` | 640×720 | 18 | ~41 MB | 91.4 ms (b=18) | ✅ built |
 | `dm_count_qnrf_1920x1088.engine` | 1920×1088 | 4 | ~41 MB | 92.2 ms (b=4) | ✅ built |
-| `dm_count_qnrf_1920x1088_b1.engine` | 1920×1088 | 1 | 41.2 MB | **23.78 ms** (b=1) | ✅ built |
+| `dm_count_qnrf_1920x1088_b1.engine` | 1920×1088 | 1 | 41.2 MB | **22.90 ms** (b=1) | ✅ built — **production** |
+| `dm_count_qnrf_1920x1088_b1-fp8-qdq.engine` | 1920×1088 | 1 | ~21 MB | **21.79 ms** (b=1) | ✅ built (1.05× FP16) |
 | `dm_count_qnrf_3840x2160.engine` | 3840×2160 | 1 | 41.2 MB | **96.76 ms** (b=1) | ✅ built |
-| `dm_count_qnrf-fp8-qdq.engine` | 640×720 | 18 | TBD | ~46 ms (est.) | ⏳ needs dataset |
-| `dm_count_qnrf_1920x1088-fp8-qdq.engine` | 1920×1088 | 4 | TBD | ~23 ms (est.) | ⏳ needs dataset |
 
 ---
 
@@ -168,12 +173,13 @@ docker run --rm --gpus all --shm-size=8g \
   -v "$PWD:/app" -w /app people-counter:gpu-final-nvdec \
   python3 prepare_density_models.py --skip-fp8 --tile-size 3840x2160
 
-# FP8 (once UCF-QNRF dataset is available)
+# FP8 (UCF-QNRF calib available at /home/nra/lwcc/tests/dataset/UCF-QNRF_calib/)
 docker run --rm --gpus all --shm-size=4g \
-  -v "$PWD:/app" -v /path/to/UCF-QNRF:/calib:ro \
+  -v "$PWD:/app" -v /home/nra/lwcc/tests/dataset/UCF-QNRF_calib:/calib:ro \
   -w /app people-counter:gpu-final-nvdec \
-  python3 prepare_density_models.py --tile-size 1920x1088 \
-  --calib-dir /calib/Train/img
+  python3 prepare_density_models.py --tile-size 1920x1088 --max-batch 1 \
+  --calib-dir /calib
+# Result: FP16 22.90 ms → FP8 21.79 ms (1.05×, negligible)
 ```
 
 ---
