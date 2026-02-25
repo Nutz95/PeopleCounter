@@ -161,6 +161,16 @@ class YoloTilingParallelTRT(InferenceModel):
                     "preprocess_events": list(preprocess_events or []),
                 }
             )
+            if not isinstance(raw_outputs, dict) or raw_outputs.get("status") != "ok":
+                reason = raw_outputs.get("reason", "unknown") if isinstance(raw_outputs, dict) else str(raw_outputs)
+                import sys
+                print(f"[yolo_tiles_g{group_idx}] TRT execute failed (batch={len(tiles)}): {reason}",
+                      file=sys.stderr, flush=True)
+                return {
+                    "detections": [], "prepare_batch_ms": 0.0, "enqueue_ms": 0.0,
+                    "stream_sync_ms": 0.0, "decode_ms": 0.0, "group_ms": 0.0,
+                    "tile_count": len(tiles),
+                }
             gpu_done_ns = time.perf_counter_ns()   # ← GPU inference ends here
             decode_start_ns = gpu_done_ns
             decoded = self._decoder.process(frame_id, raw_outputs, tile_plan=tile_plan)

@@ -18,8 +18,6 @@ _INFERENCE_MODES: dict[str, dict[str, bool]] = {
     "density":              {"yolo_global": False, "yolo_tiles": False, "density": True},
     "yolo_global":          {"yolo_global": True,  "yolo_tiles": False, "density": False},
     "yolo_tiles":           {"yolo_global": False, "yolo_tiles": True,  "density": False},
-    "density_yolo_global":  {"yolo_global": True,  "yolo_tiles": False, "density": True},
-    "density_yolo_tiles":   {"yolo_global": False, "yolo_tiles": True,  "density": True},
 }
 
 # Maps model names to their corresponding preprocess branch keys in pipeline.yaml
@@ -35,8 +33,6 @@ _MODE_LABELS: dict[str, str] = {
     "density":             "Densité",
     "yolo_global":         "YOLO Global",
     "yolo_tiles":          "YOLO Tiling",
-    "density_yolo_global": "YOLO Global + Densité",
-    "density_yolo_tiles":  "YOLO Tiling + Densité",
 }
 
 # Which overlay checkboxes are relevant per mode (matched to frontend toggle IDs)
@@ -45,8 +41,6 @@ _MODE_OVERLAYS: dict[str, list[str]] = {
     "density":             ["heatmap"],
     "yolo_global":         ["bbox", "seg"],
     "yolo_tiles":          ["bbox", "seg"],
-    "density_yolo_global": ["bbox", "seg", "heatmap"],
-    "density_yolo_tiles":  ["bbox", "seg", "heatmap"],
 }
 
 

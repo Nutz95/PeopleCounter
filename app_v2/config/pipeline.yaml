@@ -21,7 +21,7 @@ trt_execution:
   strict_shape_check: true
 
 yolo_tiles_parallel:
-  enabled: false  # disabled while yolo_tiles is off
+  enabled: true
   groups: 2
 
 inference_streams:

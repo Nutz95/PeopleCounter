@@ -155,7 +155,12 @@ class WebCodecsServer:
         payload: dict = {"type": "init", "codec": codec, "width": width, "height": height}
         if avcc:
             payload["description"] = base64.b64encode(avcc).decode()
-        self._init_json = json.dumps(payload)
+        new_json = json.dumps(payload)
+        if new_json == self._init_json:
+            # Nothing changed — don't disrupt existing clients with a redundant
+            # re-init that would clear their canvas and restart the VideoDecoder.
+            return
+        self._init_json = new_json
         self._broadcast_text(self._init_json)
 
     def push_packet(self, packet: bytes, pts_us: int, is_keyframe: bool) -> None:

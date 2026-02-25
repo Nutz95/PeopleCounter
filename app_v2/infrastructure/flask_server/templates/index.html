@@ -747,10 +747,11 @@
       const DECODE_QUEUE_MAX  = 8;   // drop non-keyframes above this threshold
       const renderQueue = [];
 
-      let decoder  = null;
-      let ws       = null;
-      let initDone = false;
-      let rafId    = null;
+      let decoder      = null;
+      let ws           = null;
+      let initDone     = false;
+      let rafId        = null;
+      let _lastInitKey = null;  // tracks last codec:w:h:desc to skip redundant re-inits
 
       // If no init message arrives in 5 s, the source is not H.264 — keep MJPEG.
       const fallbackTimer = setTimeout(() => {
@@ -809,14 +810,29 @@
         clearTimeout(fallbackTimer);
         initDone = true;
 
+        const codec    = msg.codec || 'avc1';
+        const initKey  = `${codec}:${msg.width || 0}:${msg.height || 0}:${msg.description || ''}`;
+
+        // Skip re-init when nothing changed and the decoder is already running.
+        // Prevents canvas.width = x (which clears to black) and decoder reset
+        // on stream reconnects where codec/dimensions are identical.
+        if (initKey === _lastInitKey && decoder && decoder.state === 'configured') return;
+        _lastInitKey = initKey;
+
         const config = {
-          codec: msg.codec || 'avc1',
+          codec,
           optimizeForLatency: true,
           hardwareAcceleration: 'prefer-hardware',
         };
         if (msg.description) config.description = base64ToBuffer(msg.description);
         if (msg.width)  { config.codedWidth  = msg.width;  videoCanvas.width  = msg.width; }
         if (msg.height) { config.codedHeight = msg.height; videoCanvas.height = msg.height; }
+
+        // Close the previous decoder before replacing it (avoids memory leaks).
+        if (decoder) {
+          try { decoder.close(); } catch (_) {}
+          decoder = null;
+        }
 
         decoder = new VideoDecoder({
           output: (frame) => {

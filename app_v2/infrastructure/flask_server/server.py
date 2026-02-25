@@ -304,8 +304,4 @@ class FlaskStreamServer(ResultPublisher):
             available.append("yolo_global")
         if have["yolo_tiles"]:
             available.append("yolo_tiles")
-        if have["yolo_global"] and have["density"]:
-            available.append("density_yolo_global")
-        if have["yolo_tiles"] and have["density"]:
-            available.append("density_yolo_tiles")
         return available

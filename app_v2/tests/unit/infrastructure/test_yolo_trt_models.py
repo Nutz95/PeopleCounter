@@ -12,6 +12,10 @@ class DummyExecutionContext:
         self.released: list[str] = []
         self.calls: list[dict[str, Any]] = []
 
+    @property
+    def max_batch_size(self) -> int:
+        return 0  # 0 = unconstrained (no auto-split in tests)
+
     def bind_stream(self, stream_key: str) -> None:
         self.bound.append(stream_key)
 

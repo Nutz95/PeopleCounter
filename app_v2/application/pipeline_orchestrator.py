@@ -377,8 +377,13 @@ class PipelineOrchestrator:
             return
 
         # Drop silently if previous encode is still in progress.
+        # Allow up to 3 ms for an in-flight encode to finish before giving up,
+        # to prevent stroboscopic frame drops when the GPU is briefly busy.
         if self._video_future is not None and not self._video_future.done():
-            return
+            try:
+                self._video_future.result(timeout=0.003)
+            except Exception:
+                return  # still busy → drop this frame
 
         try:
             h = int(getattr(frame, "height", 0))
@@ -438,8 +443,10 @@ class PipelineOrchestrator:
             with stream_ctx:
                 buf = tvio.encode_jpeg(chw_uint8, quality=quality)  # NVJPEG (CUDA → CUDA)
             push_frame(bytes(buf.cpu().numpy()))
-        except Exception:
-            pass
+        except Exception as _nvjpeg_exc:
+            import sys as _sys
+            print(f"[NVJPEG] encode failed: {type(_nvjpeg_exc).__name__}: {_nvjpeg_exc}",
+                  file=_sys.stderr, flush=True)
 
     def _build_packet_forwarder(self, ws_port: int) -> NvdecPacketForwarder | None:
         """Construct a NvdecPacketForwarder if the frame source exposes a stream URL."""

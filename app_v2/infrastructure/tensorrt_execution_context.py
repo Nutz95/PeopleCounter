@@ -42,6 +42,26 @@ class TensorRTExecutionContext:
         if self._trt_enabled and engine is not None:
             self._context = engine.create_execution_context()
 
+    @property
+    def max_batch_size(self) -> int:
+        """Return the maximum batch dimension from TRT profile 0, or 0 if unknown."""
+        engine = self.engine_loader.engine
+        if engine is None or trt is None:
+            return 0
+        input_names = self._tensor_names(mode=trt.TensorIOMode.INPUT)
+        if not input_names:
+            return 0
+        try:
+            profile_shapes = engine.get_tensor_profile_shape(input_names[0], 0)
+        except Exception:
+            return 0
+        if not isinstance(profile_shapes, tuple) or len(profile_shapes) != 3:
+            return 0
+        max_shape = profile_shapes[2]
+        if max_shape:
+            return int(max_shape[0])
+        return 0
+
     def bind_stream(self, stream_key: str) -> None:
         """Bind the context to the CUDA stream mapped to stream_key."""
         stream_handle = self.stream_pool.acquire(stream_key)
