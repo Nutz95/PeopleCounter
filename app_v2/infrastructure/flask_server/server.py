@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import queue
 import threading
-import time
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -76,9 +75,13 @@ class FlaskStreamServer(ResultPublisher):
         # SSE: one SimpleQueue per connected browser tab
         self._sse_clients: list[queue.SimpleQueue[str]] = []
         self._sse_lock = threading.Lock()
-        # MJPEG: latest JPEG frame bytes
+        # MJPEG: latest JPEG frame bytes + event to wake waiting generators
         self._last_jpeg: bytes = _PLACEHOLDER_JPEG
         self._video_lock = threading.Lock()
+        # Set whenever a new JPEG is pushed; generators block on this instead of
+        # polling with time.sleep() so each client receives every produced frame
+        # as fast as the network allows — no fixed-rate sleep causing missed frames.
+        self._video_event: threading.Event = threading.Event()
         # Inference mode state
         self._mode_lock = threading.Lock()
         _cfg = initial_config or {}
@@ -177,14 +180,27 @@ class FlaskStreamServer(ResultPublisher):
 
         @self._app.get("/api/video")
         def api_video() -> Any:
-            """MJPEG stream — each published frame is served as a multipart boundary."""
+            """MJPEG stream — event-driven push; no fixed-rate sleep.
+
+            Each generator waits on ``_video_event`` (set by ``push_frame``)
+            so frames are delivered as soon as they are produced.  A 1-second
+            fallback timeout re-sends the last JPEG to keep the browser alive
+            even when the pipeline is paused or running slowly.
+            """
 
             def generate() -> Any:
+                last_sent: bytes = b""
                 while True:
+                    # Wait for a new frame (up to 1 s before re-sending old one).
+                    self._video_event.wait(timeout=1.0)
+                    self._video_event.clear()
                     with self._video_lock:
                         frame = self._last_jpeg
+                    # Skip duplicate frames to reduce bandwidth under slow pipelines.
+                    if frame is last_sent and frame is not _PLACEHOLDER_JPEG:
+                        continue
+                    last_sent = frame
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-                    time.sleep(1 / 25)
 
             return Response(
                 generate(),
@@ -225,9 +241,10 @@ class FlaskStreamServer(ResultPublisher):
                 pass
 
     def push_frame(self, jpeg_bytes: bytes) -> None:
-        """Update the MJPEG frame buffer with a freshly encoded JPEG."""
+        """Update the MJPEG frame buffer and wake all waiting MJPEG generators."""
         with self._video_lock:
             self._last_jpeg = jpeg_bytes
+        self._video_event.set()  # wake all /api/video generators immediately
 
     # ------------------------------------------------------------------
     # Inference mode management (called from pipeline loop thread)
