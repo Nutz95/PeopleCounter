@@ -55,7 +55,7 @@ class TensorRTExecutionContext:
             profile_shapes = engine.get_tensor_profile_shape(input_names[0], 0)
         except Exception:
             return 0
-        if not isinstance(profile_shapes, tuple) or len(profile_shapes) != 3:
+        if not isinstance(profile_shapes, (tuple, list)) or len(profile_shapes) != 3:
             return 0
         max_shape = profile_shapes[2]
         if max_shape:
@@ -269,7 +269,7 @@ class TensorRTExecutionContext:
             profile_shapes = engine.get_tensor_profile_shape(input_name, 0)
         except Exception:
             return True
-        if not isinstance(profile_shapes, tuple) or len(profile_shapes) != 3:
+        if not isinstance(profile_shapes, (tuple, list)) or len(profile_shapes) != 3:
             return True
         min_shape, _opt_shape, max_shape = profile_shapes
         if not min_shape or not max_shape:
