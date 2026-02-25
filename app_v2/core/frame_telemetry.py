@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+import time
 from typing import Any, Dict
 
 try:
@@ -53,19 +54,27 @@ class FrameTelemetry:
             self._metrics[name] = value
 
     def _compute_duration(self, record: _StageRecord) -> float:
+        # CPU wall-clock fallback (no CUDA or no GPU timing).
+        if isinstance(record.start, float) and isinstance(record.end, float):
+            return (record.end - record.start) * 1000.0
         if not self._gpu_timing_enabled:
             return 0.0
         assert torch is not None
         assert hasattr(record.start, "elapsed_time")
-        assert hasattr(record.end, "synchronize")
-        record.end.synchronize()
-        return float(record.start.elapsed_time(record.end))
+        # elapsed_time() implicitly syncs only the two events involved — no global
+        # GPU stall.  Replacing the previous record.end.synchronize() + elapsed_time()
+        # pair removes a full device sync from every published frame's hot path.
+        try:
+            return float(record.start.elapsed_time(record.end))
+        except RuntimeError:
+            # Events not yet recorded (e.g. stage was skipped) — return 0.
+            return 0.0
 
     @staticmethod
     def _create_event(stream: int) -> Any | None:
         del stream
         if torch is None or not torch.cuda.is_available():
-            return None
+            return time.perf_counter()  # CPU wall-clock fallback
         event = torch.cuda.Event(enable_timing=True)
         event.record(torch.cuda.current_stream())
         return event

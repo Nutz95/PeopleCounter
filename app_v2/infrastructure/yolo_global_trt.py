@@ -61,7 +61,13 @@ class YoloGlobalTRT(InferenceModel):
             return {
                 "frame_id": frame_id,
                 "model": self._name,
-                "prediction": raw_outputs,
+                # Only expose JSON-safe scalar fields — strip CUDA tensors
+                # (outputs/output_tensors) that would cause json.dumps(default=str)
+                # to trigger a GPU→CPU sync and huge string formatting (~100ms).
+                "prediction": {
+                    k: v for k, v in raw_outputs.items()
+                    if k not in ("outputs", "output_tensors", "inputs", "input_tensor")
+                } if isinstance(raw_outputs, dict) else {},
                 "segmentation": raw_outputs.get("segmentation") if isinstance(raw_outputs, dict) else None,
                 "detections": decoded.get("detections", []),
                 "seg_mask_raw": decoded.get("seg_mask_raw"),

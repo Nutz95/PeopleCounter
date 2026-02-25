@@ -110,8 +110,8 @@ class GpuPreprocessor(Preprocessor):
         frame_height = int(getattr(frame, "height"))
 
         telemetry: FrameTelemetry | None = getattr(frame, "telemetry", None)
+        _preprocess_wall_start_ns = time.monotonic_ns()
         if telemetry:
-            telemetry.mark_stage_start("preprocess")
             frame_timestamp_ns = getattr(frame, "timestamp_ns", None)
             if frame_timestamp_ns is not None:
                 telemetry.add_metrics({FRAME_TIMESTAMP_NS: int(frame_timestamp_ns)})
@@ -177,11 +177,15 @@ class GpuPreprocessor(Preprocessor):
             # Sub-breakdown metrics to diagnose serial overhead sources
             dispatch_ms = (t_dispatch_end - t_dispatch_start) / 1_000_000.0
             sync_ms = (t_sync_end - t_sync_start) / 1_000_000.0
+            preprocess_ms = (time.monotonic_ns() - _preprocess_wall_start_ns) / 1_000_000.0
             telemetry.add_metrics({
                 "preprocess_dispatch_ms": dispatch_ms,
                 "preprocess_sync_ms": sync_ms,
+                # CPU wall-clock total (dispatch + event-record overhead).  Stored
+                # directly so telemetry.snapshot() never calls elapsed_time() on a
+                # CUDA event for this stage, keeping the infer+collect path non-blocking.
+                "preprocess_ms": preprocess_ms,
             })
-            telemetry.mark_stage_end("preprocess")
             self._add_parallelism_metrics(telemetry, model_inputs)
 
         return PreprocessOutput(frame_id=frame_id, plans=plans, model_inputs=model_inputs, telemetry=telemetry, cuda_events=cuda_events)

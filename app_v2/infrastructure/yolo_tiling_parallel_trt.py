@@ -88,11 +88,13 @@ class YoloTilingParallelTRT(InferenceModel):
                 tile_plan=group_plan,
             )
             futures.append((group_idx, future))
+        submit_ns = time.perf_counter_ns()
         
         # Collect results
         group_results: dict[int, dict[str, Any]] = {}
         for group_idx, future in futures:
             group_results[group_idx] = future.result()
+        wait_ns = time.perf_counter_ns()
         
         # Merge detections from all groups
         all_detections: list[Any] = []
@@ -112,6 +114,8 @@ class YoloTilingParallelTRT(InferenceModel):
             max_group_ms = max(max_group_ms, result.get("group_ms", 0.0))
         
         infer_ms = (time.perf_counter_ns() - start_ns) / 1_000_000.0
+        submit_ms = (submit_ns - start_ns) / 1_000_000.0
+        wait_ms = (wait_ns - submit_ns) / 1_000_000.0
         
         return {
             "frame_id": frame_id,
@@ -128,6 +132,8 @@ class YoloTilingParallelTRT(InferenceModel):
             "tile_count": tile_count,
             "groups": self._groups,
             "inference_ms": float(infer_ms),
+            "submit_ms": float(submit_ms),
+            "wait_ms": float(wait_ms),
             "prepare_batch_ms": float(total_prepare_batch_ms),
             "enqueue_ms": float(total_enqueue_ms),
             "stream_sync_ms": float(total_stream_sync_ms),

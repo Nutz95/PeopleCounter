@@ -12,6 +12,11 @@ warnings.filterwarnings(
 )
 
 
+def pytest_configure(config: pytest.Config) -> None:  # noqa: ARG001
+    config.addinivalue_line("markers", "slow: mark test as slow (timing benchmark, GPU required)")
+    config.addinivalue_line("markers", "gpu: mark test as requiring a CUDA GPU")
+
+
 # ---------------------------------------------------------------------------
 # TensorRT global logger — must outlive all TRT objects in the process.
 # ---------------------------------------------------------------------------

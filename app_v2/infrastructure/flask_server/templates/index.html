@@ -408,6 +408,7 @@
       const tiles    = +(tel.inference_model_yolo_tiles_ms      ?? 0);
       const global_  = +(tel.inference_model_yolo_global_ms     ?? 0);
       const fusion   = +(tel.fusion_wait_ms                     ?? 0);
+      const decodeSum = +(tel.decode_model_sum_ms               ?? 0);
 
       const hasTelemetry = e2e > 0 || tiles > 0 || global_ > 0;
 
@@ -427,6 +428,7 @@
       const avgGlobal = hasTelemetry ? rollAvg(_smooth.global, global_): 0;
       const avgPreproc= hasTelemetry ? rollAvg(_smooth.preproc,preproc): 0;
       const avgFusion = hasTelemetry ? rollAvg(_smooth.fusion, fusion) : 0;
+      const avgDecode = hasTelemetry ? rollAvg(_smooth.decode ?? (_smooth.decode = []), decodeSum) : 0;
 
       // ── Update DOM ───────────────────────────────────────────────
       $connStatus.textContent  = '⬤ Live';
@@ -456,7 +458,7 @@
       // Pipeline breakdown overlay
       $ovPreprocess.textContent = `preprocess ${avgPreproc.toFixed(1)} ms`;
       $ovGlobal.textContent     = `global  ${avgGlobal.toFixed(1)} ms`;
-      $ovTiles.textContent      = `tiles   ${avgTiles.toFixed(1)} ms`;
+      $ovTiles.textContent      = `tiles   ${avgTiles.toFixed(1)} ms  decode ${avgDecode.toFixed(1)} ms`;
 
       // ── Overlays ─────────────────────────────────────────────────
       // Mask and seg overlays are only drawn when not in preview-only mode.

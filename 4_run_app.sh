@@ -9,6 +9,7 @@ DEFAULT_SOURCE="/dev/video0"
 SOURCE=""
 PROFILE_NAME=""
 POSITIONAL=()
+DOCKER_ARGS_EXTRA=()
 CUDA_PROFILE=0
 APP_VERSION="${APP_VERSION:-v1}"
 APP_VERSION_ARG=""
@@ -35,8 +36,20 @@ while [[ $# -gt 0 ]]; do
             CUDA_PROFILE=1
             shift
             ;;
+        --perf-log)
+            DOCKER_ARGS_EXTRA+=("-e" "PERF_LOG=1")
+            shift
+            ;;
+        -e|--env)
+            DOCKER_ARGS_EXTRA+=("-e" "$2")
+            shift 2
+            ;;
+        -e=*|--env=*)
+            DOCKER_ARGS_EXTRA+=("-e" "${1#*=}")
+            shift
+            ;;
         --help|-h)
-            echo "Usage: $0 [source] [--profile name] [--app-version v1|v2] [--cuda-profile]"
+            echo "Usage: $0 [source] [--profile name] [--app-version v1|v2] [--cuda-profile] [--perf-log] [-e KEY=VALUE]"
             exit 0
             ;;
         *)
@@ -127,6 +140,10 @@ fi
 DOCKER_ARGS+=("-e" "ACTIVE_PROFILE=$PROFILE_NAME")
 if [[ "$CUDA_PROFILE" -eq 1 ]]; then
     DOCKER_ARGS+=("-e" "ENABLE_CUDA_PROFILING=1")
+fi
+# Append any extra -e flags passed by the user (e.g. --perf-log or -e PERF_LOG=1)
+if [[ ${#DOCKER_ARGS_EXTRA[@]} -gt 0 ]]; then
+    DOCKER_ARGS+=("${DOCKER_ARGS_EXTRA[@]}")
 fi
 
 ENTRY_COMMAND="python3 main.py"

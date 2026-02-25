@@ -274,78 +274,196 @@ class YoloDecoder(Postprocessor):
     def _decode_tiled_yolov8_global(self, tensor: Any, plan: Any) -> list[dict[str, Any]]:
         """Decode batched tile tensor to global frame coordinates ``[0, 1]``.
 
-        Each batch element ``i`` corresponds to ``plan.tasks[i]``.  The tile
-        covers the region ``(source_x, source_y)`` to
-        ``(source_x + source_width, source_y + source_height)`` in the original
-        frame.  For typical 640×640 tile crops there is no letterboxing, so the
-        remapping is simply::
+        Fully vectorized across all tiles: zero per-tile Python loops, a single
+        ``batched_nms`` GPU kernel for per-tile duplicate removal, and a single
+        GPU→CPU transfer at the very end.  This reduces GPU→CPU synchronisations
+        from O(N_tiles) to O(1) — about 3 syncs regardless of tile count.
 
-            global_x = (source_x + tile_x_px) / frame_width
-            global_y = (source_y + tile_y_px) / frame_height
-
-        A cross-tile NMS pass with ``iou=0.45`` removes duplicate detections
-        from overlapping tile borders.
+        Previously the naive per-tile loop did ~3 syncs per tile (boolean-index +
+        2 × tolist), so 20 tiles = 60 syncs.  Now it is always ≤ 4 syncs total.
         """
+        if torch is None:
+            return []
         fw = plan.frame_width
         fh = plan.frame_height
-        n_tiles = tensor.shape[0]
-        all_dets: list[dict[str, Any]] = []
+        n_tiles = min(int(tensor.shape[0]), len(plan.tasks))
+        if n_tiles == 0:
+            return []
+        tasks = plan.tasks[:n_tiles]
 
         with torch.no_grad():
-            for i in range(n_tiles):
-                if i >= len(plan.tasks):
-                    break
-                task = plan.tasks[i]
+            t = tensor[:n_tiles]
 
-                rows = self._to_rows(tensor[i])  # [8400, 84] for raw YOLOv8
-                if rows.numel() == 0:
-                    continue
-                ncols = rows.shape[-1]
-                if ncols >= 6 and rows.shape[0] <= 1000:
-                    # Post-NMS: [x1,y1,x2,y2, conf, cls_id, (32 mask coefs...)]
-                    # Row count ≤ 1000 is the discriminator (raw YOLO always has 8400 anchors).
-                    tile_dets = self._decode_postnms(rows)
-                elif ncols > 4:
-                    tile_dets = self._decode_raw_yolov8(rows)
-                else:
-                    continue
+            # ── Normalize to [N, anchors, features] ───────────────────────
+            # Raw YOLOv8 engines output [N, features, anchors] e.g. [N, 84, 8400].
+            if t.ndim == 3 and t.shape[1] < t.shape[2]:
+                t = t.permute(0, 2, 1)   # → [N, anchors, features]
 
-                # Remap from [0,1] in tile space → [0,1] in original frame.
-                # Tile pixels = bbox_norm × source_width (no scale factor since
-                # source_width == target_width == 640 for typical tiling plans).
-                sw = task.source_width
-                sh = task.source_height
-                ox = task.source_x
-                oy = task.source_y
-                for det in tile_dets:
-                    bx1, by1, bx2, by2 = det["bbox"]
-                    gx1 = (ox + bx1 * sw) / fw
-                    gy1 = (oy + by1 * sh) / fh
-                    gx2 = (ox + bx2 * sw) / fw
-                    gy2 = (oy + by2 * sh) / fh
-                    all_dets.append({
-                        "bbox": [
-                            float(max(0.0, min(1.0, gx1))),
-                            float(max(0.0, min(1.0, gy1))),
-                            float(max(0.0, min(1.0, gx2))),
-                            float(max(0.0, min(1.0, gy2))),
-                        ],
-                        "conf": det["conf"],
-                        "label": det["label"],
-                    })
+            n, a, c = int(t.shape[0]), int(t.shape[1]), int(t.shape[2])
 
-        # Cross-tile NMS: remove detections that span multiple overlapping tiles.
-        if len(all_dets) > 1 and torch is not None:
+            # ── Post-NMS path: [N, N_dets, 6+] ───────────────────────────
+            # Row count ≤ 1000 discriminates from raw-YOLOv8 (always 8400 anchors).
+            if a <= 1000 and c >= 6:
+                return self._decode_tiled_postnms_vectorized(t, tasks, fw, fh)
+
+            # ── Raw YOLOv8 path: [N, 8400, 4 + num_classes (+ 32 seg)] ───
+            if self.person_class_id >= c - 4:
+                return []
+
+            # Person scores across all tiles: [N, 8400]
+            person_scores = t[:, :, 4 + self.person_class_id]
+
+            # Tile index per anchor — [N*8400] so each kept anchor knows its tile.
+            tile_ids = (
+                torch.arange(n, device=t.device, dtype=torch.long)
+                .unsqueeze(1).expand(n, a).reshape(-1)
+            )
+
+            # Flatten: [N*8400, C] and [N*8400]
+            t_flat      = t.reshape(-1, c)
+            scores_flat = person_scores.reshape(-1)
+
+            # Confidence threshold (boolean index — 1 GPU→CPU sync to get size)
+            keep_conf  = scores_flat >= self.confidence_threshold
+            t_flat      = t_flat[keep_conf]       # sync #1
+            scores_flat = scores_flat[keep_conf]
+            tile_ids    = tile_ids[keep_conf]
+
+            if t_flat.shape[0] == 0:   # pure metadata, no extra sync
+                return []
+
+            # xywh center → xyxy corners (640-px tile space)
+            cx = t_flat[:, 0];  cy = t_flat[:, 1]
+            w  = t_flat[:, 2];  h  = t_flat[:, 3]
+            boxes = torch.stack(
+                [cx - w * 0.5, cy - h * 0.5, cx + w * 0.5, cy + h * 0.5], dim=1
+            )  # [K, 4]
+
+            # Per-tile NMS in one GPU kernel (tile_ids is the group index).
+            # Replaces N separate _nms() calls from the old per-tile loop.
             try:
-                from torchvision.ops import nms as _nms  # type: ignore[import]
-                boxes = torch.tensor([[d["bbox"][0], d["bbox"][1], d["bbox"][2], d["bbox"][3]] for d in all_dets])
-                scores = torch.tensor([d["conf"] for d in all_dets])
-                keep = _nms(boxes, scores, iou_threshold=0.30).tolist()
-                all_dets = [all_dets[k] for k in keep]
+                from torchvision.ops import batched_nms as _batched_nms  # type: ignore[import]
+                keep = _batched_nms(
+                    boxes.float(), scores_flat.float(), tile_ids, iou_threshold=0.45
+                )
+                boxes       = boxes[keep]        # LongTensor index — no sync
+                scores_flat = scores_flat[keep]
+                tile_ids    = tile_ids[keep]
             except Exception:
                 pass
 
-        return all_dets
+            # Normalize xyxy to [0, 1] in 640-px tile space
+            boxes_norm = (boxes / 640.0).clamp(0.0, 1.0)  # [K, 4]
+
+            # Remap each detection to global frame coordinates (vectorized).
+            dev = t.device
+            tile_ox = torch.tensor([task.source_x      for task in tasks], dtype=torch.float32, device=dev)
+            tile_oy = torch.tensor([task.source_y      for task in tasks], dtype=torch.float32, device=dev)
+            tile_sw = torch.tensor([task.source_width  for task in tasks], dtype=torch.float32, device=dev)
+            tile_sh = torch.tensor([task.source_height for task in tasks], dtype=torch.float32, device=dev)
+
+            # Gather per-detection tile offsets via LongTensor index — no sync
+            ox = tile_ox[tile_ids];  oy = tile_oy[tile_ids]
+            sw = tile_sw[tile_ids];  sh = tile_sh[tile_ids]
+
+            global_boxes = torch.stack(
+                [
+                    (ox + boxes_norm[:, 0] * sw) / fw,
+                    (oy + boxes_norm[:, 1] * sh) / fh,
+                    (ox + boxes_norm[:, 2] * sw) / fw,
+                    (oy + boxes_norm[:, 3] * sh) / fh,
+                ],
+                dim=1,
+            ).clamp(0.0, 1.0)  # [K, 4]
+
+            # Cross-tile NMS: remove border duplicates (one GPU kernel, no extra sync)
+            try:
+                from torchvision.ops import nms as _nms  # type: ignore[import]
+                keep_final  = _nms(global_boxes.float(), scores_flat.float(), iou_threshold=0.30)
+                global_boxes = global_boxes[keep_final]   # LongTensor index — no sync
+                scores_flat  = scores_flat[keep_final]
+            except Exception:
+                pass
+
+            # ── Single GPU→CPU transfer for ALL detections ────────────────
+            boxes_cpu  = global_boxes.tolist()   # sync #2
+            scores_cpu = scores_flat.tolist()    # sync #3 (tiny: scalar per detection)
+
+        return [
+            {"bbox": bbox, "conf": round(score, 4), "label": "person"}
+            for bbox, score in zip(boxes_cpu, scores_cpu)
+        ]
+
+    def _decode_tiled_postnms_vectorized(
+        self, t: Any, tasks: Any, fw: int, fh: int
+    ) -> list[dict[str, Any]]:
+        """Vectorized post-NMS decode for batched tile output ``[N, N_dets, 6+]``.
+
+        Used when the tiling engine bakes NMS into the engine (post-NMS format).
+        Single GPU→CPU transfer at the end — O(1) syncs for any tile count.
+        """
+        n, n_dets = int(t.shape[0]), int(t.shape[1])
+
+        confs   = t[:, :, 4]  # [N, N_dets]
+        classes = t[:, :, 5]  # [N, N_dets]
+        mask = (confs >= self.confidence_threshold) & (classes == float(self.person_class_id))
+
+        tile_ids = (
+            torch.arange(n, device=t.device, dtype=torch.long)
+            .unsqueeze(1).expand(n, n_dets).reshape(-1)
+        )
+
+        t_flat      = t.reshape(-1, t.shape[2])
+        scores_flat = confs.reshape(-1)
+        mask_flat   = mask.reshape(-1)
+
+        t_flat      = t_flat[mask_flat]      # sync #1
+        scores_flat = scores_flat[mask_flat]
+        tile_ids    = tile_ids[mask_flat]
+
+        if t_flat.shape[0] == 0:
+            return []
+
+        coords = t_flat[:, :4]
+        # One sync to check whether coordinates are absolute pixels (>2) or normalised.
+        if float(t_flat[:, :4].max().item()) > 2.0:   # sync #2
+            coords = coords / 640.0
+        coords = coords.clamp(0.0, 1.0)
+
+        dev = t.device
+        tile_ox = torch.tensor([task.source_x      for task in tasks], dtype=torch.float32, device=dev)
+        tile_oy = torch.tensor([task.source_y      for task in tasks], dtype=torch.float32, device=dev)
+        tile_sw = torch.tensor([task.source_width  for task in tasks], dtype=torch.float32, device=dev)
+        tile_sh = torch.tensor([task.source_height for task in tasks], dtype=torch.float32, device=dev)
+
+        ox = tile_ox[tile_ids];  oy = tile_oy[tile_ids]
+        sw = tile_sw[tile_ids];  sh = tile_sh[tile_ids]
+
+        global_boxes = torch.stack(
+            [
+                (ox + coords[:, 0] * sw) / fw,
+                (oy + coords[:, 1] * sh) / fh,
+                (ox + coords[:, 2] * sw) / fw,
+                (oy + coords[:, 3] * sh) / fh,
+            ],
+            dim=1,
+        ).clamp(0.0, 1.0)
+
+        try:
+            from torchvision.ops import nms as _nms  # type: ignore[import]
+            keep = _nms(global_boxes.float(), scores_flat.float(), iou_threshold=0.30)
+            global_boxes = global_boxes[keep]
+            scores_flat  = scores_flat[keep]
+        except Exception:
+            pass
+
+        boxes_cpu  = global_boxes.tolist()   # sync #3
+        scores_cpu = scores_flat.tolist()    # sync #4
+
+        return [
+            {"bbox": bbox, "conf": round(score, 4), "label": "person"}
+            for bbox, score in zip(boxes_cpu, scores_cpu)
+        ]
 
     def _apply_global_unletterbox(self, dets: list[dict[str, Any]], plan: Any) -> list[dict[str, Any]]:
         """Convert bboxes from ``[0,1]``-in-letterboxed-640-space to ``[0,1]``-in-frame.

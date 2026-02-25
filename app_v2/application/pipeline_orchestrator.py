@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
+import sys
 import time
 from typing import Any
+
+_PERF_LOG: bool = os.environ.get("PERF_LOG", "0").strip() not in ("", "0", "false", "no")
 
 import torch
 
@@ -76,6 +80,12 @@ class PipelineOrchestrator:
         self._video_stream: torch.cuda.Stream | None = (
             torch.cuda.Stream() if torch.cuda.is_available() else None
         )
+        # Dedicated CUDA stream for NVJPEG encode in the background thread.
+        # Keeps NVJPEG kernels on their own stream so they never contend with
+        # _video_stream (NV12→RGB) or the inference streams.
+        self._nvjpeg_stream: torch.cuda.Stream | None = (
+            torch.cuda.Stream() if torch.cuda.is_available() else None
+        )
         # Single-worker executor: NVJPEG encode + push to SSE clients.
         # If previous encode is still running when next frame arrives → drop silently.
         self._video_executor = concurrent.futures.ThreadPoolExecutor(
@@ -127,9 +137,11 @@ class PipelineOrchestrator:
         # packet — the decoder self-heals after a few buffering-phase misses).
         _MAX_CONSECUTIVE_DECODE_ERRORS = 10
         _consecutive_decode_errors = 0
+        _perf_prev_done_ns: int = 0  # tracks end of previous iteration for gap measurement
         try:
             while self._should_continue():
                 frame_id = self.scheduler.schedule(None)
+                _t0 = time.perf_counter_ns() if _PERF_LOG else 0
 
                 # ── NVDEC decode ────────────────────────────────────────────
                 try:
@@ -151,6 +163,7 @@ class PipelineOrchestrator:
                         ) from decode_exc
                     continue
                 _consecutive_decode_errors = 0
+                _t_nvdec = time.perf_counter_ns() if _PERF_LOG else 0
                 # ────────────────────────────────────────────────────────────
 
                 # ── Video encode dispatch ───────────────────────────────────
@@ -158,10 +171,12 @@ class PipelineOrchestrator:
                 # NV12→RGB→resize runs on _video_stream (GPU, async from CPU).
                 # NVJPEG encode runs in background thread, parallel with inference.
                 self._push_video_frame_async(frame)
+                _t_vid = time.perf_counter_ns() if _PERF_LOG else 0
                 # ───────────────────────────────────────────────────────────
 
                 output = self.preprocessor.build_output(frame_id, frame)
                 self.aggregator.attach_telemetry(frame_id, output.telemetry)
+                _t_preproc = time.perf_counter_ns() if _PERF_LOG else 0
 
                 if isinstance(self.fusion_strategy, RawStreamFusionStrategy):
                     # RAW_STREAM_WITH_METADATA: release the NVDEC ring-buffer slot
@@ -175,23 +190,56 @@ class PipelineOrchestrator:
                     output.release_all()
                 else:
                     self.aggregator.attach_release_hook(frame_id, output.release_all)
+                _t_vidsync = time.perf_counter_ns() if _PERF_LOG else 0
+                _t_before_infer = _t_vidsync
+                _t_after_infer = _t_vidsync
+                _t_before_collect = _t_vidsync
+                _t_after_collect = _t_vidsync
                 for model in self._models:
                     processed = output.flatten_inputs(model.name)
                     tile_plan = output.plans.get(model.name)
                     with self.performance_tracker.stage(frame_id, model.name):
+                        if _PERF_LOG:
+                            _t_before_infer = time.perf_counter_ns()
                         prediction = model.infer(
                             frame_id,
                             processed,
                             preprocess_events=list(output.cuda_events.values()),
                             tile_plan=tile_plan,
                         )
+                        _t_after_infer = time.perf_counter_ns() if _PERF_LOG else 0
                         if isinstance(prediction, dict):
                             prediction["_inference_done_ns"] = int(time.time_ns())
                             # DM-Count density: convert raw GPU tiles → base64 heatmap
                             if model.name == "density":
                                 prediction = self._density_decoder.process(frame_id, prediction)
                         self.processing_graph.register(model.name, {"frame_id": frame_id})
+                        if _PERF_LOG:
+                            _t_before_collect = time.perf_counter_ns()
                         self.aggregator.collect(frame_id, prediction)
+                        _t_after_collect = time.perf_counter_ns() if _PERF_LOG else 0
+
+                if _PERF_LOG:
+                    _t_done = time.perf_counter_ns()
+                    _ms = lambda a, b: f"{(b - a) / 1e6:.1f}"  # noqa: E731
+                    modes_str = ",".join(m.name for m in self._models) or "pass"
+                    _gap_ms = (_t0 - _perf_prev_done_ns) / 1e6 if _perf_prev_done_ns else 0.0
+                    print(
+                        f"[PERF] f={frame_id} mode={modes_str}"
+                        f" gap={_gap_ms:.1f}"
+                        f" nvdec={_ms(_t0, _t_nvdec)}"
+                        f" vid_dispatch={_ms(_t_nvdec, _t_vid)}"
+                        f" preproc={_ms(_t_vid, _t_preproc)}"
+                        f" vid_sync={_ms(_t_preproc, _t_vidsync)}"
+                        f" flat={_ms(_t_vidsync, _t_before_infer)}"
+                        f" infer={_ms(_t_before_infer, _t_after_infer)}"
+                        f" pre_collect={_ms(_t_after_infer, _t_before_collect)}"
+                        f" collect={_ms(_t_before_collect, _t_after_collect)}"
+                        f" infer+collect={_ms(_t_vidsync, _t_done)}"
+                        f" total={_ms(_t0, _t_done)}ms",
+                        file=sys.stderr, flush=True,
+                    )
+                    _perf_prev_done_ns = _t_done
 
                 # Passthrough mode: no models active — ring slot never released via
                 # aggregator.collect() so we release it here immediately.
@@ -361,6 +409,7 @@ class PipelineOrchestrator:
                 enc_event,
                 self._video_quality,
                 push_frame,
+                self._nvjpeg_stream,
             )
         except Exception as exc:
             log_warning(LogChannel.GLOBAL, f"Video frame submit failed: {exc}")
@@ -371,12 +420,23 @@ class PipelineOrchestrator:
         enc_event: torch.cuda.Event,
         quality: int,
         push_frame: Any,
+        nvjpeg_stream: "torch.cuda.Stream | None",
     ) -> None:
-        """Background thread: [3×H×W uint8 CUDA] → NVJPEG bytes → MJPEG clients."""
+        """Background thread: [3×H×W uint8 CUDA] → NVJPEG bytes → MJPEG clients.
+
+        NVJPEG runs on a dedicated stream (``nvjpeg_stream``) so it never blocks
+        or is blocked by the NV12→RGB stream or the inference streams.
+        """
         try:
-            enc_event.synchronize()
+            enc_event.synchronize()  # CPU-side wait: data is ready in GPU memory
             import torchvision.io as tvio
-            buf = tvio.encode_jpeg(chw_uint8, quality=quality)  # NVJPEG (CUDA → CUDA)
+            stream_ctx = (
+                torch.cuda.stream(nvjpeg_stream)
+                if nvjpeg_stream is not None
+                else __import__("contextlib").nullcontext()
+            )
+            with stream_ctx:
+                buf = tvio.encode_jpeg(chw_uint8, quality=quality)  # NVJPEG (CUDA → CUDA)
             push_frame(bytes(buf.cpu().numpy()))
         except Exception:
             pass

@@ -75,5 +75,5 @@ preprocess:
 #   When set, aspect ratio is preserved (even pixel width guaranteed).
 # quality: NVJPEG quality 1-100. Higher = larger JPEG, better image.
 video_stream:
-  max_height: null   # null = native 4K; set to 2160/1440/1080/720 as needed
-  quality: 99
+  max_height: 1080   # 4K → 1080p for MJPEG feed; reduces _video_stream.synchronize() cost ~10×
+  quality: 95

@@ -35,5 +35,13 @@ def preprocess_stream_cuda_model_key(model_name: str) -> str:
     return f"{PREPROCESS_STREAM_CUDA_MODEL_PREFIX}{model_name}"
 
 
+DECODE_MODEL_STAGE_PREFIX = "decode_model_"
+DECODE_MODEL_SUM_MS = "decode_model_sum_ms"
+
+
 def inference_model_metric_key(model_name: str) -> str:
     return f"{INFERENCE_MODEL_STAGE_PREFIX}{model_name}_ms"
+
+
+def decode_model_metric_key(model_name: str) -> str:
+    return f"{DECODE_MODEL_STAGE_PREFIX}{model_name}_ms"

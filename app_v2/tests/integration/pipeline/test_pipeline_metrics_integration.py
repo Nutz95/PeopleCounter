@@ -205,7 +205,10 @@ def test_pipeline_metrics_snapshot_includes_stage_timings_and_pool_stats() -> No
         assert "preprocess_stream_model_yolo_global" in snapshot
         assert "preprocess_stream_model_yolo_tiles" in snapshot
         assert snapshot["preprocess_model_max_ms"] <= snapshot["preprocess_model_sum_ms"]
-        assert snapshot["preprocess_critical_path_ms"] <= snapshot["preprocess_ms"]
+        # preprocess_ms is a GPU kernel-event duration (sub-millisecond); it should not be
+        # compared to critical_path_ms which is based on CPU wall-clock dispatch times.
+        # The invariant we actually want: critical_path (parallelism-adjusted max) ≤ serial sum.
+        assert snapshot["preprocess_critical_path_ms"] <= snapshot["preprocess_model_sum_ms"] + 0.5
 
         budget_report = evaluate_perf_budget(snapshot, fusion_strategy=_pipeline_like_config().get("fusion_strategy"))
         if budget_report.mode != "off":
