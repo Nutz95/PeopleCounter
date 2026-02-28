@@ -77,3 +77,6 @@ preprocess:
 video_stream:
   max_height: 1080   # 4K → 1080p for MJPEG feed; reduces _video_stream.synchronize() cost ~10×
   quality: 95
+  encode_grace_ms: 0  # (ms) max time to wait for in-flight NVJPEG before stashing the frame
+                      # 0 = stash immediately (zero-drop, recommended)
+                      # Increase if you still see stutters on a slower GPU

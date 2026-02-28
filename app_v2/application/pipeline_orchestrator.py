@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import sys
+import threading
 import time
 from typing import Any
 
@@ -96,6 +97,15 @@ class PipelineOrchestrator:
         _vcfg = self.config.get("video_stream") or {}
         self._video_max_height: int | None = _vcfg.get("max_height") or None
         self._video_quality: int = int(_vcfg.get("quality", 75))
+        # Grace period before stashing: encoder may finish within this window.
+        # Configured via video_stream.encode_grace_ms in pipeline.yaml.
+        self._encode_grace_s: float = float(_vcfg.get("encode_grace_ms", 5)) / 1000.0
+        # Zero-drop stash: when encoder is busy the latest RGB tensor is kept
+        # here; _on_video_encode_done auto-submits it when the slot is free.
+        self._pending_chw: torch.Tensor | None = None
+        self._pending_enc_event: torch.cuda.Event | None = None
+        self._encode_running: bool = False
+        self._pending_frame_lock: threading.Lock = threading.Lock()
 
         # ── WebCodecs zero-encode path ──────────────────────────────────
         # PyFFmpegDemuxer opens a second connection to the same stream URL and
@@ -358,8 +368,12 @@ class PipelineOrchestrator:
         This avoids allocating the full-resolution RGB intermediate (~25 MB for
         4K) — see :func:`nv12_to_rgb_hwc_resized_cuda` for details.
 
-        Drop strategy: if the background thread is still busy with the previous
-        frame, drop the incoming frame silently so the main loop is never blocked.
+        Zero-drop strategy: when the encoder is busy the latest RGB tensor is
+        stored in ``_pending_chw``; ``_on_video_encode_done`` auto-submits it
+        the moment the slot is free (no frame is ever permanently lost).
+        A short grace period (``encode_grace_ms`` in pipeline.yaml) attempts to
+        let near-done encodes finish so the current frame can be submitted
+        directly without the single-frame stash delay.
 
         Output resolution:
           - ``video_stream.max_height: null`` in pipeline.yaml → native camera
@@ -375,15 +389,6 @@ class PipelineOrchestrator:
             return
         if self._video_stream is None:
             return
-
-        # Drop silently if previous encode is still in progress.
-        # Allow up to 3 ms for an in-flight encode to finish before giving up,
-        # to prevent stroboscopic frame drops when the GPU is briefly busy.
-        if self._video_future is not None and not self._video_future.done():
-            try:
-                self._video_future.result(timeout=0.003)
-            except Exception:
-                return  # still busy → drop this frame
 
         try:
             h = int(getattr(frame, "height", 0))
@@ -408,6 +413,34 @@ class PipelineOrchestrator:
             enc_event = torch.cuda.Event()
             enc_event.record(self._video_stream)
 
+            with self._pending_frame_lock:
+                # Always store the latest frame as the next candidate.
+                self._pending_chw = chw_uint8
+                self._pending_enc_event = enc_event
+                if self._encode_running:
+                    # Encoder busy: stash is set; _on_video_encode_done will pick
+                    # it up.  Optionally wait a short grace period so a nearly-done
+                    # encode can finish and we submit directly this iteration.
+                    was_running = True
+                else:
+                    # Encoder idle: grab the frame immediately for direct submit.
+                    was_running = False
+                    self._encode_running = True
+                    self._pending_chw = None
+                    self._pending_enc_event = None
+
+            if was_running:
+                # Brief grace period: wait up to encode_grace_ms for in-flight
+                # encode to finish.  If it does, the callback (_on_video_encode_done)
+                # will have submitted the stash automatically — nothing more to do.
+                if self._encode_grace_s > 0 and self._video_future is not None:
+                    try:
+                        self._video_future.result(timeout=self._encode_grace_s)
+                    except Exception:
+                        pass  # still busy or error — stash remains for callback
+                return
+
+            # Encoder was idle: submit the frame we just grabbed.
             self._video_future = self._video_executor.submit(
                 PipelineOrchestrator._encode_and_push_nvjpeg,
                 chw_uint8,
@@ -416,8 +449,44 @@ class PipelineOrchestrator:
                 push_frame,
                 self._nvjpeg_stream,
             )
+            self._video_future.add_done_callback(self._on_video_encode_done)
         except Exception as exc:
             log_warning(LogChannel.GLOBAL, f"Video frame submit failed: {exc}")
+
+    def _on_video_encode_done(self, _future: concurrent.futures.Future) -> None:  # type: ignore[type-arg]
+        """Callback: fired by the executor thread when an NVJPEG encode finishes.
+
+        If a newer frame was stashed while the encoder was busy, it is submitted
+        immediately — implementing the zero-drop strategy.
+        """
+        push_frame = getattr(self.publisher, "push_frame", None)
+        with self._pending_frame_lock:
+            chw = self._pending_chw
+            evt = self._pending_enc_event
+            if chw is None or not callable(push_frame):
+                # Nothing pending or publisher gone → encoder goes idle.
+                self._encode_running = False
+                return
+            # Pop the stash and keep _encode_running = True.
+            self._pending_chw = None
+            self._pending_enc_event = None
+
+        try:
+            new_future = self._video_executor.submit(
+                PipelineOrchestrator._encode_and_push_nvjpeg,
+                chw,
+                evt,
+                self._video_quality,
+                push_frame,
+                self._nvjpeg_stream,
+            )
+            new_future.add_done_callback(self._on_video_encode_done)
+            with self._pending_frame_lock:
+                self._video_future = new_future
+        except Exception as exc:
+            log_warning(LogChannel.GLOBAL, f"Video stash re-submit failed: {exc}")
+            with self._pending_frame_lock:
+                self._encode_running = False
 
     @staticmethod
     def _encode_and_push_nvjpeg(

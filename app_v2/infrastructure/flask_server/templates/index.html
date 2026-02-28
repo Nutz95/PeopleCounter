@@ -747,11 +747,12 @@
       const DECODE_QUEUE_MAX  = 8;   // drop non-keyframes above this threshold
       const renderQueue = [];
 
-      let decoder      = null;
-      let ws           = null;
-      let initDone     = false;
-      let rafId        = null;
-      let _lastInitKey = null;  // tracks last codec:w:h:desc to skip redundant re-inits
+      let decoder        = null;
+      let ws             = null;
+      let initDone       = false;
+      let rafId          = null;
+      let _lastInitKey   = null;  // tracks last codec:w:h:desc to skip redundant re-inits
+      let _lastVideoFrame = null; // last decoded VideoFrame — re-drawn when queue is empty
 
       // If no init message arrives in 5 s, the source is not H.264 — keep MJPEG.
       const fallbackTimer = setTimeout(() => {
@@ -776,6 +777,7 @@
         try { ws && ws.close(); } catch(e) {}
         try { decoder && decoder.close(); } catch(e) {}
         while (renderQueue.length) renderQueue.shift()?.close?.();
+        if (_lastVideoFrame) { try { _lastVideoFrame.close(); } catch(e) {} _lastVideoFrame = null; }
         decoder = null; ws = null;
       }
 
@@ -792,8 +794,9 @@
         }
         if (renderQueue.length > 0) {
           const frame = renderQueue.shift();
-          ctx.drawImage(frame, 0, 0, videoCanvas.width, videoCanvas.height);
-          frame.close();
+          // Release the previous kept frame only when a new one arrives.
+          if (_lastVideoFrame) { try { _lastVideoFrame.close(); } catch(e) {} }
+          _lastVideoFrame = frame;  // keep reference — do NOT close yet
           // Track display FPS (actual rendered frames per second)
           const now = performance.now();
           _dispFpsTs.push(now);
@@ -802,6 +805,11 @@
             ? Math.round((_dispFpsTs.length - 1) / ((now - _dispFpsTs[0]) / 1000))
             : 0;
           $displayFpsChip.textContent = dFps ? `${dFps} fps vid` : '— fps vid';
+        }
+        // Always draw the most-recent frame (re-paints after canvas.width reset or
+        // queue-empty gaps so the display never flashes black).
+        if (_lastVideoFrame) {
+          ctx.drawImage(_lastVideoFrame, 0, 0, videoCanvas.width, videoCanvas.height);
         }
         rafId = requestAnimationFrame(renderLoop);
       }
