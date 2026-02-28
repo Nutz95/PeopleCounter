@@ -8,12 +8,19 @@ from app_v2.core.postprocessor import Postprocessor
 # 1/4 scale gives enough granularity for per-person peak separation in 4K scenes.
 _CANVAS_DOWNSCALE: int = 4
 
-# NMS kernel: small value keeps peaks close together, allowing dense crowd scenes
-# to produce many distinct hotspots (one per person at fine scale).
-_NMS_KERNEL: int = 3
-
-# Minimum density value to be considered a real peak (filters absolute zeros).
+# Absolute minimum density value — filters out truly zero pixels.
 _DENSITY_THRESHOLD: float = 1e-6
+
+# Default relative minimum peak weight (fraction of the frame's brightest peak).
+# Peaks below this fraction are discarded as noise / body-part artefacts.
+# Configurable via pipeline.yaml: density.min_peak_weight
+# Adjustable at runtime via POST /api/density/threshold.
+_DEFAULT_MIN_PEAK_WEIGHT: float = 0.05
+
+# Default NMS kernel size.  Larger values merge nearby peaks; smaller values
+# allow finer separation in dense scenes.
+# Configurable via pipeline.yaml: density.nms_kernel
+_DEFAULT_NMS_KERNEL: int = 3
 
 
 class DensityDecoder(Postprocessor):
@@ -33,9 +40,28 @@ class DensityDecoder(Postprocessor):
 
     hotspots are sorted by density weight descending.  x/y are normalised
     frame coordinates [0, 1].  w is the relative density weight [0, 1].
-    There is no cap on the number of hotspots — dense crowd scenes with
-    hundreds of people will produce hundreds of hotspots.
+
+    Parameters
+    ----------
+    min_peak_weight:
+        Peaks whose relative weight (w = peak_val / global_max) is below this
+        threshold are silently discarded.  Keeps only the dominant hotspots
+        (heads) and removes low-intensity artefacts on legs / torso that the
+        model sometimes mis-detects.  Tunable at runtime via
+        ``POST /api/density/threshold``.
+    nms_kernel:
+        Side length of the max-pool window used for non-maximum suppression.
+        Larger → fewer, more spread-out peaks.  Smaller → finer per-head peaks
+        in dense crowds.
     """
+
+    def __init__(
+        self,
+        min_peak_weight: float = _DEFAULT_MIN_PEAK_WEIGHT,
+        nms_kernel: int = _DEFAULT_NMS_KERNEL,
+    ) -> None:
+        self.min_peak_weight: float = float(min_peak_weight)
+        self.nms_kernel: int = max(1, int(nms_kernel))
 
     def process(self, frame_id: int, outputs: dict[str, Any]) -> dict[str, Any]:
         density_tiles = outputs.get("density_tiles", [])
@@ -44,7 +70,11 @@ class DensityDecoder(Postprocessor):
 
         hotspots: list[dict[str, float]] = []
         if density_tiles and tile_plan is not None:
-            hotspots = _extract_hotspots(density_tiles, tile_plan)
+            hotspots = _extract_hotspots(
+                density_tiles, tile_plan,
+                min_peak_weight=self.min_peak_weight,
+                nms_kernel=self.nms_kernel,
+            )
 
         return {
             "frame_id": frame_id,
@@ -57,6 +87,8 @@ class DensityDecoder(Postprocessor):
 def _extract_hotspots(
     density_tiles: list[Any],
     tile_plan: Any,
+    min_peak_weight: float = _DEFAULT_MIN_PEAK_WEIGHT,
+    nms_kernel: int = _DEFAULT_NMS_KERNEL,
 ) -> list[dict[str, float]]:
     """GPU-resident hotspot extraction.  All tensor work stays on the GPU device
     of the input tiles; only the final coordinate list is transferred to host
@@ -127,12 +159,16 @@ def _extract_hotspots(
     # GPU-side non-maximum suppression.
     # max_pool2d marks each cell with the maximum in its neighbourhood;
     # cells equal to the pool result are local maxima by definition.
-    padding = _NMS_KERNEL // 2
+    padding = nms_kernel // 2
     pooled  = F.max_pool2d(
         canvas.unsqueeze(0).unsqueeze(0),
-        kernel_size=_NMS_KERNEL, stride=1, padding=padding,
+        kernel_size=nms_kernel, stride=1, padding=padding,
     ).squeeze()
-    peaks_mask   = (canvas >= pooled - 1e-8) & (canvas > _DENSITY_THRESHOLD)
+    # Combined threshold: absolute zero-guard AND relative min-weight filter.
+    # min_peak_weight is expressed as a fraction of global_max, so body-part
+    # artefacts (small secondary peaks) are cut before the host transfer.
+    abs_threshold = max(_DENSITY_THRESHOLD, min_peak_weight * global_max)
+    peaks_mask   = (canvas >= pooled - 1e-8) & (canvas > abs_threshold)
     peak_indices = peaks_mask.nonzero(as_tuple=False)   # [N, 2]: (row, col) on GPU
     if peak_indices.numel() == 0:
         return []

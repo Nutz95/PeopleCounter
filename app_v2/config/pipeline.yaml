@@ -30,6 +30,14 @@ inference_streams:
 
 density:
   tiling: 1
+  # Relative peak-weight threshold: peaks whose weight is below this fraction
+  # of the brightest peak in the frame are discarded as noise (body / legs
+  # artefacts from the DM-Count model).
+  # Range [0.0, 1.0].  0.0 = keep all peaks.  0.05 = discard the bottom 5%.
+  # Adjustable at runtime via the IHM slider (POST /api/density/threshold).
+  min_peak_weight: 0.30
+  # NMS kernel size: larger → fewer peaks (merges close-together hotspots).
+  nms_kernel: 3
 
 streams:
   transfer: 0

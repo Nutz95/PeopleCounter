@@ -90,6 +90,22 @@
           </div>
         </div>
 
+        <!-- ── Density peak threshold (shown only in density mode) ────── -->
+        <div class="control-section" id="density-threshold-section" style="display:none">
+          <div class="control-section-label">Sensibilité détection densité</div>
+          <div class="density-slider-row">
+            <span class="density-slider-label">Tolérant</span>
+            <input type="range" id="density-threshold-slider"
+                   min="0" max="0.5" step="0.01" value="0.05"
+                   style="flex:1;accent-color:var(--accent)">
+            <span class="density-slider-label">Strict</span>
+            <span id="density-threshold-value" class="density-threshold-badge">0.05</span>
+          </div>
+          <div style="font-size:0.68rem;color:rgba(255,255,255,0.4);margin-top:4px">
+            Filtre les petits pics (jambes / corps). Augmenter pour réduire les doubles comptages.
+          </div>
+        </div>
+
         <!-- ── Preview-only (always visible) ─────────────────────────── -->
         <div class="control-section" id="preview-only-row">
           <label class="toggle">
@@ -241,6 +257,33 @@
       if (!showHeatmap) heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
     });
 
+    // ── Density peak threshold slider ──────────────────────────────
+    let _densityThreshold = 0.05;  // mirrors server-side DensityDecoder.min_peak_weight
+
+    (function () {
+      const slider = document.getElementById('density-threshold-slider');
+      const badge  = document.getElementById('density-threshold-value');
+      let _debounce = null;
+
+      slider.addEventListener('input', () => {
+        const v = parseFloat(slider.value);
+        _densityThreshold = v;
+        badge.textContent = v.toFixed(2);
+        clearTimeout(_debounce);
+        _debounce = setTimeout(async () => {
+          try {
+            await fetch('/api/density/threshold', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ threshold: v }),
+            });
+          } catch(err) {
+            console.warn('density threshold update failed:', err);
+          }
+        }, 150);  // 150 ms debounce — avoids flooding during drag
+      });
+    })();
+
     document.getElementById('preview-only-toggle').addEventListener('change', e => {
       previewOnly = e.target.checked;
       if (previewOnly) {
@@ -261,6 +304,10 @@
       document.getElementById('overlay-bbox').style.display    = overlays.includes('bbox')    ? '' : 'none';
       document.getElementById('overlay-seg').style.display     = overlays.includes('seg')     ? '' : 'none';
       document.getElementById('overlay-heatmap').style.display = overlays.includes('heatmap') ? '' : 'none';
+
+      // Density threshold section: only visible in density mode.
+      const hasDensity = overlays.includes('heatmap');
+      document.getElementById('density-threshold-section').style.display = hasDensity ? '' : 'none';
 
       // Enable overlays by default when entering a mode that supports them;
       // disable them when leaving (keeps state clean on mode switch).
@@ -345,6 +392,13 @@
         _activeMode = cfg.mode || 'passthrough';
         _renderModePills(cfg.available_modes || ['passthrough'], _activeMode);
         _updateOverlaySection(_activeMode);
+        // Sync density threshold slider to server-side value.
+        if (typeof cfg.density_threshold === 'number') {
+          const v = cfg.density_threshold;
+          _densityThreshold = v;
+          document.getElementById('density-threshold-slider').value = v;
+          document.getElementById('density-threshold-value').textContent = v.toFixed(2);
+        }
       } catch(e) {
         // Server not up yet or no config endpoint — stay in passthrough
         _renderModePills(['passthrough'], 'passthrough');

@@ -73,7 +73,10 @@ class PipelineOrchestrator:
         self.performance_tracker = PerformanceTracker()
         self.max_frames = max_frames
         self._models = self.model_builder.build_models()
-        self._density_decoder = DensityDecoder()
+        self._density_decoder = DensityDecoder(
+            min_peak_weight=float(self.config.get("density", {}).get("min_peak_weight", 0.05)),
+            nms_kernel=int(self.config.get("density", {}).get("nms_kernel", 3)),
+        )
         self._frame_counter = 0
         self._running = False
         # Dedicated CUDA stream for NV12→RGB conversion + resize (separate from
@@ -273,6 +276,9 @@ class PipelineOrchestrator:
                     pending_mode = self.publisher.get_and_clear_pending_mode()
                     if pending_mode is not None:
                         self._apply_mode_change(pending_mode)
+                    pending_threshold = self.publisher.get_and_clear_pending_density_threshold()
+                    if pending_threshold is not None:
+                        self._density_decoder.min_peak_weight = pending_threshold
         except StopIteration:
             log_info(LogChannel.GLOBAL, "Frame source signaled completion")
         except Exception as exc:

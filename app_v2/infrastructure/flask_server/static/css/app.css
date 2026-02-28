@@ -417,6 +417,31 @@ main.page-column {
   height: 18px;
 }
 
+/* ── Density threshold slider ───────────────────────────────────── */
+.density-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.density-slider-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.density-threshold-badge {
+  background: rgba(42, 223, 165, 0.15);
+  border: 1px solid rgba(42, 223, 165, 0.4);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  min-width: 3.2ch;
+  text-align: center;
+}
+
 .profile-controls {
   display: flex;
   flex-wrap: wrap;

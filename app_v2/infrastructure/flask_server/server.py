@@ -88,6 +88,11 @@ class FlaskStreamServer(ResultPublisher):
         self._active_mode: str = detect_mode_from_config(_cfg)
         self._pending_mode: str | None = None
         self._available_modes: list[str] = self._compute_available_modes(_cfg)
+        # Density threshold state — mirrors pipeline density.min_peak_weight.
+        # Protected by _mode_lock for simplicity (low contention).
+        _dcfg = _cfg.get("density") or {}
+        self._density_threshold: float = float(_dcfg.get("min_peak_weight", 0.05))
+        self._pending_density_threshold: float | None = None
 
         # Templates and static files live next to this package
         assets_root = Path(__file__).resolve().parent
@@ -119,12 +124,14 @@ class FlaskStreamServer(ResultPublisher):
                 mode      = self._active_mode
                 pending   = self._pending_mode
                 available = list(self._available_modes)
+                density_threshold = self._density_threshold
             return jsonify({
-                "mode":            mode,
-                "pending_mode":    pending,
-                "available_modes": available,
-                "mode_labels":     _MODE_LABELS,
-                "mode_overlays":   _MODE_OVERLAYS,
+                "mode":              mode,
+                "pending_mode":      pending,
+                "available_modes":   available,
+                "mode_labels":       _MODE_LABELS,
+                "mode_overlays":     _MODE_OVERLAYS,
+                "density_threshold": density_threshold,
             })
 
         @self._app.post("/api/mode")
@@ -142,6 +149,20 @@ class FlaskStreamServer(ResultPublisher):
             with self._mode_lock:
                 self._pending_mode = requested
             return jsonify({"ok": True, "mode": requested, "changed": True})
+
+        @self._app.post("/api/density/threshold")
+        def api_set_density_threshold() -> Any:
+            from flask import request
+            body = request.get_json(silent=True) or {}
+            try:
+                value = float(body.get("threshold", 0.05))
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "threshold must be a number"}), 400
+            value = max(0.0, min(1.0, value))  # clamp to [0, 1]
+            with self._mode_lock:
+                self._density_threshold = value
+                self._pending_density_threshold = value
+            return jsonify({"ok": True, "threshold": value})
 
         @self._app.get("/api/last")
         def api_last() -> Any:
@@ -256,6 +277,13 @@ class FlaskStreamServer(ResultPublisher):
             mode = self._pending_mode
             self._pending_mode = None
             return mode
+
+    def get_and_clear_pending_density_threshold(self) -> float | None:
+        """Return and consume any pending density threshold from POST /api/density/threshold."""
+        with self._mode_lock:
+            value = self._pending_density_threshold
+            self._pending_density_threshold = None
+            return value
 
     def set_active_mode(self, mode: str) -> None:
         """Record the mode that is now active (called after mode switch completes)."""
