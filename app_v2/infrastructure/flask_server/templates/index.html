@@ -453,7 +453,10 @@
         if (!p) continue;
         if (Array.isArray(p.detections)) count = Math.max(count, p.detections.length);
         if (typeof p.count === 'number')         count = Math.max(count, p.count);
-        if (typeof p.density_count === 'number') count = Math.max(count, Math.round(p.density_count));
+        // hotspot_count = number of circles actually drawn (peaks passing the threshold slider).
+        // Prefer it over density_count so the displayed number always matches what is on screen.
+        if (typeof p.hotspot_count === 'number') count = Math.max(count, p.hotspot_count);
+        else if (typeof p.density_count === 'number') count = Math.max(count, Math.round(p.density_count));
       }
 
       // ── Metrics from telemetry snapshot ──────────────────────────

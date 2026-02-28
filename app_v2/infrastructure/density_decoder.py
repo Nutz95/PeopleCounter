@@ -79,7 +79,8 @@ class DensityDecoder(Postprocessor):
         return {
             "frame_id": frame_id,
             "model": "density",
-            "density_count": total_count,
+            "density_count": total_count,   # raw model integral (invariant to threshold)
+            "hotspot_count": len(hotspots),  # peaks passing min_peak_weight filter = circles on screen
             "hotspots": hotspots,
         }
 
