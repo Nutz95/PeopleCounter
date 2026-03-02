@@ -578,15 +578,14 @@
       const layout = _computeLayout();
       if (!layout) return;
       const { W, H, dispW, dispH, dispX, dispY } = layout;
-      maskCanvas.width  = W;
-      maskCanvas.height = H;
-      maskCtx.clearRect(0, 0, W, H);
-      maskCanvas.width  = W;
-      maskCanvas.height = H;
-      maskCtx.clearRect(0, 0, W, H);
-      maskCanvas.width  = W;
-      maskCanvas.height = H;
-      maskCtx.clearRect(0, 0, W, H);
+      // Resize only when dimensions change — avoids expensive GPU texture
+      // reallocation on every frame (which caused compositor stalls + tearing).
+      if (maskCanvas.width !== W || maskCanvas.height !== H) {
+        maskCanvas.width  = W;
+        maskCanvas.height = H;
+      } else {
+        maskCtx.clearRect(0, 0, W, H);
+      }
 
       for (const p of payload) {
         if (!p || !Array.isArray(p.detections)) continue;
@@ -634,9 +633,12 @@
       const layout = _computeLayout();
       if (!layout) return;
       const { W, H, srcW, srcH, dispW, dispH, dispX, dispY } = layout;
-      segCanvas.width  = W;
-      segCanvas.height = H;
-      segCtx.clearRect(0, 0, W, H);
+      if (segCanvas.width !== W || segCanvas.height !== H) {
+        segCanvas.width  = W;
+        segCanvas.height = H;
+      } else {
+        segCtx.clearRect(0, 0, W, H);
+      }
 
       for (const p of payload) {
         if (!p || !p.seg_mask_raw || !p.seg_mask_w || !p.seg_mask_h) continue;
@@ -693,9 +695,12 @@
       const layout = _computeLayout();
       if (!layout) return;
       const { W, H, dispX, dispY, dispW, dispH } = layout;
-      heatCanvas.width  = W;
-      heatCanvas.height = H;
-      heatCtx.clearRect(0, 0, W, H);
+      if (heatCanvas.width !== W || heatCanvas.height !== H) {
+        heatCanvas.width  = W;
+        heatCanvas.height = H;
+      } else {
+        heatCtx.clearRect(0, 0, W, H);
+      }
 
       heatCtx.fillStyle = 'rgba(220, 30, 30, 0.85)';
       for (const p of payload) {
@@ -716,9 +721,12 @@
     function drawChart() {
       const W = latChart.offsetWidth || 600;
       const H = 170;
-      latChart.width  = W;
-      latChart.height = H;
-      latCtx.clearRect(0, 0, W, H);
+      if (latChart.width !== W || latChart.height !== H) {
+        latChart.width  = W;
+        latChart.height = H;
+      } else {
+        latCtx.clearRect(0, 0, W, H);
+      }
 
       const N = e2eHist.length;
       if (N < 2) return;
@@ -792,7 +800,7 @@
     //   • The browser doesn't support WebCodecs  (VideoDecoder undefined)
     //   • The WebSocket can't connect  (network, wrong port, etc.)
     //   • The server sends no init message within 5s  (MJPEG/no H.264 source)
-    (function initWebCodecs() {
+    (function () {
       if (typeof VideoDecoder === 'undefined') return; // no WebCodecs support
 
       const WS_URL    = `ws://${window.location.hostname}:{{ ws_port }}`;
@@ -910,9 +918,19 @@
           },
           error: (e) => {
             console.warn('VideoDecoder error:', e);
-            teardown();
-            videoFeed.style.display  = '';
-            videoCanvas.style.display = 'none';
+            if (initDone) {
+              // Transient decode error (common under high GPU load).
+              // Soft-reset: keep the rAF loop alive so _lastVideoFrame
+              // continues painting the frozen last frame during reconnect.
+              try { decoder && decoder.close(); } catch(_) {}
+              decoder = null;
+              try { ws && ws.close(); } catch(_) {}
+              // ws.onclose will call connectWs() after 500 ms.
+            } else {
+              teardown();
+              videoFeed.style.display   = '';
+              videoCanvas.style.display = 'none';
+            }
           },
         });
 
@@ -954,28 +972,38 @@
         }
       }
 
-      ws = new WebSocket(WS_URL);
-      ws.binaryType = 'arraybuffer';
+      // ── WebSocket connect ─────────────────────────────────────────────────
+      // connectWs() is called on initial load *and* on every reconnect.
+      // Unlike a recursive IIFE, it runs in the same closure so _lastVideoFrame,
+      // rafId, and decoder survive across reconnects — the canvas keeps showing
+      // the frozen last frame while the WS is down instead of going black.
+      function connectWs() {
+        try { ws && ws.close(); } catch(_) {}
+        ws = new WebSocket(WS_URL);
+        ws.binaryType = 'arraybuffer';
 
-      ws.onmessage = (ev) => {
-        if (typeof ev.data === 'string') {
-          let msg;
-          try { msg = JSON.parse(ev.data); } catch { return; }
-          if (msg && msg.type === 'init') onInitMsg(msg);
-        } else {
-          onBinaryMsg(ev.data);
-        }
-      };
+        ws.onmessage = (ev) => {
+          if (typeof ev.data === 'string') {
+            let msg;
+            try { msg = JSON.parse(ev.data); } catch { return; }
+            if (msg && msg.type === 'init') onInitMsg(msg);
+          } else {
+            onBinaryMsg(ev.data);
+          }
+        };
 
-      ws.onerror = () => { clearTimeout(fallbackTimer); };
-      ws.onclose = () => {
-        clearTimeout(fallbackTimer);
-        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
-        if (initDone) {
-          // Reconnect quickly — the server keeps the stream running.
-          setTimeout(initWebCodecs, 500);
-        }
-      };
+        ws.onerror = () => { clearTimeout(fallbackTimer); };
+        ws.onclose = () => {
+          // Soft reconnect: do NOT stop the rAF loop — _lastVideoFrame keeps
+          // painting the frozen last frame throughout the reconnect window.
+          // Close the decoder so the next onInitMsg triggers a fresh configure.
+          try { decoder && decoder.close(); } catch(_) {}
+          decoder = null;
+          if (initDone) setTimeout(connectWs, 500);
+        };
+      }
+
+      connectWs();
     })();
   </script>
 

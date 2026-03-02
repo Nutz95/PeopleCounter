@@ -108,6 +108,9 @@ class PipelineOrchestrator:
         self._pending_chw: torch.Tensor | None = None
         self._pending_enc_event: torch.cuda.Event | None = None
         self._encode_running: bool = False
+        # When a WebCodecs client is connected the browser renders video via the
+        # zero-encode WebSocket path, so MJPEG/NVJPEG encoding is unnecessary.
+        # We track nothing here — the check is done live in _push_video_frame_async.
         self._pending_frame_lock: threading.Lock = threading.Lock()
 
         # ── WebCodecs zero-encode path ──────────────────────────────────
@@ -393,6 +396,16 @@ class PipelineOrchestrator:
         push_frame = getattr(self.publisher, "push_frame", None)
         if not callable(push_frame):
             return
+
+        # Skip NVJPEG entirely when a WebCodecs client is connected.
+        # The browser renders via the zero-encode WebSocket path; MJPEG output
+        # is unused and the NV12→RGB + JPEG encode wastes ~8–12 % GPU headroom
+        # that is better reserved for TRT inference and NVDEC.
+        # When the WebSocket disconnects (has_clients() → False) NVJPEG resumes
+        # immediately so the MJPEG fallback stays functional.
+        if self._webcodecs_server.has_clients():
+            return
+
         if self._video_stream is None:
             return
 

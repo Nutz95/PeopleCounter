@@ -129,6 +129,11 @@ class WebCodecsServer:
                     pass
             self._clients.clear()
 
+    def has_clients(self) -> bool:
+        """Return True if at least one WebCodecs client is connected."""
+        with self._lock:
+            return bool(self._clients)
+
     # ------------------------------------------------------------------
     # Push API (called by NvdecPacketForwarder)
     # ------------------------------------------------------------------
@@ -293,16 +298,40 @@ class WebCodecsServer:
     # ------------------------------------------------------------------
 
     def _broadcast_raw(self, msg: bytes) -> None:
-        """Send *msg* to all connected clients; remove dead sockets."""
+        """Send *msg* to all connected clients; remove dead or unresponsive sockets.
+
+        The client list is snapshotted under ``_lock`` then released before any
+        I/O so that a slow browser (TCP send-buffer full) never blocks
+        ``push_packet`` — which is called at camera frame-rate from the
+        packet-forwarder thread.  A 100 ms writability probe via ``select``
+        discards clients that cannot accept data in time; they reconnect and
+        receive a fresh IDR via the stored ``_init_json``.
+        """
         with self._lock:
-            dead: list[socket.socket] = []
-            for conn in self._clients:
-                try:
-                    conn.sendall(msg)
-                except OSError:
+            clients = list(self._clients)
+        if not clients:
+            return
+        dead: list[socket.socket] = []
+        for conn in clients:
+            try:
+                _, writable, _ = select.select([], [conn], [], 0.1)
+                if not writable:
                     dead.append(conn)
-            for c in dead:
-                self._clients.remove(c)
+                    continue
+                conn.sendall(msg)
+            except OSError:
+                dead.append(conn)
+        if dead:
+            with self._lock:
+                for c in dead:
+                    try:
+                        self._clients.remove(c)
+                    except ValueError:
+                        pass
+                    try:
+                        c.close()
+                    except OSError:
+                        pass
 
     def _broadcast_text(self, text: str) -> None:
         if not self._clients:
