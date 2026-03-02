@@ -34,7 +34,7 @@ import threading
 from logger.filtered_logger import LogChannel, info as log_info, warning as log_warning
 
 # RFC 6455 magic GUID for the WebSocket handshake.
-_WS_GUID = "258EAFA5-E934-7E53-36CE-014B5F9B0A11"
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 # ---------------------------------------------------------------------------

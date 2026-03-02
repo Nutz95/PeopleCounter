@@ -90,7 +90,7 @@ else
 fi
 
 # Detection of source type
-DOCKER_ARGS=("--gpus" "all" "-p" "5000:5000" "-e" "DISPLAY=$DISPLAY" "-v" "$PWD:/app" "-w" "/app/$APP_DIR" "-e" "PYTHONPATH=/app:/app/app_v1:/app/app_v2" "-e" "APP_VERSION=$SELECTED_APP_VERSION")
+DOCKER_ARGS=("--gpus" "all" "-p" "5000:5000" "-p" "5001:5001" "-e" "DISPLAY=$DISPLAY" "-v" "$PWD:/app" "-w" "/app/$APP_DIR" "-e" "PYTHONPATH=/app:/app/app_v1:/app/app_v2" "-e" "APP_VERSION=$SELECTED_APP_VERSION")
 
 if [[ "$SOURCE" == http* ]] || [[ "$SOURCE" == rtsp* ]]; then
     echo "🌐 Using Network Stream mode"

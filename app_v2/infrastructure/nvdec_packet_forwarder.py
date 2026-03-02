@@ -240,10 +240,16 @@ class NvdecPacketForwarder:
 
             is_kf = is_keyframe(pkt_bytes, pkt_data)
 
-            # On the first keyframe with SPS+PPS, send init message.
+            # On the first keyframe, send the init message.
+            # No avcC description → browser VideoDecoder uses Annex-B mode and
+            # reads SPS/PPS in-band from the bitstream.  The dump_extra BSF
+            # guarantees SPS+PPS before every IDR so the decoder always has the
+            # parameter sets it needs, even on mid-stream connects or loop
+            # restarts.  No AVCC conversion required: raw Annex-B bytes go
+            # straight to the WebSocket.
             if is_kf and not avcc_sent:
-                codec_str, avcc = extract_avcc(pkt_bytes)
-                self._ws_server.push_init(codec_str, width, height, avcc)
+                codec_str, _ = extract_avcc(pkt_bytes)   # codec string only
+                self._ws_server.push_init(codec_str, width, height, None)
                 avcc_sent = True
 
             pts = self._pts_us(pkt_data, t0_ns)

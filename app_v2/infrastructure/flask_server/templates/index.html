@@ -41,6 +41,7 @@
         <!-- Top-right: inference fps / video decode fps -->
         <div class="fps-chip" id="fps-chip">— fps</div>
         <div class="fps-chip" id="display-fps-chip" style="top:2.8rem;">— fps</div>
+        <div class="fps-chip" id="display-mode-chip" style="top:4.6rem;font-size:0.65rem;opacity:0.7;">MJPEG</div>
 
         <!-- Bottom-left: pipeline stage breakdown -->
         <div class="video-overlay-controls" id="stage-breakdown">
@@ -784,40 +785,36 @@
     // ── WebCodecs VideoDecoder (zero server-side encode) ──────────
     // Architecture:
     //   PyFFmpegDemuxer → Annex-B H.264 packets → WebSocket binary
-    //   → EncodedVideoChunk → VideoDecoder → render queue → rAF → <canvas>
+    //   → EncodedVideoChunk → VideoDecoder (software) → output(frame: I420)
+    //   → ctx.drawImage(frame) → 2D canvas
     //
-    // Render queue: decoded VideoFrames wait until their PTS time is due.
-    // requestAnimationFrame checks PTS against wall-clock elapsed time so the
-    // video plays at the correct speed regardless of burst decode timing.
-    //
-    // Jitter buffer: we allow a 100 ms head-start before the clock starts so
-    // the queue is never starved on startup.
-    //
-    // Backpressure: if decoder.decodeQueueSize exceeds the threshold,
-    // non-keyframe packets are dropped so the decoder catches up.
-    //
-    // Falls back silently to MJPEG if:
-    //   • The browser doesn't support WebCodecs  (VideoDecoder undefined)
-    //   • The WebSocket can't connect  (network, wrong port, etc.)
-    //   • The server sends no init message within 5s  (MJPEG/no H.264 source)
+    // hardwareAcceleration: 'prefer-software' forces Chrome to decode in
+    // software (libavcodec / OpenH264).  Output VideoFrames are in I420
+    // format in CPU memory, so ctx.drawImage() reads a fully-committed
+    // frame every time — no NV12 GPU-texture timing issues, no
+    // createImageBitmap() rejections, no green UV-plane artifacts.
     (function () {
       if (typeof VideoDecoder === 'undefined') return; // no WebCodecs support
 
       const WS_URL    = `ws://${window.location.hostname}:{{ ws_port }}`;
       const videoCanvas = document.getElementById('video-canvas');
       const videoFeed   = document.getElementById('video-feed');
-      const ctx         = videoCanvas.getContext('2d');
+      const ctx = videoCanvas.getContext('2d');
+      const $displayModeChip = document.getElementById('display-mode-chip');
 
-      const RENDER_QUEUE_MAX  = 4;   // max buffered decoded frames
       const DECODE_QUEUE_MAX  = 8;   // drop non-keyframes above this threshold
-      const renderQueue = [];
 
       let decoder        = null;
       let ws             = null;
       let initDone       = false;
-      let rafId          = null;
       let _lastInitKey   = null;  // tracks last codec:w:h:desc to skip redundant re-inits
-      let _lastVideoFrame = null; // last decoded VideoFrame — re-drawn when queue is empty
+      let _lastConfig    = null;  // stored after configure(); used for inline decoder reset
+      // When the decode queue backs up we drop non-keyframes.  But silently
+      // dropping a P-frame leaves the decoder's reference buffer inconsistent:
+      // the next P-frame references a frame that was never decoded, producing
+      // the top/bottom two-buffer composite image.  _waitForKeyframe gates all
+      // decodes until the next IDR so the reference chain is always clean.
+      let _waitForKeyframe = false;
 
       // If no init message arrives in 5 s, the source is not H.264 — keep MJPEG.
       const fallbackTimer = setTimeout(() => {
@@ -834,49 +831,64 @@
       function activateCanvas() {
         videoFeed.style.display  = 'none';
         videoCanvas.style.display = 'block';
+        if ($displayModeChip) $displayModeChip.textContent = 'WebCodecs';
       }
 
       function teardown() {
         clearTimeout(fallbackTimer);
-        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
         try { ws && ws.close(); } catch(e) {}
         try { decoder && decoder.close(); } catch(e) {}
-        while (renderQueue.length) renderQueue.shift()?.close?.();
-        if (_lastVideoFrame) { try { _lastVideoFrame.close(); } catch(e) {} _lastVideoFrame = null; }
-        decoder = null; ws = null;
+        decoder = null; ws = null; _lastConfig = null; _waitForKeyframe = false;
+        if ($displayModeChip) $displayModeChip.textContent = 'MJPEG';
       }
 
-      // ── Render loop ───────────────────────────────────────────────
-      // Always display the most-recent decoded frame at the next rAF tick.
-      // Older frames are discarded to minimise display latency on a live feed.
-      // canvas.width/height are in canvas-buffer pixels (native stream
-      // resolution); clientWidth/clientHeight are CSS pixels and must NOT be
-      // used as drawImage target dimensions.
-      function renderLoop() {
-        // Discard all but the latest decoded frame so we never fall behind.
-        while (renderQueue.length > 1) {
-          renderQueue.shift()?.close();
-        }
-        if (renderQueue.length > 0) {
-          const frame = renderQueue.shift();
-          // Release the previous kept frame only when a new one arrives.
-          if (_lastVideoFrame) { try { _lastVideoFrame.close(); } catch(e) {} }
-          _lastVideoFrame = frame;  // keep reference — do NOT close yet
-          // Track display FPS (actual rendered frames per second)
-          const now = performance.now();
-          _dispFpsTs.push(now);
-          while (_dispFpsTs.length && now - _dispFpsTs[0] > 2000) _dispFpsTs.shift();
-          const dFps = _dispFpsTs.length > 1
-            ? Math.round((_dispFpsTs.length - 1) / ((now - _dispFpsTs[0]) / 1000))
-            : 0;
-          $displayFpsChip.textContent = dFps ? `${dFps} fps vid` : '— fps vid';
-        }
-        // Always draw the most-recent frame (re-paints after canvas.width reset or
-        // queue-empty gaps so the display never flashes black).
-        if (_lastVideoFrame) {
-          ctx.drawImage(_lastVideoFrame, 0, 0, videoCanvas.width, videoCanvas.height);
-        }
-        rafId = requestAnimationFrame(renderLoop);
+      // ── VideoDecoder factory ───────────────────────────────────────────────
+      // Factored out so onerror can rebuild the decoder in-line without closing
+      // the WebSocket (no 500 ms reconnect gap).  With GOP=1 every upcoming
+      // packet is an IDR so decoding resumes on the very next frame.
+      function makeVideoDecoder() {
+        return new VideoDecoder({
+          output: (frame) => {
+            // Software-decoded frames are in I420 (CPU memory).
+            // ctx.drawImage(VideoFrame) is synchronous and safe: the frame
+            // is fully committed before output() fires.
+            ctx.drawImage(frame, 0, 0, videoCanvas.width, videoCanvas.height);
+            frame.close();
+            const now = performance.now();
+            _dispFpsTs.push(now);
+            while (_dispFpsTs.length && now - _dispFpsTs[0] > 2000) _dispFpsTs.shift();
+            const dFps = _dispFpsTs.length > 1
+              ? Math.round((_dispFpsTs.length - 1) / ((now - _dispFpsTs[0]) / 1000))
+              : 0;
+            if ($displayFpsChip) $displayFpsChip.textContent = dFps ? `${dFps} fps vid` : '\u2014 fps vid';
+          },
+          error: (e) => {
+            console.warn('VideoDecoder error:', e.message || e);
+            if (!initDone) {
+              // Error before the first init — codec not supported.
+              teardown();
+              videoFeed.style.display   = '';
+              videoCanvas.style.display = 'none';
+              return;
+            }
+            if (!_lastConfig) {
+              // Config not yet stored — reconnect via WebSocket.
+              try { decoder && decoder.close(); } catch(_) {}
+              decoder = null;
+              try { ws && ws.close(); } catch(_) {}
+              return;
+            }
+            // ── Inline reset (no WebSocket reconnect) ─────────────────────
+            // Close the errored decoder, spin up a replacement and configure
+            // immediately.  The 2D canvas keeps its last painted frame during
+            // the reset (<1 ms).  With GOP=1 every upcoming packet is IDR so
+            // decoding resumes on the very next frame with no visible gap.
+            try { decoder && decoder.close(); } catch(_) {}
+            decoder = makeVideoDecoder();
+            try { decoder.configure(_lastConfig); } catch(_) {}
+            _waitForKeyframe = true;  // ensure we start on a clean IDR boundary
+          },
+        });
       }
 
       function onInitMsg(msg) {
@@ -891,48 +903,31 @@
         // on stream reconnects where codec/dimensions are identical.
         if (initKey === _lastInitKey && decoder && decoder.state === 'configured') return;
         _lastInitKey = initKey;
+        _waitForKeyframe = false;  // new decoder session — reference chain starts fresh
 
         const config = {
           codec,
           optimizeForLatency: true,
-          hardwareAcceleration: 'prefer-hardware',
+          hardwareAcceleration: 'prefer-software',  // I420 CPU frames — reliable ctx.drawImage
         };
         if (msg.description) config.description = base64ToBuffer(msg.description);
-        if (msg.width)  { config.codedWidth  = msg.width;  videoCanvas.width  = msg.width; }
-        if (msg.height) { config.codedHeight = msg.height; videoCanvas.height = msg.height; }
+        // Only resize the canvas when dimensions actually change.
+        // Setting videoCanvas.width = x (even to the same value) clears the
+        // canvas to transparent, causing a visible black flash on every
+        // WebSocket reconnect.  Guard against same-value assignments.
+        if (msg.width  && videoCanvas.width  !== msg.width)  { config.codedWidth  = msg.width;  videoCanvas.width  = msg.width; }
+        if (msg.height && videoCanvas.height !== msg.height) { config.codedHeight = msg.height; videoCanvas.height = msg.height; }
+        if (msg.width  && config.codedWidth  === undefined)  config.codedWidth  = msg.width;
+        if (msg.height && config.codedHeight === undefined)  config.codedHeight = msg.height;
 
         // Close the previous decoder before replacing it (avoids memory leaks).
         if (decoder) {
           try { decoder.close(); } catch (_) {}
           decoder = null;
         }
+        _lastConfig = null;  // reset until configure() succeeds below
 
-        decoder = new VideoDecoder({
-          output: (frame) => {
-            // Keep the render queue bounded: drop the oldest pending frame
-            // if the consumer (rAF) hasn't caught up yet.
-            if (renderQueue.length >= RENDER_QUEUE_MAX) {
-              renderQueue.shift()?.close();
-            }
-            renderQueue.push(frame);
-          },
-          error: (e) => {
-            console.warn('VideoDecoder error:', e);
-            if (initDone) {
-              // Transient decode error (common under high GPU load).
-              // Soft-reset: keep the rAF loop alive so _lastVideoFrame
-              // continues painting the frozen last frame during reconnect.
-              try { decoder && decoder.close(); } catch(_) {}
-              decoder = null;
-              try { ws && ws.close(); } catch(_) {}
-              // ws.onclose will call connectWs() after 500 ms.
-            } else {
-              teardown();
-              videoFeed.style.display   = '';
-              videoCanvas.style.display = 'none';
-            }
-          },
-        });
+        decoder = makeVideoDecoder();
 
         VideoDecoder.isConfigSupported(config).then(support => {
           if (!support.supported) {
@@ -940,9 +935,8 @@
             return;
           }
           decoder.configure(config);
+          _lastConfig = config;  // commit only after successful configure
           activateCanvas();
-          // Start the rAF render loop after successfully configuring the decoder.
-          if (rafId === null) rafId = requestAnimationFrame(renderLoop);
         }).catch(() => { teardown(); });
       }
 
@@ -952,8 +946,19 @@
         const flags      = view.getUint8(0);
         const isKeyframe = (flags & 1) !== 0;
 
-        // Backpressure: drop non-keyframes when the decode queue is backed up.
-        if (!isKeyframe && decoder.decodeQueueSize > DECODE_QUEUE_MAX) return;
+        // Backpressure: when the decode queue is saturated, drop non-keyframes
+        // BUT also latch _waitForKeyframe.  Without the latch, the next P-frame
+        // would reference a missing frame → inter-frame prediction corruption →
+        // top/bottom two-buffer composite image or macroblocks.
+        if (!isKeyframe && decoder.decodeQueueSize > DECODE_QUEUE_MAX) {
+          _waitForKeyframe = true;
+          return;
+        }
+        // If we dropped at least one P-frame, skip until the next IDR.
+        if (_waitForKeyframe) {
+          if (!isKeyframe) return;
+          _waitForKeyframe = false;  // IDR resets the reference chain
+        }
 
         // pts_us: u64 LE — read as two u32 to avoid BigInt requirement
         const pts_lo = view.getUint32(1, true);
@@ -974,9 +979,7 @@
 
       // ── WebSocket connect ─────────────────────────────────────────────────
       // connectWs() is called on initial load *and* on every reconnect.
-      // Unlike a recursive IIFE, it runs in the same closure so _lastVideoFrame,
-      // rafId, and decoder survive across reconnects — the canvas keeps showing
-      // the frozen last frame while the WS is down instead of going black.
+      // The 2D canvas retains its last painted frame across reconnects.
       function connectWs() {
         try { ws && ws.close(); } catch(_) {}
         ws = new WebSocket(WS_URL);
@@ -994,8 +997,7 @@
 
         ws.onerror = () => { clearTimeout(fallbackTimer); };
         ws.onclose = () => {
-          // Soft reconnect: do NOT stop the rAF loop — _lastVideoFrame keeps
-          // painting the frozen last frame throughout the reconnect window.
+          // Soft reconnect: 2D canvas holds the last painted frame while down.
           // Close the decoder so the next onInitMsg triggers a fresh configure.
           try { decoder && decoder.close(); } catch(_) {}
           decoder = null;

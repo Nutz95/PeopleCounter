@@ -28,6 +28,11 @@ class TestMakeAcceptKey:
         decoded = base64.b64decode(result)
         assert len(decoded) == 20     # SHA-1 produces 20 bytes
 
+    def test_rfc6455_test_vector(self):
+        # RFC 6455 §1.3 example: the canonical handshake test vector.
+        # Any deviation means Chrome will reject the upgrade.
+        assert make_accept_key("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+
     def test_deterministic(self):
         key = "AAAAAAAAAAAAAAAAAAAAAA=="
         assert make_accept_key(key) == make_accept_key(key)
