@@ -90,6 +90,11 @@ class NvdecDecoder:
             telemetry = FrameTelemetry(frame_id=frame_id)
             telemetry.mark_stage_start("nvdec")
             surface = self._decode_surface()
+            # Capture wall-clock time immediately after NVDEC unblocks.
+            # This is used as the E2E timestamp baseline so that E2E represents
+            # pipeline processing latency (preprocess + inference + publish) only,
+            # not the inter-frame arrival gap from the camera (1/fps ≈ 33 ms).
+            _decode_done_ns = time.time_ns()
             if surface is None and self._last_surface_was_good:
                 # First failure after a run of good frames: PyNvCodec has already
                 # printed "HW decoder faced error. Re-create instance." for each
@@ -100,7 +105,15 @@ class NvdecDecoder:
             if surface is None:
                 raise RuntimeError("NVDEC decoder failed to produce a surface")
             self._last_surface_was_good = True
-            frame = self._surface_to_gpu_frame(surface, frame_id, timestamp_ns, telemetry)
+            # Prefer caller-supplied timestamp (tests inject synthetic values).
+            # Fall back to _decode_done_ns: a wall-clock snapshot taken immediately
+            # after NVDEC unblocked.  This ensures E2E measures only pipeline
+            # processing time (preprocess + inference + publish), not the
+            # inter-frame arrival gap from the camera (~33 ms at 30 fps).
+            # Hardware surface PTS is intentionally avoided here because PyNvCodec
+            # returns stream-timebase values, not wall-clock nanoseconds.
+            effective_ts = timestamp_ns or _decode_done_ns
+            frame = self._surface_to_gpu_frame(surface, frame_id, effective_ts, telemetry)
             self._ring.commit(slot, frame)
             log_debug(LogChannel.NVDEC, f"Decoded frame {frame_id} into slot {slot}")
             return slot
@@ -235,6 +248,7 @@ class NvdecDecoder:
         return None
 
     def _surface_timestamp(self, surface: Any) -> int:
+        """Return surface PTS or a wall-clock fallback (kept for legacy callers)."""
         for attr in ("Pts", "PresentationTimeStamp", "TimeStamp", "PtsAbs"):
             method = getattr(surface, attr, None)
             if callable(method):

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from app_v2.core.frame_source import FrameSource
@@ -33,7 +32,11 @@ class RTSPFrameSource(FrameSource):
         """Return a decoded GPU frame for the scheduled frame_id."""
         if not self.connected:
             raise RuntimeError("Frame source is disconnected")
-        slot = self.decoder.decode_next_into_ring(frame_id=frame_id, timestamp_ns=int(time.time_ns()))
+        # Do NOT pass timestamp_ns here — let decode_next_into_ring capture the
+        # wall-clock time *after* NVDEC unblocks.  Passing time.time_ns() before
+        # the blocking call includes the inter-frame wait (~33 ms at 30 fps) in
+        # the E2E metric, hiding real pipeline latency (preprocess + inference).
+        slot = self.decoder.decode_next_into_ring(frame_id=frame_id)
         popped = self.decoder.ring.pop_ready(block=True)
         if popped is None:
             raise RuntimeError("No decoded frame available")
