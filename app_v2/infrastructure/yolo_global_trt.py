@@ -73,6 +73,7 @@ class YoloGlobalTRT(InferenceModel):
                 "seg_mask_raw": decoded.get("seg_mask_raw"),
                 "seg_mask_w": decoded.get("seg_mask_w", 0),
                 "seg_mask_h": decoded.get("seg_mask_h", 0),
+                "seg_mask_is_canvas": False,
                 "inference_params": self._inference_params,
                 "person_class_id": int(self._inference_params.get("person_class_id", 0)),
                 "class_whitelist": list(self._inference_params.get("class_whitelist", [0])),

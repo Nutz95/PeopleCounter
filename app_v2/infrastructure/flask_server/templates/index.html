@@ -666,23 +666,34 @@
         }
         offCtx.putImageData(imgData, 0, 0);
 
-        // Crop letterbox padding from 640-space proto → stretch to display area.
-        const modelSz = 640;
-        const mScale  = Math.min(modelSz / srcW, modelSz / srcH);
-        const prepW   = srcW * mScale;
-        const prepH   = srcH * mScale;
-        const padX    = (modelSz - prepW) / 2;
-        const padY    = (modelSz - prepH) / 2;
-        const mpadX   = padX  * mw / modelSz;
-        const mpadY   = padY  * mh / modelSz;
-        const mCntW   = prepW * mw / modelSz;
-        const mCntH   = prepH * mh / modelSz;
-
-        segCtx.drawImage(
-          _segOffscreen,
-          mpadX, mpadY, mCntW, mCntH,   // source region in proto mask
-          dispX, dispY, dispW, dispH,    // dest: video display area
-        );
+        if (p.seg_mask_is_canvas) {
+          // Tiles mode: the canvas is a full-frame mask (mw × mh proportional
+          // to the source frame, no letterbox padding).  Map it directly to
+          // the display rect.
+          segCtx.drawImage(
+            _segOffscreen,
+            0, 0, mw, mh,            // source covers the full canvas
+            dispX, dispY, dispW, dispH,  // dest: video display area
+          );
+        } else {
+          // Global model: output is a proto mask in letterboxed 640×640 space.
+          // Strip the letterbox padding before stretching to display area.
+          const modelSz = 640;
+          const mScale  = Math.min(modelSz / srcW, modelSz / srcH);
+          const prepW   = srcW * mScale;
+          const prepH   = srcH * mScale;
+          const padX    = (modelSz - prepW) / 2;
+          const padY    = (modelSz - prepH) / 2;
+          const mpadX   = padX  * mw / modelSz;
+          const mpadY   = padY  * mh / modelSz;
+          const mCntW   = prepW * mw / modelSz;
+          const mCntH   = prepH * mh / modelSz;
+          segCtx.drawImage(
+            _segOffscreen,
+            mpadX, mpadY, mCntW, mCntH,   // source region (no letterbox)
+            dispX, dispY, dispW, dispH,    // dest: video display area
+          );
+        }
       }
     }
 

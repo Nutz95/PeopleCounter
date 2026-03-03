@@ -115,7 +115,7 @@ class YoloTilingParallelTRT(InferenceModel):
             total_stream_sync_ms += result.get("stream_sync_ms", 0.0)
             total_decode_ms += result.get("decode_ms", 0.0)
             max_group_ms = max(max_group_ms, result.get("group_ms", 0.0))
-        
+
         infer_ms = (time.perf_counter_ns() - start_ns) / 1_000_000.0
         submit_ms = (submit_ns - start_ns) / 1_000_000.0
         wait_ms = (wait_ns - submit_ns) / 1_000_000.0
@@ -170,15 +170,20 @@ class YoloTilingParallelTRT(InferenceModel):
                     "detections": [], "prepare_batch_ms": 0.0, "enqueue_ms": 0.0,
                     "stream_sync_ms": 0.0, "decode_ms": 0.0, "group_ms": 0.0,
                     "tile_count": len(tiles),
+                    "output_tensors": [], "group_plan": None,
                 }
             gpu_done_ns = time.perf_counter_ns()   # ← GPU inference ends here
             decode_start_ns = gpu_done_ns
-            decoded = self._decoder.process(frame_id, raw_outputs, tile_plan=tile_plan)
+            output_tensors = raw_outputs.get("output_tensors", [])
+            # Decode only detections here — seg mask is computed once in
+            # infer() for all groups combined to avoid running the expensive
+            # torch/numpy seg decode inside parallel threads (GIL-bound).
+            detections = self._decoder._decode_detections(output_tensors, tile_plan=tile_plan)
             decode_ms = (time.perf_counter_ns() - decode_start_ns) / 1_000_000.0
             group_ms = (gpu_done_ns - group_start_ns) / 1_000_000.0  # CPU decode excluded
-            
+
             return {
-                "detections": decoded.get("detections", []),
+                "detections": detections,
                 "prepare_batch_ms": float(raw_outputs.get("prepare_batch_ms", 0.0)),
                 "enqueue_ms": float(raw_outputs.get("enqueue_ms", 0.0)),
                 "stream_sync_ms": float(raw_outputs.get("stream_sync_ms", 0.0)),

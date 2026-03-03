@@ -20,12 +20,6 @@ class YoloTilingTRT(InferenceModel):
             person_class_id=int(self._inference_params.get("person_class_id", 0)),
             confidence_threshold=float(self._inference_params.get("confidence_threshold", 0.25)),
         )
-        self._decoder.seg_mask_enabled = bool(
-            self._inference_params.get("seg_mask_enabled", False)
-        )
-        self._decoder.seg_mask_clip_to_bbox = bool(
-            self._inference_params.get("seg_mask_clip_to_bbox", True)
-        )
 
     @property
     def name(self) -> str:
@@ -80,8 +74,8 @@ class YoloTilingTRT(InferenceModel):
                 )
                 return {
                     "frame_id": frame_id, "model": self._name, "prediction": {},
-                    "segmentation": None, "detections": [], "seg_mask_raw": None,
-                    "seg_mask_w": 0, "seg_mask_h": 0,
+                    "segmentation": None, "detections": [],
+                    "seg_mask_raw": None, "seg_mask_w": 0, "seg_mask_h": 0,
                     "inference_params": self._inference_params,
                     "person_class_id": int(self._inference_params.get("person_class_id", 0)),
                     "class_whitelist": list(self._inference_params.get("class_whitelist", [0])),
@@ -103,9 +97,9 @@ class YoloTilingTRT(InferenceModel):
                 } if isinstance(raw_outputs, dict) else {},
                 "segmentation": raw_outputs.get("segmentation") if isinstance(raw_outputs, dict) else None,
                 "detections": decoded.get("detections", []),
-                "seg_mask_raw": decoded.get("seg_mask_raw"),
-                "seg_mask_w": decoded.get("seg_mask_w", 0),
-                "seg_mask_h": decoded.get("seg_mask_h", 0),
+                "seg_mask_raw": None,
+                "seg_mask_w": 0,
+                "seg_mask_h": 0,
                 "inference_params": self._inference_params,
                 "person_class_id": int(self._inference_params.get("person_class_id", 0)),
                 "class_whitelist": list(self._inference_params.get("class_whitelist", [0])),
