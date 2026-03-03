@@ -785,14 +785,10 @@
     // ── WebCodecs VideoDecoder (zero server-side encode) ──────────
     // Architecture:
     //   PyFFmpegDemuxer → Annex-B H.264 packets → WebSocket binary
-    //   → EncodedVideoChunk → VideoDecoder (software) → output(frame: I420)
-    //   → ctx.drawImage(frame) → 2D canvas
+    //   → EncodedVideoChunk → VideoDecoder → output(frame) → ctx.drawImage → 2D canvas
     //
-    // hardwareAcceleration: 'prefer-software' forces Chrome to decode in
-    // software (libavcodec / OpenH264).  Output VideoFrames are in I420
-    // format in CPU memory, so ctx.drawImage() reads a fully-committed
-    // frame every time — no NV12 GPU-texture timing issues, no
-    // createImageBitmap() rejections, no green UV-plane artifacts.
+    // hardwareAcceleration: 'no-preference' lets Chrome pick hw or sw decode.
+    // ctx.drawImage(VideoFrame) works reliably with both hw and sw frames.
     (function () {
       if (typeof VideoDecoder === 'undefined') return; // no WebCodecs support
 
@@ -815,11 +811,12 @@
       // the top/bottom two-buffer composite image.  _waitForKeyframe gates all
       // decodes until the next IDR so the reference chain is always clean.
       let _waitForKeyframe = false;
+      let _stopped = false;   // set by teardown(); suppresses auto-reconnect in onclose
 
-      // If no init message arrives in 5 s, the source is not H.264 — keep MJPEG.
+      // If no init message arrives in 15 s, the source is not H.264 — keep MJPEG.
       const fallbackTimer = setTimeout(() => {
         if (!initDone) teardown();
-      }, 5000);
+      }, 15000);
 
       function base64ToBuffer(b64) {
         const bin = atob(b64);
@@ -835,6 +832,7 @@
       }
 
       function teardown() {
+        _stopped = true;   // prevent onclose from scheduling another connectWs()
         clearTimeout(fallbackTimer);
         try { ws && ws.close(); } catch(e) {}
         try { decoder && decoder.close(); } catch(e) {}
@@ -908,7 +906,7 @@
         const config = {
           codec,
           optimizeForLatency: true,
-          hardwareAcceleration: 'prefer-software',  // I420 CPU frames — reliable ctx.drawImage
+          hardwareAcceleration: 'no-preference',  // allow hw decode for 4K; ctx.drawImage works with both
         };
         if (msg.description) config.description = base64ToBuffer(msg.description);
         // Only resize the canvas when dimensions actually change.
@@ -931,13 +929,26 @@
 
         VideoDecoder.isConfigSupported(config).then(support => {
           if (!support.supported) {
-            teardown();
+            // Codec/resolution not supported by this browser build.
+            // Close the WS cleanly — onclose will retry after 2 s (initDone
+            // is already true here so reconnect fires).  _stopped is NOT set
+            // so the next init message (e.g. different resolution or codec)
+            // gets a fresh attempt.
+            console.warn('VideoDecoder: codec not supported', config);
+            try { decoder && decoder.close(); } catch(_) {}
+            decoder = null;
+            try { ws && ws.close(); } catch(_) {}
             return;
           }
           decoder.configure(config);
           _lastConfig = config;  // commit only after successful configure
           activateCanvas();
-        }).catch(() => { teardown(); });
+        }).catch((e) => {
+          console.warn('VideoDecoder.isConfigSupported error:', e);
+          try { decoder && decoder.close(); } catch(_) {}
+          decoder = null;
+          try { ws && ws.close(); } catch(_) {}
+        });
       }
 
       function onBinaryMsg(data) {
@@ -995,13 +1006,18 @@
           }
         };
 
-        ws.onerror = () => { clearTimeout(fallbackTimer); };
+        // onerror fires before onclose — don't kill fallbackTimer here; let
+        // the 15 s safety-net keep running so MJPEG activates on hard failure.
+        ws.onerror = () => {};
         ws.onclose = () => {
           // Soft reconnect: 2D canvas holds the last painted frame while down.
           // Close the decoder so the next onInitMsg triggers a fresh configure.
           try { decoder && decoder.close(); } catch(_) {}
           decoder = null;
-          if (initDone) setTimeout(connectWs, 500);
+          // Always retry unless teardown() explicitly stopped us (codec unsupported
+          // or 15 s fallback fired).  Use a longer gap before first init to avoid
+          // hammering the server during startup.
+          if (!_stopped) setTimeout(connectWs, initDone ? 500 : 2000);
         };
       }
 

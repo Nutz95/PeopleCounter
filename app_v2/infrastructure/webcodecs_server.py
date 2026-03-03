@@ -70,7 +70,7 @@ def make_ws_frame(payload: bytes, opcode: int) -> bytes:
 def build_video_packet_frame(packet: bytes, pts_us: int, is_keyframe: bool) -> bytes:
     """Return WebSocket binary frame for a single compressed video packet."""
     flags = 0x01 if is_keyframe else 0x00
-    header = bytes([flags]) + struct.pack("<Q", pts_us)
+    header = bytes([flags]) + struct.pack("<Q", max(0, pts_us))
     return make_ws_frame(header + packet, opcode=0x02)
 
 
@@ -110,13 +110,19 @@ class WebCodecsServer:
         return self._port
 
     def start(self) -> None:
-        """Start the accept loop in a daemon background thread."""
+        """Start the accept loop in a daemon background thread.
+
+        Blocks until the listen socket is actually bound so callers can rely on
+        the "listening" log entry being accurate.
+        """
         self._running = True
+        self._bound_event = threading.Event()
         self._accept_thread = threading.Thread(
             target=self._accept_loop, daemon=True, name="wc-accept"
         )
         self._accept_thread.start()
-        log_info(LogChannel.GLOBAL, f"WebCodecsServer listening on ws://{self._host}:{self._port}")
+        # Wait up to 3 s for the background thread to bind the socket.
+        self._bound_event.wait(timeout=3.0)
 
     def stop(self) -> None:
         """Signal the accept loop to stop and close all client sockets."""
@@ -188,7 +194,13 @@ class WebCodecsServer:
             srv.setblocking(False)
         except OSError as exc:
             log_warning(LogChannel.GLOBAL, f"WebCodecsServer bind on port {self._port} failed: {exc}")
+            if hasattr(self, "_bound_event"):
+                self._bound_event.set()  # unblock start() even on failure
             return
+
+        log_info(LogChannel.GLOBAL, f"WebCodecsServer listening on ws://{self._host}:{self._port}")
+        if hasattr(self, "_bound_event"):
+            self._bound_event.set()
 
         try:
             while self._running:

@@ -109,6 +109,9 @@ class FlaskStreamServer(ResultPublisher):
             static_folder=str(self._static_dir),
             static_url_path="/static",
         )
+        # Always reload templates from disk so code changes in the mounted
+        # volume take effect without rebuilding the Docker image.
+        self._app.config["TEMPLATES_AUTO_RELOAD"] = True
 
         @self._app.get("/")
         def index() -> Any:

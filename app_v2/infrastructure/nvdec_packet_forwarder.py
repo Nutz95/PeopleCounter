@@ -222,7 +222,7 @@ class NvdecPacketForwarder:
         packet = np.zeros(shape=(0,), dtype=np.uint8)
 
         avcc_sent = False
-        t0_ns = time.time_ns()
+        t0_ns = time.monotonic_ns()
 
         while self._running:
             try:
@@ -240,17 +240,21 @@ class NvdecPacketForwarder:
 
             is_kf = is_keyframe(pkt_bytes, pkt_data)
 
-            # On the first keyframe, send the init message.
-            # No avcC description → browser VideoDecoder uses Annex-B mode and
-            # reads SPS/PPS in-band from the bitstream.  The dump_extra BSF
-            # guarantees SPS+PPS before every IDR so the decoder always has the
-            # parameter sets it needs, even on mid-stream connects or loop
-            # restarts.  No AVCC conversion required: raw Annex-B bytes go
-            # straight to the WebSocket.
+            # Packets from PyFFmpegDemuxer are raw Annex-B (start-code prefix).
+            # WebCodecs VideoDecoder accepts Annex-B when *no* description is
+            # provided.  We still use the profile-specific codec string derived
+            # from the SPS (e.g. "avc1.640033") so the browser can evaluate
+            # hardware support accurately via isConfigSupported.
+            # The description (avcC box) is only required for AVCC-format
+            # (length-prefixed) streams, which we do NOT use here.
             if is_kf and not avcc_sent:
-                codec_str, _ = extract_avcc(pkt_bytes)   # codec string only
-                self._ws_server.push_init(codec_str, width, height, None)
-                avcc_sent = True
+                codec_str, avcc = extract_avcc(pkt_bytes)
+                if avcc is None:
+                    # SPS not yet in this keyframe — wait for the next one.
+                    pass
+                else:
+                    self._ws_server.push_init(codec_str, width, height, None)
+                    avcc_sent = True
 
             pts = self._pts_us(pkt_data, t0_ns)
             self._ws_server.push_packet(pkt_bytes, pts, is_kf)
@@ -297,4 +301,6 @@ class NvdecPacketForwarder:
                         return int(val * 1_000_000 / 90_000)
                     # Assume nanoseconds → convert to microseconds.
                     return int(val // 1_000)
-        return (time.time_ns() - t0_ns) // 1_000
+        # Use CLOCK_MONOTONIC so NTP / clock adjustments never produce a
+        # negative delta (CLOCK_REALTIME can jump backwards).
+        return max(0, (time.monotonic_ns() - t0_ns) // 1_000)
