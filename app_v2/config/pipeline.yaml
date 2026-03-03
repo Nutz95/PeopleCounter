@@ -6,7 +6,7 @@ models:
     engine: models/tensorrt/yolo26x-seg-fp8-qdq.engine  # YOLOv8x FP8-QDQ — max accuracy global
   yolo_tiles:
     enabled: false
-    engine: models/tensorrt/yolo26n-seg-fp8-qdq.engine  # YOLOv8n FP8-QDQ — fast tiling (batch 1..32)
+    engine: models/tensorrt/yolo26n-fp8-qdq.engine  # YOLOv8n FP8-QDQ bbox-only — fast tiling (batch 1..32, no seg head)
   density:
     enabled: false
     engine: models/tensorrt/dm_count_qnrf_1920x1088_b1.engine

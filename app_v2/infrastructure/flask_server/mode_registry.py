@@ -40,7 +40,7 @@ _MODE_OVERLAYS: dict[str, list[str]] = {
     "passthrough":         [],
     "density":             ["heatmap"],
     "yolo_global":         ["bbox", "seg"],
-    "yolo_tiles":          ["bbox", "seg"],
+    "yolo_tiles":          ["bbox"],
 }
 
 

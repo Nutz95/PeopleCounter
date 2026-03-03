@@ -34,6 +34,8 @@ SKIP_DENSITY="${SKIP_DENSITY:-0}"
 # Leave unset to build FP16 only (FP8 requires UCF-QNRF_ECCV18.zip dataset)
 DENSITY_CALIB_DIR="${DENSITY_CALIB_DIR:-}"
 SEG_MODELS="${SEG_MODELS:-yolo26n-seg yolo26s-seg yolo26m-seg yolo26l-seg yolo26x-seg}"
+# Bbox-only models to build FP8-QDQ engines for (used by yolo_tiles, no seg head)
+BBOX_MODELS="${BBOX_MODELS:-yolo26n}"
 
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     echo "⚠️  Docker image $IMAGE_NAME not found."
@@ -100,6 +102,29 @@ else
                 echo '     [skip] engine already exists: $engine_out'
             else
                 python3 prepare_yolo_modelopt_fp8.py --model '$model_base'
+            fi"
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# Step 3b — FP8-QDQ bbox-only engines (no segmentation head, for yolo_tiles)
+# ---------------------------------------------------------------------------
+if [[ "$SKIP_FP8" == "1" ]]; then
+    echo ""
+    echo "Step 3b — FP8-QDQ bbox-only skipped (SKIP_FP8=1)"
+else
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Step 3b — FP8-QDQ bbox-only engines (no seg head, faster tiling)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    for model in $BBOX_MODELS; do
+        engine_out="models/tensorrt/${model}-fp8-qdq.engine"
+        echo "  → $model : $engine_out"
+        $DOCKER_RUN bash -c "set -e
+            if [ -f '$engine_out' ]; then
+                echo '     [skip] engine already exists: $engine_out'
+            else
+                python3 prepare_yolo_bbox_fp8.py --model '$model'
             fi"
     done
 fi
