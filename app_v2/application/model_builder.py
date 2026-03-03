@@ -17,9 +17,11 @@ from logger.filtered_logger import LogChannel, warning as log_warning
 
 
 _MODEL_REGISTRY: dict[str, tuple[type[InferenceModel], str]] = {
-    "yolo_global": (YoloGlobalTRT, "yolo"),
-    "yolo_tiles": (YoloTilingTRT, "yolo"),
-    "density": (DensityTRT, "density"),
+    "yolo_global":  (YoloGlobalTRT,  "yolo"),
+    "yolo_tiles":   (YoloTilingTRT,  "yolo"),
+    "density":      (DensityTRT,     "density"),
+    "crowd_global": (YoloGlobalTRT,  "yolo"),
+    "crowd_tiles":  (YoloTilingTRT,  "yolo"),
 }
 
 
@@ -60,8 +62,8 @@ class ModelBuilder:
             model_cls, stream_key = registry_entry
             stream_id = stream_ids.get(stream_key, 0)
             
-            # Special handling for yolo_tiles with parallel split enabled
-            if model_name == "yolo_tiles" and parallel_tiles_enabled:
+            # Special handling for yolo_tiles / crowd_tiles with parallel split enabled
+            if model_name in ("yolo_tiles", "crowd_tiles") and parallel_tiles_enabled:
                 contexts = []
                 for group_idx in range(parallel_tiles_groups):
                     loader = TensorRTEngineLoader(engine_path, profiles={})
@@ -74,14 +76,15 @@ class ModelBuilder:
                         stream_id=stream_id,
                         groups=parallel_tiles_groups,
                         inference_params=params,
+                        model_name=model_name,
                     )
                 )
             else:
                 loader = TensorRTEngineLoader(engine_path, profiles={})
                 context = TensorRTExecutionContext(loader, self._stream_pool, options=trt_options)
-                if model_name.startswith("yolo"):
+                if model_name.startswith("yolo") or model_name.startswith("crowd"):
                     params = self._resolve_model_inference_params(model_name)
-                    models.append(model_cls(context, stream_id, inference_params=params))
+                    models.append(model_cls(context, stream_id, inference_params=params, model_name=model_name))
                 else:
                     models.append(model_cls(context, stream_id))
         return models

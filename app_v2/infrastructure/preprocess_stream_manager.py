@@ -97,9 +97,9 @@ class PreprocessStreamManager:
         density_preprocess_stream = int(streams.get("density_preprocess", density_stream))
         for model_name in metadata.get("preprocess", {}).keys():
             normalized_name = str(model_name)
-            if normalized_name == "yolo_global":
+            if normalized_name == "yolo_global" or normalized_name == "crowd_global":
                 mapping[normalized_name] = yolo_global_preprocess_stream
-            elif normalized_name.startswith("yolo_tiles"):
+            elif normalized_name.startswith("yolo_tiles") or normalized_name.startswith("crowd_tiles"):
                 mapping[normalized_name] = yolo_tiles_preprocess_stream
             elif normalized_name.startswith("density") or normalized_name.startswith("lwcc"):
                 mapping[normalized_name] = density_preprocess_stream

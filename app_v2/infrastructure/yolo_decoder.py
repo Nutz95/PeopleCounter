@@ -31,6 +31,11 @@ class YoloDecoder(Postprocessor):
         # detections_gpu summary requires a GPU→CPU sync (.item()) — only
         # needed for integration-test assertions, not the live pipeline.
         self.person_summary_enabled: bool = False
+        # Output format of the model:
+        #   "yolov8" — raw [N, 4+C] or post-NMS [N, 6] (default, all YOLOv8 models)
+        #   "yolov5" — pre-decoded [N, nc+5] with separate objectness score
+        #              col4=obj_conf, col5+=class_probs; coords pixel-space cxcywh
+        self.decoder_format: str = "yolov8"
 
     def process(self, frame_id: int, outputs: dict[str, Any], *, tile_plan: Any = None) -> dict[str, Any]:
         """Return normalized bounding boxes plus metadata for the aggregator.
@@ -176,7 +181,11 @@ class YoloDecoder(Postprocessor):
                 dets = self._decode_postnms(rows)
             elif ncols > 4:
                 # ── Raw YOLOv8: [N, 4+C] = [cx, cy, w, h, s0, s1, …] ──────
-                dets = self._decode_raw_yolov8(rows)
+                # ── Raw YOLOv5: [N, nc+5] = [cx, cy, w, h, obj, cls…] ─────
+                if self.decoder_format == "yolov5":
+                    dets = self._decode_raw_yolov5(rows)
+                else:
+                    dets = self._decode_raw_yolov8(rows)
             else:
                 return []
 
@@ -271,6 +280,58 @@ class YoloDecoder(Postprocessor):
             for (bx1, by1, bx2, by2), c in zip(coords_list, confs_list)
         ]
 
+    def _decode_raw_yolov5(self, rows: Any) -> list[dict[str, Any]]:
+        """Decode pre-decoded YOLOv5 anchor tensor ``[N, nc+5]``.
+
+        YOLOv5 Detect layer (grid pre-baked) output format::
+
+            [cx_px, cy_px, w_px, h_px, obj_conf, cls0_conf, ..., clsN_conf]
+
+        Coordinates are already in pixel space (0..640, sigmoid + stride applied).
+        Final detection score = ``obj_conf × cls_conf`` (unlike YOLOv8 which has
+        no separate objectness term).
+        """
+        num_classes = rows.shape[-1] - 5
+        if self.person_class_id >= num_classes:
+            return []
+
+        obj_conf     = rows[:, 4]
+        cls_conf     = rows[:, 5 + self.person_class_id]
+        person_scores = obj_conf * cls_conf
+
+        mask   = person_scores >= self.confidence_threshold
+        rows_f = rows[mask]
+        scores_f = person_scores[mask]
+
+        if rows_f.shape[0] == 0:
+            return []
+
+        cx = rows_f[:, 0];  cy = rows_f[:, 1]
+        w  = rows_f[:, 2];  h  = rows_f[:, 3]
+        lx1 = cx - w / 2.0;  ly1 = cy - h / 2.0
+        lx2 = cx + w / 2.0;  ly2 = cy + h / 2.0
+
+        try:
+            from torchvision.ops import nms as _nms  # type: ignore[import]
+            boxes_nms = torch.stack([lx1, ly1, lx2, ly2], dim=1).float()
+            keep = _nms(boxes_nms, scores_f.float(), iou_threshold=0.45)
+            lx1, ly1, lx2, ly2 = lx1[keep], ly1[keep], lx2[keep], ly2[keep]
+            scores_f = scores_f[keep]
+        except Exception:
+            pass
+
+        x1 = (lx1 / 640.0).clamp(0.0, 1.0)
+        y1 = (ly1 / 640.0).clamp(0.0, 1.0)
+        x2 = (lx2 / 640.0).clamp(0.0, 1.0)
+        y2 = (ly2 / 640.0).clamp(0.0, 1.0)
+
+        coords_list = torch.stack([x1, y1, x2, y2], dim=1).tolist()
+        confs_list  = scores_f.tolist()
+        return [
+            {"bbox": [bx1, by1, bx2, by2], "conf": round(c, 4), "label": "person"}
+            for (bx1, by1, bx2, by2), c in zip(coords_list, confs_list)
+        ]
+
     def _decode_tiled_yolov8_global(self, tensor: Any, plan: Any) -> list[dict[str, Any]]:
         """Decode batched tile tensor to global frame coordinates ``[0, 1]``.
 
@@ -306,12 +367,21 @@ class YoloDecoder(Postprocessor):
             if a <= 1000 and c >= 6:
                 return self._decode_tiled_postnms_vectorized(t, tasks, fw, fh)
 
-            # ── Raw YOLOv8 path: [N, 8400, 4 + num_classes (+ 32 seg)] ───
-            if self.person_class_id >= c - 4:
-                return []
-
-            # Person scores across all tiles: [N, 8400]
-            person_scores = t[:, :, 4 + self.person_class_id]
+            # ── Raw YOLOv5 path: [N, 25200, nc+5] ────────────────────────
+            # YOLOv5 Detect layer bakes the grid → [cx_px, cy_px, w_px, h_px, obj_conf, cls_conf…]
+            # Score = obj_conf × cls_conf (unlike YOLOv8 which has no separate objectness).
+            if self.decoder_format == "yolov5":
+                if c < 6 or self.person_class_id >= c - 5:
+                    return []
+                obj_conf    = t[:, :, 4]              # [N, A]
+                cls_conf    = t[:, :, 5 + self.person_class_id]  # [N, A]
+                person_scores = obj_conf * cls_conf   # [N, A]
+            else:
+                # ── Raw YOLOv8 path: [N, 8400, 4 + num_classes (+ 32 seg)] ─
+                if self.person_class_id >= c - 4:
+                    return []
+                # Person scores across all tiles: [N, 8400]
+                person_scores = t[:, :, 4 + self.person_class_id]
 
             # Tile index per anchor — [N*8400] so each kept anchor knows its tile.
             tile_ids = (

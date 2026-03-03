@@ -133,6 +133,45 @@ echo ""
 echo "✅ All YOLO models prepared inside $IMAGE_NAME."
 
 # ---------------------------------------------------------------------------
+# Step 3c — YOLO-CROWD model (YOLOv5-based, nc=1, detection only)
+# ---------------------------------------------------------------------------
+SKIP_CROWD="${SKIP_CROWD:-0}"
+# YOLO-CROWD source is cloned automatically into models/yolo-crowd-src/ on first run.
+# Override with YOLO_CROWD_SRC if you already have a local checkout.
+YOLO_CROWD_SRC_DIR="${YOLO_CROWD_SRC:-models/yolo-crowd-src}"
+
+if [[ "$SKIP_CROWD" == "1" ]]; then
+    echo ""
+    echo "Step 3c — YOLO-CROWD skipped (SKIP_CROWD=1)"
+else
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Step 3c — YOLO-CROWD FP16 engine (crowd detection, YOLOv5 format)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    $DOCKER_RUN bash -c "set -e
+        # Clone YOLO-CROWD source if not present (needed for C3RFEM/MultiSEAM layers)
+        if [ ! -f '$YOLO_CROWD_SRC_DIR/models/yolo.py' ]; then
+            echo '     Cloning YOLO-CROWD source into $YOLO_CROWD_SRC_DIR...'
+            git clone --depth 1 https://github.com/zaki1003/YOLO-CROWD $YOLO_CROWD_SRC_DIR
+        else
+            echo '     [skip] YOLO-CROWD source already at $YOLO_CROWD_SRC_DIR'
+        fi
+        # ONNX export (needs YOLO-CROWD source for custom layers)
+        if [ -f 'models/pt/yolo-crowd-dynamic.onnx' ]; then
+            echo '     [skip] ONNX already exists: models/pt/yolo-crowd-dynamic.onnx'
+        else
+            YOLO_CROWD_SRC=$YOLO_CROWD_SRC_DIR python3 export_yolocrowd_to_onnx.py
+        fi
+        # TRT FP16 engine
+        if [ -f 'models/tensorrt/yolo-crowd-fp16.engine' ]; then
+            echo '     [skip] engine already exists: models/tensorrt/yolo-crowd-fp16.engine'
+        else
+            python3 prepare_yolo_crowd_trt.py
+        fi"
+fi
+
+# ---------------------------------------------------------------------------
 # Step 4 — DM-Count QNRF density model
 # ---------------------------------------------------------------------------
 if [[ "$SKIP_DENSITY" == "1" ]]; then

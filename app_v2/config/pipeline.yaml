@@ -15,6 +15,15 @@ models:
     #   engine: models/tensorrt/dm_count_qnrf_1920x1088.engine
     #   preprocess.density.mode: tiles
     strategy: sequential
+  # ── YOLO-CROWD (YOLOv5-based, nc=1, detection only) ──────────────────────
+  # Build engines with: docker run ... python3 export_yolocrowd_to_onnx.py
+  #                 and  python3 prepare_yolo_crowd_trt.py
+  crowd_global:
+    enabled: false
+    engine: models/tensorrt/yolo-crowd-fp16.engine  # YOLOv5-crowd FP16 — global 640×640
+  crowd_tiles:
+    enabled: false
+    engine: models/tensorrt/yolo-crowd-fp16.engine  # YOLOv5-crowd FP16 — tiled 640×640 batch
 
 trt_execution:
   enabled: true
@@ -51,6 +60,8 @@ preprocess_branches:
   yolo_global_preprocess: false  # disabled with yolo_global
   yolo_tiles_preprocess: false
   density_preprocess: false
+  crowd_global_preprocess: false  # disabled with crowd_global
+  crowd_tiles_preprocess: false
 
 tensor_pool:
   max_per_key: 64
@@ -62,6 +73,17 @@ preprocess:
     mode: global
     overlap: 0.0
   yolo_tiles:
+    target_width: 640
+    target_height: 640
+    mode: tiles
+    overlap: 0.2
+  # YOLO-CROWD: identical preprocessing as yolo_global / yolo_tiles
+  crowd_global:
+    target_width: 640
+    target_height: 640
+    mode: global
+    overlap: 0.0
+  crowd_tiles:
     target_width: 640
     target_height: 640
     mode: tiles

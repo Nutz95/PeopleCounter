@@ -19,3 +19,24 @@ yolo_tiles:
     - 0
   seg_mask_enabled: false      # decode per-person segmentation masks from proto tensors (expensive — enable only when seg overlay is needed)
   seg_mask_clip_to_bbox: true
+
+# ── YOLO-CROWD models (YOLOv5-based, nc=1, detection only) ──────────────────
+# decoder_format: yolov5 → activates the obj_conf×cls_conf score path in
+# YoloDecoder and the pre-decoded pixel-space cxcywh coordinate decoder.
+crowd_global:
+  person_class_id: 0
+  confidence_threshold: 0.25
+  nms_iou_threshold: 0.45
+  max_detections: 300
+  class_whitelist:
+    - 0
+  decoder_format: yolov5   # YOLOv5 Detect output: [B, 25200, nc+5] pre-decoded
+
+crowd_tiles:
+  person_class_id: 0
+  confidence_threshold: 0.25
+  nms_iou_threshold: 0.45
+  max_detections: 300
+  class_whitelist:
+    - 0
+  decoder_format: yolov5   # YOLOv5 Detect output: [B, 25200, nc+5] pre-decoded

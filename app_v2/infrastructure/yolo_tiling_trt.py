@@ -11,15 +11,16 @@ from app_v2.infrastructure.yolo_decoder import YoloDecoder
 class YoloTilingTRT(InferenceModel):
     """TensorRT tiling model that processes many 640x640 tiles concurrently."""
 
-    def __init__(self, engine_context: Any, stream_id: int, inference_params: dict[str, Any] | None = None) -> None:
+    def __init__(self, engine_context: Any, stream_id: int, inference_params: dict[str, Any] | None = None, model_name: str = "yolo_tiles") -> None:
         self._context = engine_context
         self._stream_id = stream_id
-        self._name = "yolo_tiles"
+        self._name = model_name
         self._inference_params = dict(inference_params or {})
         self._decoder = YoloDecoder(
             person_class_id=int(self._inference_params.get("person_class_id", 0)),
             confidence_threshold=float(self._inference_params.get("confidence_threshold", 0.25)),
         )
+        self._decoder.decoder_format = str(self._inference_params.get("decoder_format", "yolov8"))
 
     @property
     def name(self) -> str:

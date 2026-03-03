@@ -326,7 +326,7 @@ class FlaskStreamServer(ResultPublisher):
                 p = project_root / p
             return p.exists()
 
-        have = {name: has_engine(name) for name in ("yolo_global", "yolo_tiles", "density")}
+        have = {name: has_engine(name) for name in ("yolo_global", "yolo_tiles", "density", "crowd_global", "crowd_tiles")}
 
         available = ["passthrough"]
         if have["density"]:
@@ -335,4 +335,8 @@ class FlaskStreamServer(ResultPublisher):
             available.append("yolo_global")
         if have["yolo_tiles"]:
             available.append("yolo_tiles")
+        if have["crowd_global"]:
+            available.append("crowd_global")
+        if have["crowd_tiles"]:
+            available.append("crowd_tiles")
         return available

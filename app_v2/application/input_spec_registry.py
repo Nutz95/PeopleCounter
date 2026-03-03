@@ -61,6 +61,10 @@ class InputSpecRegistry:
             return "yolo_global_preprocess"
         if normalized.startswith("yolo_tiles"):
             return "yolo_tiles_preprocess"
+        if normalized == "crowd_global":
+            return "crowd_global_preprocess"
+        if normalized.startswith("crowd_tiles"):
+            return "crowd_tiles_preprocess"
         if normalized.startswith("density") or normalized.startswith("lwcc"):
             return "density_preprocess"
         return None

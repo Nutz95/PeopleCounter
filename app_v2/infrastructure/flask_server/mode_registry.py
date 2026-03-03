@@ -14,17 +14,21 @@ from typing import Any
 # in pipeline.yaml → models.*  and in ModelBuilder.
 # ---------------------------------------------------------------------------
 _INFERENCE_MODES: dict[str, dict[str, bool]] = {
-    "passthrough":          {"yolo_global": False, "yolo_tiles": False, "density": False},
-    "density":              {"yolo_global": False, "yolo_tiles": False, "density": True},
-    "yolo_global":          {"yolo_global": True,  "yolo_tiles": False, "density": False},
-    "yolo_tiles":           {"yolo_global": False, "yolo_tiles": True,  "density": False},
+    "passthrough":          {"yolo_global": False, "yolo_tiles": False, "density": False, "crowd_global": False, "crowd_tiles": False},
+    "density":              {"yolo_global": False, "yolo_tiles": False, "density": True,  "crowd_global": False, "crowd_tiles": False},
+    "yolo_global":          {"yolo_global": True,  "yolo_tiles": False, "density": False, "crowd_global": False, "crowd_tiles": False},
+    "yolo_tiles":           {"yolo_global": False, "yolo_tiles": True,  "density": False, "crowd_global": False, "crowd_tiles": False},
+    "crowd_global":         {"yolo_global": False, "yolo_tiles": False, "density": False, "crowd_global": True,  "crowd_tiles": False},
+    "crowd_tiles":          {"yolo_global": False, "yolo_tiles": False, "density": False, "crowd_global": False, "crowd_tiles": True},
 }
 
 # Maps model names to their corresponding preprocess branch keys in pipeline.yaml
 _PREPROCESS_BRANCH_MAP: dict[str, str] = {
-    "yolo_global": "yolo_global_preprocess",
-    "yolo_tiles":  "yolo_tiles_preprocess",
-    "density":     "density_preprocess",
+    "yolo_global":  "yolo_global_preprocess",
+    "yolo_tiles":   "yolo_tiles_preprocess",
+    "density":      "density_preprocess",
+    "crowd_global": "crowd_global_preprocess",
+    "crowd_tiles":  "crowd_tiles_preprocess",
 }
 
 # Human-readable labels surfaced to the frontend via /api/config
@@ -33,6 +37,8 @@ _MODE_LABELS: dict[str, str] = {
     "density":             "Densité",
     "yolo_global":         "YOLO Global",
     "yolo_tiles":          "YOLO Tiling",
+    "crowd_global":        "YOLO-Crowd Global",
+    "crowd_tiles":         "YOLO-Crowd Tiling",
 }
 
 # Which overlay checkboxes are relevant per mode (matched to frontend toggle IDs)
@@ -41,6 +47,8 @@ _MODE_OVERLAYS: dict[str, list[str]] = {
     "density":             ["heatmap"],
     "yolo_global":         ["bbox", "seg"],
     "yolo_tiles":          ["bbox"],
+    "crowd_global":        ["bbox"],
+    "crowd_tiles":         ["bbox"],
 }
 
 
@@ -49,7 +57,7 @@ def detect_mode_from_config(config: dict[str, Any]) -> str:
     models_cfg = config.get("models", {})
     state = {
         name: bool(models_cfg.get(name, {}).get("enabled", False))
-        for name in ("yolo_global", "yolo_tiles", "density")
+        for name in ("yolo_global", "yolo_tiles", "density", "crowd_global", "crowd_tiles")
     }
     for mode_name, mode_state in _INFERENCE_MODES.items():
         if mode_state == state:

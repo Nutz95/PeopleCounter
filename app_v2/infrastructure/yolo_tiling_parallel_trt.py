@@ -18,16 +18,18 @@ class YoloTilingParallelTRT(InferenceModel):
         stream_id: int,
         groups: int = 2,
         inference_params: dict[str, Any] | None = None,
+        model_name: str = "yolo_tiles",
     ) -> None:
         self._contexts = contexts
         self._stream_id = stream_id
-        self._name = "yolo_tiles"
+        self._name = model_name
         self._groups = groups
         self._inference_params = dict(inference_params or {})
         self._decoder = YoloDecoder(
             person_class_id=int(self._inference_params.get("person_class_id", 0)),
             confidence_threshold=float(self._inference_params.get("confidence_threshold", 0.25)),
         )
+        self._decoder.decoder_format = str(self._inference_params.get("decoder_format", "yolov8"))
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=groups, thread_name_prefix="yolo_tiles_group")
 
     @property
