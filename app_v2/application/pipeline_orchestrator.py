@@ -124,20 +124,24 @@ class PipelineOrchestrator:
         _ws_port = int(_vcfg.get("webcodecs_ws_port", WebCodecsServer.DEFAULT_PORT))
         self._webcodecs_server = WebCodecsServer(port=_ws_port)
         self._packet_forwarder: NvdecPacketForwarder | None = self._build_packet_forwarder(_ws_port)
-        # Publish the WebSocket port to the Flask template.
-        if isinstance(self.publisher, FlaskStreamServer):
-            self.publisher.webcodecs_ws_port = _ws_port
+        # NOTE: publisher.webcodecs_ws_port is updated in run() AFTER start() so it
+        # always reflects the actually-bound port (may differ from _ws_port when the
+        # preferred port was already in use and the server fell back to a free port).
 
         log_info(LogChannel.GLOBAL, "PipelineOrchestrator components initialized")
 
     def run(self) -> None:
         log_info(LogChannel.GLOBAL, f"Starting app_v2 pipeline with config {self.config}")
         log_info(LogChannel.GLOBAL, "Frame scheduling will track frame IDs until fusion completes.")
+        # Start WebCodecs server BEFORE Flask so port 5001 is already listening
+        # when the browser first loads the page.  Without this, the browser can
+        # attempt WebSocket connections during the frame_source.connect() window
+        # (1-3 s) and accumulate onerror events → spurious error banner.
+        self._webcodecs_server.start()
+        if isinstance(self.publisher, FlaskStreamServer):
+            self.publisher.webcodecs_ws_port = self._webcodecs_server.port
         self._start_publisher()
         self.frame_source.connect()
-        # Start WebCodecs server + packet forwarder after the frame source is
-        # connected so the RTSP URL is resolved and the camera is reachable.
-        self._webcodecs_server.start()
         if self._packet_forwarder is not None:
             self._packet_forwarder.start()
         self.preprocessor.configure(self.config)

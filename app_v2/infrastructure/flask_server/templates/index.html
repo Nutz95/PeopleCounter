@@ -52,6 +52,14 @@
           </div>
         </div>
 
+        <!-- WS error banner: visible when WebCodecs WS fails to connect -->
+        <div id="ws-error-banner" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+             background:rgba(20,8,8,0.92);border:1px solid rgba(255,80,80,0.5);border-radius:14px;
+             padding:14px 20px;font-size:0.82rem;color:#ffaaaa;text-align:center;z-index:10;max-width:320px;line-height:1.6;">
+          ⚠ WebSocket introuvable sur le port <span id="ws-error-port"></span><br>
+          <span style="color:rgba(255,255,255,0.55);font-size:0.75rem;">Reconnexion… vérifiez que l'application est démarrée.</span>
+        </div>
+
         <!-- Bottom-right: fullscreen -->
         <div class="video-actions">
           <button onclick="toggleFullscreen()">⛶ Plein écran</button>
@@ -803,7 +811,16 @@
     (function () {
       if (typeof VideoDecoder === 'undefined') return; // no WebCodecs support
 
-      const WS_URL    = `ws://${window.location.hostname}:{{ ws_port }}`;
+      // WS port is fetched dynamically so a server restart that lands on a
+      // different port (fallback from 5001 collision) is picked up automatically.
+      // {{ ws_port }} is kept as the initial hint / offline fallback only.
+      let _wsPort = {{ ws_port }};
+      async function _fetchWsPort() {
+        try {
+          const r = await fetch('/api/ws_port');
+          if (r.ok) { const j = await r.json(); if (j.ws_port) _wsPort = j.ws_port; }
+        } catch (_) { /* keep last-known port */ }
+      }
       const videoCanvas = document.getElementById('video-canvas');
       const videoFeed   = document.getElementById('video-feed');
       const ctx = videoCanvas.getContext('2d');
@@ -1002,16 +1019,31 @@
       // ── WebSocket connect ─────────────────────────────────────────────────
       // connectWs() is called on initial load *and* on every reconnect.
       // The 2D canvas retains its last painted frame across reconnects.
-      function connectWs() {
+      let _wsFailCount = 0;
+      const $wsErrorBanner = document.getElementById('ws-error-banner');
+      const $wsErrorPort   = document.getElementById('ws-error-port');
+
+      async function connectWs() {
+        // Always refresh the port before connecting — handles the case where the
+        // server restarted on a different port (fallback from a 5001 collision).
+        await _fetchWsPort();
+        const wsUrl = `ws://${window.location.hostname}:${_wsPort}`;
+        console.debug('[WebCodecs] connecting to', wsUrl, '(attempt', _wsFailCount + 1, ')');
+
         try { ws && ws.close(); } catch(_) {}
-        ws = new WebSocket(WS_URL);
+        ws = new WebSocket(wsUrl);
         ws.binaryType = 'arraybuffer';
 
         ws.onmessage = (ev) => {
           if (typeof ev.data === 'string') {
             let msg;
             try { msg = JSON.parse(ev.data); } catch { return; }
-            if (msg && msg.type === 'init') onInitMsg(msg);
+            if (msg && msg.type === 'init') {
+              // Connection succeeded — hide error banner and reset counter.
+              _wsFailCount = 0;
+              if ($wsErrorBanner) $wsErrorBanner.style.display = 'none';
+              onInitMsg(msg);
+            }
           } else {
             onBinaryMsg(ev.data);
           }
@@ -1019,7 +1051,15 @@
 
         // onerror fires before onclose — don't kill fallbackTimer here; let
         // the 15 s safety-net keep running so MJPEG activates on hard failure.
-        ws.onerror = () => {};
+        ws.onerror = () => {
+          _wsFailCount++;
+          // Show the error banner after 3 consecutive failures so the user
+          // understands why they are stuck on MJPEG.
+          if (_wsFailCount >= 3 && $wsErrorBanner && !initDone) {
+            $wsErrorBanner.style.display = 'block';
+            if ($wsErrorPort) $wsErrorPort.textContent = _wsPort;
+          }
+        };
         ws.onclose = () => {
           // Soft reconnect: 2D canvas holds the last painted frame while down.
           // Close the decoder so the next onInitMsg triggers a fresh configure.

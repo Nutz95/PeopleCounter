@@ -121,6 +121,16 @@ class FlaskStreamServer(ResultPublisher):
         def health() -> Any:
             return jsonify({"status": "ok"})
 
+        @self._app.get("/api/ws_port")
+        def api_ws_port() -> Any:
+            """Return the actual WebSocket port the WebCodecsServer is listening on.
+
+            Polled by the browser on every WS reconnect attempt so the JS always
+            uses the up-to-date port even when the server fell back to an OS-assigned
+            free port (happens when 5001 was already occupied at startup).
+            """
+            return jsonify({"ws_port": self.webcodecs_ws_port})
+
         @self._app.get("/api/config")
         def api_config() -> Any:
             with self._mode_lock:

@@ -253,6 +253,11 @@ class NvdecPacketForwarder:
                     # SPS not yet in this keyframe — wait for the next one.
                     pass
                 else:
+                    log_info(
+                        LogChannel.GLOBAL,
+                        f"WebCodecs init: codec={codec_str} {width}x{height} "
+                        f"(Annex-B, no description)",
+                    )
                     self._ws_server.push_init(codec_str, width, height, None)
                     avcc_sent = True
 

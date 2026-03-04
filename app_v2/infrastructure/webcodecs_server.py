@@ -190,12 +190,28 @@ class WebCodecsServer:
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             srv.bind((self._host, self._port))
+        except OSError as exc:
+            log_warning(
+                LogChannel.GLOBAL,
+                f"WebCodecsServer bind on port {self._port} failed ({exc}) — "
+                "falling back to OS-assigned free port",
+            )
+            try:
+                srv.bind((self._host, 0))  # port=0 → OS picks a free port
+            except OSError as exc2:
+                log_warning(LogChannel.GLOBAL, f"WebCodecsServer fallback bind also failed: {exc2}")
+                if hasattr(self, "_bound_event"):
+                    self._bound_event.set()
+                return
+        # Read back the actual port (important when we fell back to port 0).
+        _, self._port = srv.getsockname()
+        try:
             srv.listen(8)
             srv.setblocking(False)
         except OSError as exc:
-            log_warning(LogChannel.GLOBAL, f"WebCodecsServer bind on port {self._port} failed: {exc}")
+            log_warning(LogChannel.GLOBAL, f"WebCodecsServer listen failed: {exc}")
             if hasattr(self, "_bound_event"):
-                self._bound_event.set()  # unblock start() even on failure
+                self._bound_event.set()
             return
 
         log_info(LogChannel.GLOBAL, f"WebCodecsServer listening on ws://{self._host}:{self._port}")
