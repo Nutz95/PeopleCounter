@@ -68,7 +68,7 @@ class FlaskStreamServer(ResultPublisher):
         self.port = port
         # Set by PipelineOrchestrator when WebCodecsServer is started.
         # Passed to index.html so JS can connect to the correct WS port.
-        self.webcodecs_ws_port: int = 5001
+        self.webcodecs_ws_port: int = 4999
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._last: dict[str, Any] = {"frame_id": None, "payload": None}

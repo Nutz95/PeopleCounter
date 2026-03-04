@@ -89,7 +89,7 @@ class WebCodecsServer:
     The server does NOT require ``flask-sock`` or any third-party library.
     """
 
-    DEFAULT_PORT = 5001
+    DEFAULT_PORT = 4999
 
     def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_PORT) -> None:
         self._host = host

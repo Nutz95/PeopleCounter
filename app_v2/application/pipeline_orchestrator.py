@@ -116,7 +116,7 @@ class PipelineOrchestrator:
         # ── WebCodecs zero-encode path ──────────────────────────────────
         # PyFFmpegDemuxer opens a second connection to the same stream URL and
         # forwards raw H.264/H.265 compressed packets (Annex B) directly to the
-        # browser via a pure-Python WebSocket server (port 5001).
+        # browser via a pure-Python WebSocket server (port 4999).
         # The browser uses the WebCodecs VideoDecoder API to render the stream
         # without any server-side re-encoding.
         # Falls back to MJPEG transparently if PyNvCodec is unavailable or the
@@ -133,7 +133,7 @@ class PipelineOrchestrator:
     def run(self) -> None:
         log_info(LogChannel.GLOBAL, f"Starting app_v2 pipeline with config {self.config}")
         log_info(LogChannel.GLOBAL, "Frame scheduling will track frame IDs until fusion completes.")
-        # Start WebCodecs server BEFORE Flask so port 5001 is already listening
+        # Start WebCodecs server BEFORE Flask so port 4999 is already listening
         # when the browser first loads the page.  Without this, the browser can
         # attempt WebSocket connections during the frame_source.connect() window
         # (1-3 s) and accumulate onerror events → spurious error banner.
