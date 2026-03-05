@@ -87,7 +87,16 @@ preprocess:
     target_width: 640
     target_height: 640
     mode: tiles
-    overlap: 0.2
+    overlap: 0.2   # 20% overlap ensures persons at tile borders appear fully in at least one tile
+    # prescale_width/height: compute tile grid on this virtual frame size,
+    # then scale crop coords back to the actual frame.  Each tile crop in the
+    # actual frame is always SQUARE (no aspect-ratio distortion for the model).
+    # 1920×1080 virtual → 3×2 = 6 tiles regardless of source resolution:
+    #   - 1920×1080 source: 640×640 crops (no resize, 0 overhead)
+    #   - 2560×1440 source: 853×853 crops → 640×640 (0.75× scale)
+    #   - 3840×2160 source: 1280×1280 crops → 640×640 (0.5× scale)
+    prescale_width: 1920
+    prescale_height: 1080
   density:
     # 4K → 1920×1088 global resize (single frame, batch=1, ~24 ms)
     # Alternatives:

@@ -137,6 +137,12 @@
         </article>
 
         <article class="metric-card">
+          <div class="metric-title">Moy. 1&nbsp;s</div>
+          <div class="metric-value" id="count-avg-value" style="color:rgba(165,210,255,0.85)">—</div>
+          <div class="metric-footnote">personnes (lissé)</div>
+        </article>
+
+        <article class="metric-card">
           <div class="metric-title">End-to-end</div>
           <div class="metric-value" id="e2e-value">—</div>
           <div class="metric-footnote">ms latence / <span id="fps-derived">— fps</span> débit réel</div>
@@ -186,7 +192,8 @@
     // ── Constants ──────────────────────────────────────────────────
     const MAX_HISTORY  = 60;
     const TARGET_MS    = 33.33;  // 30 fps
-    const SMOOTH_WIN   = 2000;   // 2-second rolling average window (ms)
+    const SMOOTH_WIN        = 2000;   // 2-second rolling average window for latency metrics (ms)
+    const COUNT_SMOOTH_WIN  = 1000;   // 1-second rolling average window for person count (ms)
 
     // ── State ──────────────────────────────────────────────────────
     const e2eHist    = [];
@@ -212,6 +219,7 @@
       global: [],
       preproc: [],
       fusion: [],
+      count:  [],   // 1-second person count average
     };
 
     function rollAvg(arr, value) {
@@ -222,12 +230,30 @@
       return arr.reduce((s, x) => s + x.v, 0) / arr.length;
     }
 
+    function rollAvgWin(arr, value, win) {
+      const now = Date.now();
+      arr.push({ t: now, v: value });
+      while (arr.length && now - arr[0].t > win) arr.shift();
+      if (arr.length === 0) return value;
+      return arr.reduce((s, x) => s + x.v, 0) / arr.length;
+    }
+
+    // Read the current average without adding a new data point (used by setInterval).
+    function peekAvg(arr, win) {
+      const now = Date.now();
+      const start = now - win;
+      let sum = 0, n = 0;
+      for (const e of arr) { if (e.t >= start) { sum += e.v; n++; } }
+      return n > 0 ? sum / n : null;
+    }
+
     // ── DOM refs ───────────────────────────────────────────────────
-    const $connStatus   = document.getElementById('conn-status');
-    const $latencyChip  = document.getElementById('latency-chip');
-    const $fpsChip      = document.getElementById('fps-chip');
-    const $countValue   = document.getElementById('count-value');
-    const $frameLabel   = document.getElementById('frame-id-label');
+    const $connStatus    = document.getElementById('conn-status');
+    const $latencyChip   = document.getElementById('latency-chip');
+    const $fpsChip       = document.getElementById('fps-chip');
+    const $countValue    = document.getElementById('count-value');
+    const $countAvgValue = document.getElementById('count-avg-value');
+    const $frameLabel    = document.getElementById('frame-id-label');
     const $e2eValue     = document.getElementById('e2e-value');
     const $fpsDerived   = document.getElementById('fps-derived');
     const $preprocValue = document.getElementById('preprocess-value');
@@ -249,6 +275,13 @@
     // Source video dimensions received from the server via telemetry.
     let _videoSrcW = 0;
     let _videoSrcH = 0;
+
+    // Update the 1-second smoothed count display once per second so the value
+    // stays stable and readable (no per-frame jitter or left/right drift).
+    setInterval(() => {
+      const avg = peekAvg(_smooth.count, COUNT_SMOOTH_WIN);
+      if (avg !== null && $countAvgValue) $countAvgValue.textContent = Math.round(avg);
+    }, 1000);
 
     // ── Toggle handlers ────────────────────────────────────────────
     document.getElementById('mask-toggle').addEventListener('change', e => {
@@ -500,8 +533,9 @@
       $connStatus.textContent  = '⬤ Live';
       $connStatus.style.color  = 'var(--accent)';
 
-      $countValue.textContent  = count;
-      $frameLabel.textContent  = `frame ${msg.frame_id}`;
+      $countValue.textContent    = count;
+      rollAvgWin(_smooth.count, count, COUNT_SMOOTH_WIN);  // accumulate — display updated by setInterval
+      $frameLabel.textContent    = `frame ${msg.frame_id}`;
 
       $e2eValue.textContent    = avgE2e.toFixed(1);
       $fpsDerived.textContent  = fps ? `${fps} fps` : '— fps';

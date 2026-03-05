@@ -23,6 +23,11 @@ yolo_tiles:
 # ── YOLO-CROWD models (YOLOv5-based, nc=1, detection only) ──────────────────
 # decoder_format: yolov5 → activates the obj_conf×cls_conf score path in
 # YoloDecoder and the pre-decoded pixel-space cxcywh coordinate decoder.
+#
+# Architecture note: YOLO-CROWD uses P2/4 + P3/8 + P4/16 heads (strides 4,8,16)
+# giving 100800 anchors per 640×640 tile (not 25200).  The P2/4 head fires on
+# very small, head-sized objects and can produce sub-pixel false-positives on
+# dense backgrounds — the decoder’s min-size filter (4 px) removes those.
 crowd_global:
   person_class_id: 0
   confidence_threshold: 0.25
@@ -30,13 +35,17 @@ crowd_global:
   max_detections: 300
   class_whitelist:
     - 0
-  decoder_format: yolov5   # YOLOv5 Detect output: [B, 25200, nc+5] pre-decoded
+  decoder_format: yolov5   # YOLOv5 Detect output: [B, 100800, nc+5] pre-decoded (strides 4/8/16)
 
 crowd_tiles:
   person_class_id: 0
-  confidence_threshold: 0.25
-  nms_iou_threshold: 0.45
+  confidence_threshold: 0.30     # same as crowd_global — the CUDA race condition (not the P2/4 head) was the source of chaos
+  nms_iou_threshold: 0.45        # per-tile NMS
+  cross_nms_iou_threshold: 0.20  # cross-tile NMS dedup at tile boundaries
+  temporal_window: 0             # temporal confirm filter: 0=disabled, ≥2=frames to confirm (rarely needed)
+  min_box_px: 8.0                # minimum box side in 640-px tile space; 8 px removes sub-pixel noise while keeping small heads
+  skip_stride4_head: false       # P2/4 head re-enabled — needed for dense crowd small-head detection; race condition is fixed separately
   max_detections: 300
   class_whitelist:
     - 0
-  decoder_format: yolov5   # YOLOv5 Detect output: [B, 25200, nc+5] pre-decoded
+  decoder_format: yolov5   # YOLOv5 Detect output: [B, 100800, nc+5] pre-decoded (strides 4/8/16)

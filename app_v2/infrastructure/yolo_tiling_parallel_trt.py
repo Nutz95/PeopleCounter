@@ -30,6 +30,11 @@ class YoloTilingParallelTRT(InferenceModel):
             confidence_threshold=float(self._inference_params.get("confidence_threshold", 0.25)),
         )
         self._decoder.decoder_format = str(self._inference_params.get("decoder_format", "yolov8"))
+        self._decoder.nms_iou_threshold = float(self._inference_params.get("nms_iou_threshold", 0.45))
+        self._decoder.cross_nms_iou_threshold = float(self._inference_params.get("cross_nms_iou_threshold", 0.20))
+        self._decoder.temporal_window = int(self._inference_params.get("temporal_window", 0))
+        self._decoder.min_box_px = float(self._inference_params.get("min_box_px", 16.0))
+        self._decoder.skip_stride4_head = bool(self._inference_params.get("skip_stride4_head", False))
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=groups, thread_name_prefix="yolo_tiles_group")
 
     @property

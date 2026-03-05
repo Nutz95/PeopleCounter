@@ -7,8 +7,10 @@ ultralytics.  This script loads the model using YOLO-CROWD's own codebase and
 exports a single-output ONNX with the detection-head grid pre-baked (decoded
 pixel-space [cx, cy, w, h, obj_conf, cls_conf] for each anchor).
 
-Output shape: [batch, 25200, 6]  (for 640×640 input, nc=1)
-  - 25200 = 80×80×3 + 40×40×3 + 20×20×3 anchors
+Output shape: [batch, 100800, 6]  (for 640×640 input, nc=1)
+  - 100800 = 160×160×3 + 80×80×3 + 40×40×3 anchors
+    YOLO-CROWD uses strides 4/8/16 (P2/4 extra small-object head for crowd)
+    not the standard YOLOv5 strides 8/16/32.
   - 6     = [cx_px, cy_px, w_px, h_px, objectness, cls0_score]
   - Coordinates already decoded (sigmoid + stride), in pixel space [0..640]
 

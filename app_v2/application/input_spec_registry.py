@@ -87,6 +87,8 @@ class InputSpecRegistry:
         mode = self._parse_mode(spec_cfg["mode"])
         source_tile_width  = int(spec_cfg.get("source_tile_width",  0))
         source_tile_height = int(spec_cfg.get("source_tile_height", 0))
+        prescale_width  = int(spec_cfg.get("prescale_width",  0))
+        prescale_height = int(spec_cfg.get("prescale_height", 0))
         return InputSpec(
             model_name=model_name,
             target_width=target_width,
@@ -95,6 +97,8 @@ class InputSpecRegistry:
             overlap=overlap,
             source_tile_width=source_tile_width,
             source_tile_height=source_tile_height,
+            prescale_width=prescale_width,
+            prescale_height=prescale_height,
         )
 
     @staticmethod

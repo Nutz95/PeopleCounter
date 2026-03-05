@@ -203,13 +203,21 @@ class TensorRTExecutionContext:
         }
 
     def _enqueue_and_sync(self, stream: Any) -> Dict[str, Any]:
-        """Launch ``execute_async_v3`` on the stream (no host-side sync).
+        """Launch ``execute_async_v3`` then synchronize the inference stream.
 
-        The output tensors are valid GPU tensors whose data will be ready when
-        the stream reaches that point.  The caller (decoder) will implicitly
-        synchronize at the moment it reads data to CPU (e.g. .tolist()).  This
-        avoids a premature host stall that would prevent NVDEC and preprocessing
-        from overlapping with the current inference kernel.
+        ``execute_async_v3`` enqueues TRT work on *stream* asynchronously from
+        the CPU.  The decoder runs on the default CUDA stream (a different
+        stream).  Without explicit host-side sync the decoder races with the TRT
+        kernel — for batch=1 this is rarely visible because the kernel finishes
+        before Python overhead reaches the first tensor read, but for larger
+        batches (e.g. 6-tile YOLO-CROWD) the race consistently produces 0 or
+        garbage detections.
+
+        ``stream.synchronize()`` blocks the host until the TRT kernel has fully
+        written all output tensors, so the decoder can safely read them from any
+        stream.  The GPU-side dependency (wait_stream) approach is NOT sufficient
+        here because the decoder is regular Python code that accesses tensor
+        memory immediately — not enqueued GPU ops that respect stream ordering.
 
         Returns a dict with ``enqueue_ms`` + ``stream_sync_ms`` on success,
         or ``error`` (str) on failure.
@@ -220,9 +228,11 @@ class TensorRTExecutionContext:
         enqueue_ms = (self._perf_counter_ns() - enqueue_start_ns) / 1_000_000.0
         if not ok:
             return {"error": "execute_async_v3 failed"}
-        # No stream.synchronize() here — output tensors are in-flight on the
-        # CUDA stream and will be implicitly synced when the decoder reads them.
-        return {"enqueue_ms": enqueue_ms, "stream_sync_ms": 0.0}
+        sync_start_ns = self._perf_counter_ns()
+        if hasattr(stream, "cuda_stream"):
+            stream.synchronize()   # CPU stalls until TRT kernel finishes writing outputs
+        stream_sync_ms = (self._perf_counter_ns() - sync_start_ns) / 1_000_000.0
+        return {"enqueue_ms": enqueue_ms, "stream_sync_ms": stream_sync_ms}
 
     def _execute_via_graph(
         self,

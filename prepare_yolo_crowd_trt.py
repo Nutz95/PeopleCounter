@@ -4,9 +4,12 @@
 Reads the dynamic-batch ONNX produced by export_yolocrowd_to_onnx.py and
 builds a TRT engine that supports batch = 1..32 at 640×640.
 
-The YOLO-CROWD model outputs in YOLOv5 format: [batch, 25200, 6] pre-decoded
+The YOLO-CROWD model outputs in YOLOv5 format: [batch, 100800, 6] pre-decoded
 anchors (cx_px, cy_px, w_px, h_px, obj_conf, cls_conf) — **no NMS baked in**.
 NMS is applied client-side by YoloDecoder._decode_raw_yolov5().
+
+Note: YOLO-CROWD uses detection heads at strides 4, 8, 16 (not standard 8,16,32)
+giving 160×160×3 + 80×80×3 + 40×40×3 = 100800 anchors at 640×640 input.
 
 Usage (inside people-counter:gpu-final-nvdec Docker):
     python3 prepare_yolo_crowd_trt.py
@@ -86,7 +89,7 @@ def build_trt_engine(
     engine_out.write_bytes(bytes(serialized))
     size_mb = len(bytes(serialized)) / (1024 * 1024)
     print(f"[CROWD-TRT] Engine saved: {engine_out} ({size_mb:.1f} MB)")
-    print("[CROWD-TRT] Output: output0 = [batch, 25200, 6] — YOLOv5 decoded format")
+    print("[CROWD-TRT] Output: output0 = [batch, 100800, 6] — YOLOv5 decoded format (strides 4/8/16)")
 
 
 def main() -> None:

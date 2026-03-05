@@ -22,6 +22,18 @@ class YoloDecoder(Postprocessor):
     def __init__(self, person_class_id: int = 0, confidence_threshold: float = 0.25) -> None:
         self.person_class_id = person_class_id
         self.confidence_threshold = confidence_threshold
+        self.nms_iou_threshold: float = 0.45
+        # Cross-tile NMS IoU (applied after coordinate-space merge to global frame).
+        # Should be lower than nms_iou_threshold: multi-stride boxes (stride-4 vs
+        # stride-8) for the same person have IoU ~0.16-0.25, so cross-tile NMS must
+        # be aggressive enough to catch them.
+        self.cross_nms_iou_threshold: float = 0.20
+        # Temporal confirmation window (0 = disabled).  When ≥ 2, a detection is
+        # only displayed if it also appeared in the previous frame (IoU ≥ 0.20).
+        # This eliminates anchor-flip flicker: single-frame noise boxes disappear
+        # while stable per-person detections persist.
+        self.temporal_window: int = 0
+        self._prev_frame_boxes: "torch.Tensor | None" = None
         # Seg-mask extraction requires a GPU→CPU copy (costly on the hot path).
         # Enable only when a seg-model is actually loaded and the UI toggle is on.
         self.seg_mask_enabled: bool = False
@@ -36,6 +48,16 @@ class YoloDecoder(Postprocessor):
         #   "yolov5" — pre-decoded [N, nc+5] with separate objectness score
         #              col4=obj_conf, col5+=class_probs; coords pixel-space cxcywh
         self.decoder_format: str = "yolov8"
+        # Minimum box side (pixels, 640-px tile space) for the yolov5 path.
+        # YOLO-CROWD P2/4 head (stride-4) can fire on sub-pixel texture blobs;
+        # 16 px matches the smallest P2/4 anchor height ([19.2,16]).
+        # Configurable via model_inference.yaml: min_box_px
+        self.min_box_px: float = 16.0
+        # When True, skip the first 76800 anchors (P2/4 stride-4 head) entirely.
+        # Drastically reduces noise with no useful-detection loss for typical
+        # camera heights where heads subtend > 20 px.
+        # Configurable via model_inference.yaml: skip_stride4_head
+        self.skip_stride4_head: bool = False
 
     def process(self, frame_id: int, outputs: dict[str, Any], *, tile_plan: Any = None) -> dict[str, Any]:
         """Return normalized bounding boxes plus metadata for the aggregator.
@@ -299,6 +321,17 @@ class YoloDecoder(Postprocessor):
         cls_conf     = rows[:, 5 + self.person_class_id]
         person_scores = obj_conf * cls_conf
 
+        import os as _os
+        if _os.environ.get("CROWD_DBG") == "1":
+            import sys as _sys
+            _raw_pass = int((person_scores >= self.confidence_threshold).sum().item())
+            print(
+                f"[CROWD-DBG] global rows={rows.shape[0]} thresh={self.confidence_threshold} "
+                f"obj_max={float(obj_conf.max().item()):.3f} cls_max={float(cls_conf.max().item()):.3f} "
+                f"raw_pass={_raw_pass}",
+                file=_sys.stderr, flush=True,
+            )
+
         mask   = person_scores >= self.confidence_threshold
         rows_f = rows[mask]
         scores_f = person_scores[mask]
@@ -367,15 +400,38 @@ class YoloDecoder(Postprocessor):
             if a <= 1000 and c >= 6:
                 return self._decode_tiled_postnms_vectorized(t, tasks, fw, fh)
 
-            # ── Raw YOLOv5 path: [N, 25200, nc+5] ────────────────────────
+            # ── Raw YOLOv5 path: [N, 100800, nc+5] for YOLO-CROWD (strides 4/8/16)
             # YOLOv5 Detect layer bakes the grid → [cx_px, cy_px, w_px, h_px, obj_conf, cls_conf…]
             # Score = obj_conf × cls_conf (unlike YOLOv8 which has no separate objectness).
             if self.decoder_format == "yolov5":
                 if c < 6 or self.person_class_id >= c - 5:
                     return []
+                # Skip the P2/4 stride-4 head (76800 of 100800 anchors) — removes
+                # the primary noise source while keeping P3/8 + P4/16 (24000 anchors).
+                # Only applied when the tensor has the expected 100800 anchor count
+                # so it degrades gracefully on other yolov5 models.
+                if self.skip_stride4_head and int(t.shape[1]) == 100800:
+                    t = t[:, 76800:, :]   # [N, 24000, nc+5]
+                    a = 24000
                 obj_conf    = t[:, :, 4]              # [N, A]
                 cls_conf    = t[:, :, 5 + self.person_class_id]  # [N, A]
                 person_scores = obj_conf * cls_conf   # [N, A]
+
+                import os as _os
+                if _os.environ.get("CROWD_DBG") == "1":
+                    import sys as _sys
+                    _obj_max  = float(obj_conf.max().item())
+                    _cls_max  = float(cls_conf.max().item())
+                    _raw_pass = int((person_scores >= self.confidence_threshold).sum().item())
+                    _tile_dims = [(task.source_width, task.source_height) for task in tasks]
+                    print(
+                        f"[CROWD-DBG] tiles={n} shape={tuple(t.shape)} fmt={self.decoder_format} "
+                        f"thresh={self.confidence_threshold} "
+                        f"obj_max={_obj_max:.3f} cls_max={_cls_max:.3f} "
+                        f"raw_pass={_raw_pass}/{n*a} "
+                        f"tile_dims={_tile_dims}",
+                        file=_sys.stderr, flush=True,
+                    )
             else:
                 # ── Raw YOLOv8 path: [N, 8400, 4 + num_classes (+ 32 seg)] ─
                 if self.person_class_id >= c - 4:
@@ -402,25 +458,58 @@ class YoloDecoder(Postprocessor):
             if t_flat.shape[0] == 0:   # pure metadata, no extra sync
                 return []
 
+            n_after_conf = int(t_flat.shape[0])
+
             # xywh center → xyxy corners (640-px tile space)
             cx = t_flat[:, 0];  cy = t_flat[:, 1]
             w  = t_flat[:, 2];  h  = t_flat[:, 3]
+
+            # Minimum box size filter: YOLO-CROWD's stride-4 P2/4 head fires on very
+            # small texture blobs.  min_box_px (default 16) matches the smallest
+            # P2/4 anchor height ([19.2,16]) — anything below cannot be a real
+            # anchor detection and is background noise from the fine-grained head.
+            if self.decoder_format == "yolov5":
+                _min_px = float(self.min_box_px)
+                _size_ok = (w >= _min_px) & (h >= _min_px)
+                if not bool(_size_ok.all()):
+                    t_flat      = t_flat[_size_ok]
+                    scores_flat = scores_flat[_size_ok]
+                    tile_ids    = tile_ids[_size_ok]
+                    cx = cx[_size_ok];  cy = cy[_size_ok]
+                    w  =  w[_size_ok];   h =  h[_size_ok]
+                if t_flat.shape[0] == 0:
+                    return []
+
             boxes = torch.stack(
                 [cx - w * 0.5, cy - h * 0.5, cx + w * 0.5, cy + h * 0.5], dim=1
             )  # [K, 4]
 
             # Per-tile NMS in one GPU kernel (tile_ids is the group index).
             # Replaces N separate _nms() calls from the old per-tile loop.
+            _nms_ok = False
+            _nms_iou = float(getattr(self, "nms_iou_threshold", 0.45))
             try:
                 from torchvision.ops import batched_nms as _batched_nms  # type: ignore[import]
                 keep = _batched_nms(
-                    boxes.float(), scores_flat.float(), tile_ids, iou_threshold=0.45
+                    boxes.float(), scores_flat.float(), tile_ids, iou_threshold=_nms_iou
                 )
                 boxes       = boxes[keep]        # LongTensor index — no sync
                 scores_flat = scores_flat[keep]
                 tile_ids    = tile_ids[keep]
-            except Exception:
-                pass
+                _nms_ok = True
+            except Exception as _nms_exc:
+                import sys as _sys
+                print(f"[CROWD-DBG] per-tile NMS failed: {_nms_exc}", file=_sys.stderr, flush=True)
+
+            if self.decoder_format == "yolov5" and _os.environ.get("CROWD_DBG") == "1":
+                import sys as _sys
+                print(
+                    f"[CROWD-DBG] after_conf={n_after_conf} "
+                    f"after_tile_nms={int(boxes.shape[0])} nms_ok={_nms_ok} "
+                    f"w_range=[{float(w.min().item()):.1f},{float(w.max().item()):.1f}] "
+                    f"h_range=[{float(h.min().item() if h.shape[0]>0 else 0):.1f},{float(h.max().item() if h.shape[0]>0 else 0):.1f}]",
+                    file=_sys.stderr, flush=True,
+                )
 
             # Normalize xyxy to [0, 1] in 640-px tile space
             boxes_norm = (boxes / 640.0).clamp(0.0, 1.0)  # [K, 4]
@@ -447,13 +536,54 @@ class YoloDecoder(Postprocessor):
             ).clamp(0.0, 1.0)  # [K, 4]
 
             # Cross-tile NMS: remove border duplicates (one GPU kernel, no extra sync)
+            _before_xtile = int(global_boxes.shape[0])
+            _cross_nms_iou = float(getattr(self, "cross_nms_iou_threshold", 0.20))
             try:
                 from torchvision.ops import nms as _nms  # type: ignore[import]
-                keep_final  = _nms(global_boxes.float(), scores_flat.float(), iou_threshold=0.30)
+                keep_final  = _nms(global_boxes.float(), scores_flat.float(), iou_threshold=_cross_nms_iou)
                 global_boxes = global_boxes[keep_final]   # LongTensor index — no sync
                 scores_flat  = scores_flat[keep_final]
-            except Exception:
-                pass
+            except Exception as _xnms_exc:
+                import sys as _sys
+                print(f"[CROWD-DBG] cross-tile NMS failed: {_xnms_exc}", file=_sys.stderr, flush=True)
+
+            if self.decoder_format == "yolov5" and _os.environ.get("CROWD_DBG") == "1":
+                import sys as _sys
+                print(
+                    f"[CROWD-DBG] before_cross_nms={_before_xtile} final={int(global_boxes.shape[0])}",
+                    file=_sys.stderr, flush=True,
+                )
+
+            # Hard cap: prevent thousands of boxes from stalling downstream rendering.
+            _MAX_DETS = 2000
+            if global_boxes.shape[0] > _MAX_DETS:
+                # Keep the top-_MAX_DETS by descending confidence score.
+                topk = torch.topk(scores_flat, _MAX_DETS, largest=True, sorted=False)
+                global_boxes = global_boxes[topk.indices]
+                scores_flat  = scores_flat[topk.indices]
+
+            # ── Temporal confirmation filter ───────────────────────────────
+            # For YOLO-CROWD (yolov5 format): require each box to have a
+            # matching box (IoU ≥ 0.20) in the previous frame's output.
+            # This kills single-frame anchor-flip noise while keeping stable
+            # person detections that are present in every frame.
+            if self.decoder_format == "yolov5" and self.temporal_window >= 2:
+                _cur_for_prev = global_boxes  # unfiltered reference for next frame
+                _prev = self._prev_frame_boxes
+                if (
+                    _prev is not None
+                    and _prev.shape[0] > 0
+                    and global_boxes.shape[0] > 0
+                ):
+                    try:
+                        from torchvision.ops import box_iou as _box_iou  # type: ignore[import]
+                        _iou_mat = _box_iou(global_boxes.float(), _prev.float())  # [N_cur, N_prev]
+                        _has_prev_support = _iou_mat.max(dim=1).values >= 0.20
+                        global_boxes = global_boxes[_has_prev_support]
+                        scores_flat  = scores_flat[_has_prev_support]
+                    except Exception:
+                        pass  # skip temporal filter on error; degrade gracefully
+                self._prev_frame_boxes = _cur_for_prev
 
             # ── Single GPU→CPU transfer for ALL detections ────────────────
             boxes_cpu  = global_boxes.tolist()   # sync #2
