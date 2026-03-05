@@ -19,6 +19,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Sequence
 
+from app_v2.config import load_model_inference_config
 from app_v2.core.result_publisher import ResultPublisher
 from app_v2.infrastructure.flask_server.mode_registry import (
     _MODE_LABELS,
@@ -95,9 +96,18 @@ class FlaskStreamServer(ResultPublisher):
         _dcfg = _cfg.get("density") or {}
         self._density_threshold: float = float(_dcfg.get("min_peak_weight", 0.05))
         self._pending_density_threshold: float | None = None
-        # Crowd confidence threshold — applies to crowd_global + crowd_tiles decoders.
-        _crowd_global_cfg = (_cfg.get("model_inference") or {}).get("crowd_global") or {}
-        self._crowd_confidence: float = float(_crowd_global_cfg.get("confidence_threshold", 0.25))
+        # Crowd confidence threshold — per-mode so crowd_global (0.25) and crowd_tiles (0.5)
+        # keep independent defaults.  /api/config returns the active mode's value so the
+        # slider always shows what the decoder is currently using.
+        _model_inf_cc    = load_model_inference_config()
+        _crowd_global_cfg = _model_inf_cc.get("crowd_global") or {}
+        _crowd_tiles_cfg  = _model_inf_cc.get("crowd_tiles")  or {}
+        self._crowd_confidence_by_mode: dict[str, float] = {
+            "crowd_global": float(_crowd_global_cfg.get("confidence_threshold", 0.25)),
+            "crowd_tiles":  float(_crowd_tiles_cfg.get("confidence_threshold", 0.5)),
+        }
+        self._crowd_confidence: float = self._crowd_confidence_by_mode.get(
+            self._active_mode, 0.25)
         self._pending_crowd_confidence: float | None = None
 
         # GPU stats — polled every 1 s by a daemon thread; protected by _gpu_lock.
@@ -151,14 +161,17 @@ class FlaskStreamServer(ResultPublisher):
                 pending   = self._pending_mode
                 available = list(self._available_modes)
                 density_threshold = self._density_threshold
+                crowd_conf        = self._crowd_confidence_by_mode.get(mode, self._crowd_confidence)
+                crowd_conf_modes  = dict(self._crowd_confidence_by_mode)
             return jsonify({
                 "mode":              mode,
                 "pending_mode":      pending,
                 "available_modes":   available,
                 "mode_labels":       _MODE_LABELS,
                 "mode_overlays":     _MODE_OVERLAYS,
-                "density_threshold":  density_threshold,
-                "crowd_confidence":   self._crowd_confidence,
+                "density_threshold":       density_threshold,
+                "crowd_confidence":        crowd_conf,
+                "crowd_confidence_by_mode": crowd_conf_modes,
             })
 
         @self._app.post("/api/mode")
@@ -188,6 +201,7 @@ class FlaskStreamServer(ResultPublisher):
             value = max(0.05, min(0.95, value))  # clamp to [0.05, 0.95]
             with self._mode_lock:
                 self._crowd_confidence = value
+                self._crowd_confidence_by_mode[self._active_mode] = value
                 self._pending_crowd_confidence = value
             return jsonify({"ok": True, "confidence": value})
 

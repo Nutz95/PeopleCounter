@@ -10,7 +10,7 @@ except Exception:  # pragma: no cover
     torch = None  # type: ignore[assignment]
 
 from app_v2.core.inference_model import InferenceModel
-from app_v2.infrastructure.yolo_decoder import YoloDecoder
+from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder
 
 
 class YoloTilingParallelCudaTRT(InferenceModel):
@@ -32,7 +32,7 @@ class YoloTilingParallelCudaTRT(InferenceModel):
         self._name = "yolo_tiles"
         self._groups = min(groups, len(contexts))  # Clamp to available contexts
         self._inference_params = dict(inference_params or {})
-        self._decoder = YoloDecoder(person_class_id=int(self._inference_params.get("person_class_id", 0)))
+        self._decoder = YoloV8Decoder(person_class_id=int(self._inference_params.get("person_class_id", 0)))
 
     @property
     def name(self) -> str:

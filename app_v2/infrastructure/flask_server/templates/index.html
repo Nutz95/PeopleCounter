@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 
 <head>
   <meta charset="utf-8">
@@ -56,13 +56,13 @@
         <div id="ws-error-banner" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
              background:rgba(20,8,8,0.92);border:1px solid rgba(255,80,80,0.5);border-radius:14px;
              padding:14px 20px;font-size:0.82rem;color:#ffaaaa;text-align:center;z-index:10;max-width:320px;line-height:1.6;">
-          ⚠ WebSocket introuvable sur le port <span id="ws-error-port"></span><br>
-          <span style="color:rgba(255,255,255,0.55);font-size:0.75rem;">Reconnexion… vérifiez que l'application est démarrée.</span>
+          ⚠ WebSocket not found on port <span id="ws-error-port"></span><br>
+          <span style="color:rgba(255,255,255,0.55);font-size:0.75rem;">Reconnecting… check that the app is running.</span>
         </div>
 
         <!-- Bottom-right: fullscreen -->
         <div class="video-actions">
-          <button onclick="toggleFullscreen()">⛶ Plein écran</button>
+          <button onclick="toggleFullscreen()">⛶ Fullscreen</button>
         </div>
       </div>
 
@@ -71,12 +71,12 @@
 
         <!-- ── Mode selector ──────────────────────────────────────────── -->
         <div class="control-section">
-          <div class="control-section-label">Mode d'inférence</div>
+          <div class="control-section-label">Inference mode</div>
           <div class="mode-pills" id="mode-pills">
             <!-- Populated dynamically from /api/config -->
           </div>
           <div class="mode-loading" id="mode-loading" style="display:none">
-            <span class="mode-loading-spinner">⟳</span> Chargement du mode…
+            <span class="mode-loading-spinner">⟳</span> Switching mode…
           </div>
         </div>
 
@@ -90,20 +90,20 @@
             </label>
             <label class="toggle" id="overlay-seg" style="display:none">
               <input type="checkbox" id="seg-toggle">
-              Masques segmentation
+              Segmentation masks
             </label>
             <label class="toggle" id="overlay-heatmap" style="display:none">
               <input type="checkbox" id="heatmap-toggle" checked>
-              Heatmap densité
+              Density heatmap
             </label>
           </div>
         </div>
 
         <!-- ── Density peak threshold (shown only in density mode) ────── -->
         <div class="control-section" id="density-threshold-section" style="display:none">
-          <div class="control-section-label">Sensibilité détection densité</div>
+          <div class="control-section-label">Density detection sensitivity</div>
           <div class="density-slider-row">
-            <span class="density-slider-label">Tolérant</span>
+            <span class="density-slider-label">Lenient</span>
             <input type="range" id="density-threshold-slider"
                    min="0" max="0.5" step="0.01" value="0.05"
                    style="flex:1;accent-color:var(--accent)">
@@ -111,23 +111,23 @@
             <span id="density-threshold-value" class="density-threshold-badge">0.05</span>
           </div>
           <div style="font-size:0.68rem;color:rgba(255,255,255,0.4);margin-top:4px">
-            Filtre les petits pics (jambes / corps). Augmenter pour réduire les doubles comptages.
+            Filters small peaks (legs / body artefacts). Increase to reduce double-counting.
           </div>
         </div>
 
         <!-- ── Crowd confidence threshold (shown only in crowd modes) ── -->
         <div class="control-section" id="crowd-confidence-section" style="display:none">
-          <div class="control-section-label">Seuil de confiance (Crowd)</div>
+          <div class="control-section-label">Crowd confidence threshold</div>
           <div class="density-slider-row">
-            <span class="density-slider-label">Tol&eacute;rant</span>
+            <span class="density-slider-label">Lenient</span>
             <input type="range" id="crowd-confidence-slider"
-                   min="0.05" max="0.80" step="0.01" value="0.25"
+                   min="0.05" max="0.80" step="0.01" value="0.5"
                    style="flex:1;accent-color:var(--accent)">
             <span class="density-slider-label">Strict</span>
-            <span id="crowd-confidence-value" class="density-threshold-badge">0.25</span>
+            <span id="crowd-confidence-value" class="density-threshold-badge">0.50</span>
           </div>
           <div style="font-size:0.68rem;color:rgba(255,255,255,0.4);margin-top:4px">
-            Confidence minimale pour valider une d&eacute;tection. Baisser pour d&eacute;tecter plus, augmenter pour r&eacute;duire les faux positifs.
+            Minimum confidence to validate a detection. Lower to detect more, raise to reduce false positives.
           </div>
         </div>
 
@@ -135,7 +135,7 @@
         <div class="control-section" id="preview-only-row">
           <label class="toggle">
             <input type="checkbox" id="preview-only-toggle">
-            Prévisualisation seule (désactiver tous les overlays)
+            Preview only (disable all overlays)
           </label>
         </div>
 
@@ -147,21 +147,21 @@
       <div class="metrics-grid">
 
         <article class="metric-card">
-          <div class="metric-title">Personnes détectées</div>
+          <div class="metric-title">Persons detected</div>
           <div class="metric-value" id="count-value" style="color:var(--accent)">—</div>
           <div class="metric-footnote" id="frame-id-label">frame —</div>
         </article>
 
         <article class="metric-card">
-          <div class="metric-title">Moy. 1&nbsp;s</div>
+          <div class="metric-title">Average 1&nbsp;s</div>
           <div class="metric-value" id="count-avg-value" style="color:rgba(165,210,255,0.85)">—</div>
-          <div class="metric-footnote">personnes (lissé)</div>
+          <div class="metric-footnote">persons (Avg)</div>
         </article>
 
         <article class="metric-card">
           <div class="metric-title">End-to-end</div>
           <div class="metric-value" id="e2e-value">—</div>
-          <div class="metric-footnote">ms latence / <span id="fps-derived">— fps</span> débit réel</div>
+          <div class="metric-footnote">ms latency / <span id="fps-derived">— fps</span> real</div>
         </article>
 
         <article class="metric-card">
@@ -173,11 +173,11 @@
         <article class="metric-card">
           <div class="metric-title">Inference tiles</div>
           <div class="metric-value metric-value--small" id="tiles-value">—</div>
-          <div class="metric-footnote">ms (chemin critique)</div>
+          <div class="metric-footnote">ms (critical path)</div>
         </article>
 
         <article class="metric-card">
-          <div class="metric-title">Inference global</div>
+          <div class="metric-title">Global inference</div>
           <div class="metric-value metric-value--small" id="global-value">—</div>
           <div class="metric-footnote">ms</div>
         </article>
@@ -189,20 +189,33 @@
         </article>
 
       </div>
+    </section>
 
-      <!-- GPU usage sparkline graph -->
-      <div class="metric-card wide latency-graph-card" style="margin-top:14px" id="gpu-graph-card">
+    <!-- ── Charts column (GPU · comptage · latence) ───────────────── -->
+    <section class="charts-shell">
+
+      <!-- GPU usage sparkline -->
+      <div class="metric-card latency-graph-card" id="gpu-graph-card">
         <div style="display:flex;align-items:baseline;gap:12px">
-          <div class="metric-title">GPU — 60 dernières secondes</div>
+          <div class="metric-title">GPU — last 60 seconds</div>
           <span id="gpu-util-badge" style="font-size:1.2rem;font-weight:700;color:var(--accent)">—%</span>
           <span id="gpu-mem-badge" style="font-size:0.72rem;color:rgba(255,255,255,0.45)">VRAM —/— MB</span>
         </div>
         <canvas id="gpu-chart" height="90"></canvas>
       </div>
 
-      <!-- Latency sparkline graph -->
-      <div class="metric-card wide latency-graph-card" style="margin-top:14px">
-        <div class="metric-title">Latence end-to-end — 60 dernières frames</div>
+      <!-- Comptage moyen historique -->
+      <div class="metric-card latency-graph-card" style="margin-top:14px">
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:2px">
+          <div class="metric-title">Count — last 60 seconds</div>
+          <span id="count-hist-badge" style="font-size:1.2rem;font-weight:700;color:rgba(165,210,255,0.9)">—</span>
+        </div>
+        <canvas id="count-hist-chart" height="90"></canvas>
+      </div>
+
+      <!-- Latence end-to-end sparkline -->
+      <div class="metric-card latency-graph-card" style="margin-top:14px">
+        <div class="metric-title">End-to-end latency — last 60 frames</div>
         <canvas id="latency-chart" height="170"></canvas>
         <div class="latency-legend">
           <span><span class="legend-dot backend"></span> end_to_end_ms</span>
@@ -210,6 +223,7 @@
           <span style="color:rgba(255,255,255,0.35)">── 33 ms target (30 fps)</span>
         </div>
       </div>
+
     </section>
 
   </main>
@@ -226,6 +240,7 @@
     const tilesHist  = [];
     const fpsTs      = [];     // raw timestamps for FPS estimation (from SSE)
     const gpuHist    = [];     // GPU utilisation % history (1 s samples)
+    const countHist  = [];     // person count per frame history
     let   showMask      = true;
     let   showSeg       = false;
     let   showHeatmap   = true;
@@ -313,6 +328,8 @@
     // ── GPU stats polling (every 1 s) ─────────────────────────────
     const gpuChart    = document.getElementById('gpu-chart');
     const gpuCtx      = gpuChart.getContext('2d');
+    const countHistChart = document.getElementById('count-hist-chart');
+    const countHistCtx   = countHistChart.getContext('2d');
 
     function _drawGpuChart() {
       const W = gpuChart.width  = gpuChart.offsetWidth || 600;
@@ -347,7 +364,45 @@
       gpuCtx.stroke();
     }
 
+    function _drawCountHistChart() {
+      const W = countHistChart.width  = countHistChart.offsetWidth || 360;
+      const H = countHistChart.height = 90;
+      countHistCtx.clearRect(0, 0, W, H);
+      if (countHist.length < 2) return;
+      const maxV = Math.max(...countHist, 1);
+      const xOf  = i => (i / (countHist.length - 1)) * W;
+      const yOf  = v => H - (v / maxV) * H * 0.90;
+      // Area fill
+      countHistCtx.beginPath();
+      countHistCtx.moveTo(xOf(0), H);
+      for (let i = 0; i < countHist.length; i++) countHistCtx.lineTo(xOf(i), yOf(countHist[i]));
+      countHistCtx.lineTo(xOf(countHist.length - 1), H);
+      countHistCtx.closePath();
+      countHistCtx.fillStyle = 'rgba(165,210,255,0.14)';
+      countHistCtx.fill();
+      // Line
+      countHistCtx.beginPath();
+      for (let i = 0; i < countHist.length; i++) {
+        if (i === 0) countHistCtx.moveTo(xOf(0), yOf(countHist[0]));
+        else countHistCtx.lineTo(xOf(i), yOf(countHist[i]));
+      }
+      countHistCtx.strokeStyle = 'rgba(165,210,255,0.85)';
+      countHistCtx.lineWidth = 2;
+      countHistCtx.stroke();
+    }
+
     setInterval(async () => {
+      // ── Smoothed count chart (1-second sample) ───────────────────────────
+      const _cAvg = peekAvg(_smooth.count, COUNT_SMOOTH_WIN);
+      if (_cAvg !== null) {
+        const _cv = Math.round(_cAvg);
+        countHist.push(_cv);
+        if (countHist.length > 60) countHist.shift();
+        const $chBadge = document.getElementById('count-hist-badge');
+        if ($chBadge) $chBadge.textContent = _cv;
+        _drawCountHistChart();
+      }
+      // ── GPU stats ─────────────────────────────────────────────────────
       try {
         const res  = await fetch('/api/gpu/stats');
         if (!res.ok) return;
@@ -408,7 +463,8 @@
     })();
 
     // ── Crowd confidence slider ───────────────────────────────
-    let _crowdConfidence = 0.25;  // mirrors crowd_global/crowd_tiles confidence_threshold
+    const _crowdConfidenceByMode = {};  // per-mode thresholds fetched from /api/config
+    let _crowdConfidence = 0.5;  // active mode's current threshold (synced to slider)
 
     (function () {
       const slider = document.getElementById('crowd-confidence-slider');
@@ -418,6 +474,7 @@
       slider.addEventListener('input', () => {
         const v = parseFloat(slider.value);
         _crowdConfidence = v;
+        _crowdConfidenceByMode[_activeMode] = v;  // persist per mode across switches
         badge.textContent = v.toFixed(2);
         clearTimeout(_debounce);
         _debounce = setTimeout(async () => {
@@ -518,6 +575,13 @@
           _activeMode = newMode;
           _setActivePill(newMode);
           _updateOverlaySection(newMode);
+          // Sync crowd threshold slider to the new mode's threshold.
+          const _nmc = _crowdConfidenceByMode[newMode];
+          if (typeof _nmc === 'number') {
+            _crowdConfidence = _nmc;
+            document.getElementById('crowd-confidence-slider').value = _nmc;
+            document.getElementById('crowd-confidence-value').textContent = _nmc.toFixed(2);
+          }
           // Clear metric display while new models warm up
           $countValue.textContent = '—';
           $e2eValue.textContent   = '—';
@@ -553,7 +617,10 @@
           document.getElementById('density-threshold-slider').value = v;
           document.getElementById('density-threshold-value').textContent = v.toFixed(2);
         }
-        // Sync crowd confidence slider to server-side value.
+        // Sync per-mode crowd confidence thresholds and update the slider.
+        if (cfg.crowd_confidence_by_mode) {
+          Object.assign(_crowdConfidenceByMode, cfg.crowd_confidence_by_mode);
+        }
         if (typeof cfg.crowd_confidence === 'number') {
           const v = cfg.crowd_confidence;
           _crowdConfidence = v;
@@ -562,6 +629,7 @@
         }
       } catch(e) {
         // Server not up yet or no config endpoint — stay in passthrough
+        console.error('_loadConfig failed:', e);
         _renderModePills(['passthrough'], 'passthrough');
       }
     }
@@ -696,9 +764,10 @@
       if (hasTelemetry) {
         e2eHist.push(e2e);
         tilesHist.push(tiles);
-        if (e2eHist.length  > MAX_HISTORY) e2eHist.shift();
+        if (e2eHist.length   > MAX_HISTORY) e2eHist.shift();
         if (tilesHist.length > MAX_HISTORY) tilesHist.shift();
         drawChart();
+        // countHist is updated every 1 s by the setInterval (not per-frame).
       }
     });
 

@@ -117,7 +117,7 @@ def _letterbox_box(
 
 def test_decode_xywh_single_person_no_letterbox() -> None:
     """Person exactly at center of the 640×640 model space: bbox should round-trip."""
-    from app_v2.infrastructure.yolo_decoder import YoloDecoder
+    from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder as YoloDecoder
 
     cx, cy, w, h = 320.0, 320.0, 100.0, 200.0
     tensor = _make_xywh_tensor([(cx, cy, w, h)])
@@ -139,7 +139,7 @@ def test_decode_xywh_single_person_no_letterbox() -> None:
 
 def test_decode_filters_below_threshold() -> None:
     """A box with score below threshold must not appear in the output."""
-    from app_v2.infrastructure.yolo_decoder import YoloDecoder
+    from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder as YoloDecoder
 
     tensor = _make_xywh_tensor([(320.0, 320.0, 100.0, 200.0)], conf=0.2)
     decoder = YoloDecoder(person_class_id=0, confidence_threshold=0.25)
@@ -149,7 +149,7 @@ def test_decode_filters_below_threshold() -> None:
 
 def test_decode_multiple_persons_nms_reduces_duplicates() -> None:
     """Two heavily overlapping boxes for the same person should collapse to one after NMS."""
-    from app_v2.infrastructure.yolo_decoder import YoloDecoder
+    from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder as YoloDecoder
 
     # Two nearly identical boxes (>0.45 IoU) → NMS keeps highest-score one
     tensor = _make_xywh_tensor([
@@ -168,7 +168,7 @@ def test_decode_multiple_persons_nms_reduces_duplicates() -> None:
 
 def test_decode_wrong_class_returns_empty() -> None:
     """Tensor with only class-1 detections: person_class_id=0 should return nothing."""
-    from app_v2.infrastructure.yolo_decoder import YoloDecoder
+    from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder as YoloDecoder
 
     tensor = torch.zeros(1, 4 + NUM_CLASSES, NUM_ANCHORS)
     tensor[:, 4:, :] = 0.01
@@ -202,7 +202,7 @@ def test_letterbox_roundtrip(
     """Person bbox: original px → letterboxed xywh tensor → YoloDecoder → un-letterbox
     → should recover the original normalised bbox to within ~1 pixel at model resolution.
     """
-    from app_v2.infrastructure.yolo_decoder import YoloDecoder
+    from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder as YoloDecoder
 
     # 1. Compute what the TRT model would output for this person in letterbox space
     cx, cy, w_lb, h_lb = _letterbox_box(person_box_px, src_w, src_h)
@@ -306,7 +306,7 @@ def test_global_plan_server_unletterbox_roundtrip(
 
     The browser only needs a linear mapping (no letterbox math).
     """
-    from app_v2.infrastructure.yolo_decoder import YoloDecoder
+    from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder as YoloDecoder
 
     # 1. Build synthetic YOLO tensor in letterbox space
     cx, cy, w_lb, h_lb = _letterbox_box(person_box_px, src_w, src_h)
@@ -345,7 +345,7 @@ def test_tiles_two_tiles_global_coords() -> None:
       tile 0 at (0,0)   → person at tile-local (320,320) → global (320/1280, 320/640) = (0.25, 0.50)
       tile 1 at (640,0) → person at tile-local (320,320) → global (960/1280, 320/640) = (0.75, 0.50)
     """
-    from app_v2.infrastructure.yolo_decoder import YoloDecoder
+    from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder as YoloDecoder
 
     FRAME_W, FRAME_H = 1280, 640
 
@@ -383,7 +383,7 @@ def test_tiles_two_tiles_global_coords() -> None:
 
 def test_tiles_no_plan_returns_merged_letterbox_coords() -> None:
     """Without a plan the decoder falls back to merged (tile-unaware) coords — backward compat."""
-    from app_v2.infrastructure.yolo_decoder import YoloDecoder
+    from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder as YoloDecoder
 
     tile0 = torch.zeros(4 + NUM_CLASSES, NUM_ANCHORS)
     tile0[4:, :] = 0.01

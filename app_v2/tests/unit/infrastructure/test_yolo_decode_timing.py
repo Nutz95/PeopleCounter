@@ -143,7 +143,7 @@ def test_vectorized_decode_is_faster_than_naive() -> None:
     Tile counts tested: 1, 4, 9, 16, 20.
     For N ≥ 4, the vectorized path must be at least 1.5× faster.
     """
-    from app_v2.infrastructure.yolo_decoder import YoloDecoder
+    from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder as YoloDecoder
 
     decoder = YoloDecoder(person_class_id=0, confidence_threshold=0.25)
     device = "cuda"
@@ -195,7 +195,7 @@ def test_vectorized_decode_gpu_sync_count() -> None:
     path must use ≤ 4.
     """
     import unittest.mock as mock
-    from app_v2.infrastructure.yolo_decoder import YoloDecoder
+    from app_v2.infrastructure.yolo_v8_decoder import YoloV8Decoder as YoloDecoder
 
     decoder = YoloDecoder(person_class_id=0, confidence_threshold=0.25)
     device = "cuda"
