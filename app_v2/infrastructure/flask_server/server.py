@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -97,6 +99,13 @@ class FlaskStreamServer(ResultPublisher):
         _crowd_global_cfg = (_cfg.get("model_inference") or {}).get("crowd_global") or {}
         self._crowd_confidence: float = float(_crowd_global_cfg.get("confidence_threshold", 0.25))
         self._pending_crowd_confidence: float | None = None
+
+        # GPU stats — polled every 1 s by a daemon thread; protected by _gpu_lock.
+        self._gpu_lock = threading.Lock()
+        self._gpu_available: bool = False
+        self._gpu_last: dict[str, int] = {"gpu_util": 0, "mem_used_mb": 0, "mem_total_mb": 0}
+        self._gpu_history: deque[int] = deque(maxlen=60)  # last 60 samples (1 per second)
+        self._gpu_thread: threading.Thread | None = None
 
         # Templates and static files live next to this package
         assets_root = Path(__file__).resolve().parent
@@ -261,6 +270,27 @@ class FlaskStreamServer(ResultPublisher):
                 headers={"Cache-Control": "no-cache"},
             )
 
+        @self._app.get("/api/gpu/stats")
+        def api_gpu_stats() -> Any:
+            """Return current GPU utilisation and VRAM usage.
+
+            The response includes a ``history_util`` array of the last ≤ 60
+            one-second GPU-compute-% samples, suitable for a sparkline chart.
+            """
+            with self._gpu_lock:
+                available = self._gpu_available
+                last      = dict(self._gpu_last)
+                history   = list(self._gpu_history)
+            if not available:
+                return jsonify({"available": False})
+            return jsonify({
+                "available":    True,
+                "gpu_util":     last.get("gpu_util", 0),
+                "mem_used_mb":  last.get("mem_used_mb", 0),
+                "mem_total_mb": last.get("mem_total_mb", 0),
+                "history_util": history,
+            })
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -273,10 +303,44 @@ class FlaskStreamServer(ResultPublisher):
             return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        # Start GPU telemetry poller (daemon — safe to run without GPU).
+        if self._gpu_thread is None or not self._gpu_thread.is_alive():
+            self._gpu_thread = threading.Thread(
+                target=self._gpu_polling_loop, daemon=True, name="gpu-poller"
+            )
+            self._gpu_thread.start()
 
     def _run(self) -> None:
         assert self._app is not None
         self._app.run(host=self.host, port=self.port, threaded=True, use_reloader=False)
+
+    def _gpu_polling_loop(self) -> None:
+        """Daemon thread: poll pynvml every 1 s, store results in _gpu_history."""
+        try:
+            import pynvml  # type: ignore[import]
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            pynvml_ok = True
+        except Exception:
+            pynvml_ok = False
+
+        while True:
+            if pynvml_ok:
+                try:
+                    util  = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    mem   = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    sample: dict[str, int] = {
+                        "gpu_util":     int(util.gpu),
+                        "mem_used_mb":  int(mem.used  // (1024 * 1024)),
+                        "mem_total_mb": int(mem.total // (1024 * 1024)),
+                    }
+                    with self._gpu_lock:
+                        self._gpu_available = True
+                        self._gpu_last = sample
+                        self._gpu_history.append(sample["gpu_util"])
+                except Exception:
+                    pass
+            time.sleep(1.0)
 
     def publish(self, frame_id: int, payload: Sequence[dict[str, object]]) -> None:
         """Store last payload and push to all SSE subscribers."""

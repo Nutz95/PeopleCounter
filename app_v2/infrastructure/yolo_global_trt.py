@@ -5,6 +5,7 @@ from typing import Any, Sequence
 
 from app_v2.core.inference_model import InferenceModel
 from app_v2.infrastructure.yolo_decoder import YoloDecoder
+from app_v2.infrastructure.yolo_v5_decoder import YoloV5Decoder
 
 
 class YoloGlobalTRT(InferenceModel):
@@ -15,11 +16,12 @@ class YoloGlobalTRT(InferenceModel):
         self._stream_id = stream_id
         self._name = model_name
         self._inference_params = dict(inference_params or {})
-        self._decoder = YoloDecoder(
+        _fmt = str(self._inference_params.get("decoder_format", "yolov8"))
+        _decoder_cls = YoloV5Decoder if _fmt == "yolov5" else YoloDecoder
+        self._decoder = _decoder_cls(
             person_class_id=int(self._inference_params.get("person_class_id", 0)),
             confidence_threshold=float(self._inference_params.get("confidence_threshold", 0.25)),
         )
-        self._decoder.decoder_format = str(self._inference_params.get("decoder_format", "yolov8"))
         self._decoder.seg_mask_enabled = bool(
             self._inference_params.get("seg_mask_enabled", False)
         )

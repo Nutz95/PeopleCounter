@@ -158,9 +158,9 @@ def test_vectorized_decode_is_faster_than_naive() -> None:
         plan = _make_tile_plan(n)
 
         naive_ms = _time_fn(lambda: _decode_naive_per_tile(decoder, tensor, plan))
-        vec_ms   = _time_fn(lambda: decoder._decode_tiled_yolov8_global(tensor, plan))
+        vec_ms   = _time_fn(lambda: decoder._decode_tiled_global(tensor, plan))
 
-        n_dets = len(decoder._decode_tiled_yolov8_global(tensor, plan))
+        n_dets = len(decoder._decode_tiled_global(tensor, plan))
         speedup = naive_ms / max(vec_ms, 0.001)
         print(f"{n:>6}  {naive_ms:>10.3f}  {vec_ms:>10.3f}  {speedup:>9.2f}×  {n_dets:>12}")
 
@@ -175,7 +175,7 @@ def test_vectorized_decode_is_faster_than_naive() -> None:
         if min_speedup > 1.0:
             assert speedup >= min_speedup, (
                 f"Vectorized decoder is only {speedup:.2f}× faster than naive for {n} tiles; "
-                f"expected ≥ {min_speedup}×. Check for regressions in _decode_tiled_yolov8_global()."
+                f"expected ≥ {min_speedup}×. Check for regressions in _decode_tiled_global()."
             )
 
     print("-" * 60)
@@ -212,7 +212,7 @@ def test_vectorized_decode_gpu_sync_count() -> None:
         return real_tolist(self)
 
     with mock.patch.object(torch.Tensor, "tolist", counting_tolist):
-        decoder._decode_tiled_yolov8_global(tensor, plan)
+        decoder._decode_tiled_global(tensor, plan)
 
     print(f"\n[sync count test] 20-tile decode: {call_count} tolist() call(s)")
     assert call_count <= 4, (

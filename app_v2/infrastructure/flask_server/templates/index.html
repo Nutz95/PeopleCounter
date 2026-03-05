@@ -190,6 +190,16 @@
 
       </div>
 
+      <!-- GPU usage sparkline graph -->
+      <div class="metric-card wide latency-graph-card" style="margin-top:14px" id="gpu-graph-card">
+        <div style="display:flex;align-items:baseline;gap:12px">
+          <div class="metric-title">GPU — 60 dernières secondes</div>
+          <span id="gpu-util-badge" style="font-size:1.2rem;font-weight:700;color:var(--accent)">—%</span>
+          <span id="gpu-mem-badge" style="font-size:0.72rem;color:rgba(255,255,255,0.45)">VRAM —/— MB</span>
+        </div>
+        <canvas id="gpu-chart" height="90"></canvas>
+      </div>
+
       <!-- Latency sparkline graph -->
       <div class="metric-card wide latency-graph-card" style="margin-top:14px">
         <div class="metric-title">Latence end-to-end — 60 dernières frames</div>
@@ -215,6 +225,7 @@
     const e2eHist    = [];
     const tilesHist  = [];
     const fpsTs      = [];     // raw timestamps for FPS estimation (from SSE)
+    const gpuHist    = [];     // GPU utilisation % history (1 s samples)
     let   showMask      = true;
     let   showSeg       = false;
     let   showHeatmap   = true;
@@ -299,7 +310,61 @@
       if (avg !== null && $countAvgValue) $countAvgValue.textContent = Math.round(avg);
     }, 1000);
 
-    // ── Toggle handlers ────────────────────────────────────────────
+    // ── GPU stats polling (every 1 s) ─────────────────────────────
+    const gpuChart    = document.getElementById('gpu-chart');
+    const gpuCtx      = gpuChart.getContext('2d');
+
+    function _drawGpuChart() {
+      const W = gpuChart.width  = gpuChart.offsetWidth || 600;
+      const H = gpuChart.height = 90;
+      gpuCtx.clearRect(0, 0, W, H);
+      if (gpuHist.length < 2) return;
+      const xOf = i => (i / (gpuHist.length - 1)) * W;
+      const yOf = v => H - (v / 100) * H;
+      // 50% guide line
+      gpuCtx.beginPath();
+      gpuCtx.strokeStyle = 'rgba(255,255,255,0.10)';
+      gpuCtx.setLineDash([4, 4]);
+      gpuCtx.moveTo(0, yOf(50)); gpuCtx.lineTo(W, yOf(50));
+      gpuCtx.stroke();
+      gpuCtx.setLineDash([]);
+      // Area fill
+      gpuCtx.beginPath();
+      gpuCtx.moveTo(xOf(0), H);
+      for (let i = 0; i < gpuHist.length; i++) gpuCtx.lineTo(xOf(i), yOf(gpuHist[i]));
+      gpuCtx.lineTo(xOf(gpuHist.length - 1), H);
+      gpuCtx.closePath();
+      gpuCtx.fillStyle = 'rgba(42,223,165,0.18)';
+      gpuCtx.fill();
+      // Line
+      gpuCtx.beginPath();
+      for (let i = 0; i < gpuHist.length; i++) {
+        if (i === 0) gpuCtx.moveTo(xOf(0), yOf(gpuHist[0]));
+        else gpuCtx.lineTo(xOf(i), yOf(gpuHist[i]));
+      }
+      gpuCtx.strokeStyle = 'rgba(42,223,165,0.85)';
+      gpuCtx.lineWidth = 2;
+      gpuCtx.stroke();
+    }
+
+    setInterval(async () => {
+      try {
+        const res  = await fetch('/api/gpu/stats');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.available) return;
+        // Update history
+        gpuHist.push(data.gpu_util);
+        if (gpuHist.length > 60) gpuHist.shift();
+        // Update badges
+        const utilBadge = document.getElementById('gpu-util-badge');
+        const memBadge  = document.getElementById('gpu-mem-badge');
+        if (utilBadge) utilBadge.textContent = `${data.gpu_util}%`;
+        if (memBadge)
+          memBadge.textContent = `VRAM ${data.mem_used_mb} / ${data.mem_total_mb} MB`;
+        _drawGpuChart();
+      } catch (_) { /* ignore network errors */ }
+    }, 1000);
     document.getElementById('mask-toggle').addEventListener('change', e => {
       showMask = e.target.checked;
       if (!showMask) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
