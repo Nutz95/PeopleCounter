@@ -286,6 +286,11 @@ class PipelineOrchestrator:
                     pending_threshold = self.publisher.get_and_clear_pending_density_threshold()
                     if pending_threshold is not None:
                         self._density_decoder.min_peak_weight = pending_threshold
+                    pending_crowd_conf = self.publisher.get_and_clear_pending_crowd_confidence()
+                    if pending_crowd_conf is not None:
+                        for model in self._models:
+                            if model.name in ("crowd_global", "crowd_tiles") and hasattr(model, "_decoder"):
+                                model._decoder.confidence_threshold = pending_crowd_conf
         except StopIteration:
             log_info(LogChannel.GLOBAL, "Frame source signaled completion")
         except Exception as exc:

@@ -93,6 +93,10 @@ class FlaskStreamServer(ResultPublisher):
         _dcfg = _cfg.get("density") or {}
         self._density_threshold: float = float(_dcfg.get("min_peak_weight", 0.05))
         self._pending_density_threshold: float | None = None
+        # Crowd confidence threshold — applies to crowd_global + crowd_tiles decoders.
+        _crowd_global_cfg = (_cfg.get("model_inference") or {}).get("crowd_global") or {}
+        self._crowd_confidence: float = float(_crowd_global_cfg.get("confidence_threshold", 0.25))
+        self._pending_crowd_confidence: float | None = None
 
         # Templates and static files live next to this package
         assets_root = Path(__file__).resolve().parent
@@ -144,7 +148,8 @@ class FlaskStreamServer(ResultPublisher):
                 "available_modes":   available,
                 "mode_labels":       _MODE_LABELS,
                 "mode_overlays":     _MODE_OVERLAYS,
-                "density_threshold": density_threshold,
+                "density_threshold":  density_threshold,
+                "crowd_confidence":   self._crowd_confidence,
             })
 
         @self._app.post("/api/mode")
@@ -162,6 +167,20 @@ class FlaskStreamServer(ResultPublisher):
             with self._mode_lock:
                 self._pending_mode = requested
             return jsonify({"ok": True, "mode": requested, "changed": True})
+
+        @self._app.post("/api/crowd/confidence")
+        def api_set_crowd_confidence() -> Any:
+            from flask import request
+            body = request.get_json(silent=True) or {}
+            try:
+                value = float(body.get("confidence", 0.25))
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "confidence must be a number"}), 400
+            value = max(0.05, min(0.95, value))  # clamp to [0.05, 0.95]
+            with self._mode_lock:
+                self._crowd_confidence = value
+                self._pending_crowd_confidence = value
+            return jsonify({"ok": True, "confidence": value})
 
         @self._app.post("/api/density/threshold")
         def api_set_density_threshold() -> Any:
@@ -296,6 +315,13 @@ class FlaskStreamServer(ResultPublisher):
         with self._mode_lock:
             value = self._pending_density_threshold
             self._pending_density_threshold = None
+            return value
+
+    def get_and_clear_pending_crowd_confidence(self) -> float | None:
+        """Return and consume any pending crowd confidence from POST /api/crowd/confidence."""
+        with self._mode_lock:
+            value = self._pending_crowd_confidence
+            self._pending_crowd_confidence = None
             return value
 
     def set_active_mode(self, mode: str) -> None:

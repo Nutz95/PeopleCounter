@@ -28,12 +28,6 @@ class YoloDecoder(Postprocessor):
         # stride-8) for the same person have IoU ~0.16-0.25, so cross-tile NMS must
         # be aggressive enough to catch them.
         self.cross_nms_iou_threshold: float = 0.20
-        # Temporal confirmation window (0 = disabled).  When ≥ 2, a detection is
-        # only displayed if it also appeared in the previous frame (IoU ≥ 0.20).
-        # This eliminates anchor-flip flicker: single-frame noise boxes disappear
-        # while stable per-person detections persist.
-        self.temporal_window: int = 0
-        self._prev_frame_boxes: "torch.Tensor | None" = None
         # Seg-mask extraction requires a GPU→CPU copy (costly on the hot path).
         # Enable only when a seg-model is actually loaded and the UI toggle is on.
         self.seg_mask_enabled: bool = False
@@ -53,11 +47,6 @@ class YoloDecoder(Postprocessor):
         # 16 px matches the smallest P2/4 anchor height ([19.2,16]).
         # Configurable via model_inference.yaml: min_box_px
         self.min_box_px: float = 16.0
-        # When True, skip the first 76800 anchors (P2/4 stride-4 head) entirely.
-        # Drastically reduces noise with no useful-detection loss for typical
-        # camera heights where heads subtend > 20 px.
-        # Configurable via model_inference.yaml: skip_stride4_head
-        self.skip_stride4_head: bool = False
 
     def process(self, frame_id: int, outputs: dict[str, Any], *, tile_plan: Any = None) -> dict[str, Any]:
         """Return normalized bounding boxes plus metadata for the aggregator.
@@ -406,13 +395,6 @@ class YoloDecoder(Postprocessor):
             if self.decoder_format == "yolov5":
                 if c < 6 or self.person_class_id >= c - 5:
                     return []
-                # Skip the P2/4 stride-4 head (76800 of 100800 anchors) — removes
-                # the primary noise source while keeping P3/8 + P4/16 (24000 anchors).
-                # Only applied when the tensor has the expected 100800 anchor count
-                # so it degrades gracefully on other yolov5 models.
-                if self.skip_stride4_head and int(t.shape[1]) == 100800:
-                    t = t[:, 76800:, :]   # [N, 24000, nc+5]
-                    a = 24000
                 obj_conf    = t[:, :, 4]              # [N, A]
                 cls_conf    = t[:, :, 5 + self.person_class_id]  # [N, A]
                 person_scores = obj_conf * cls_conf   # [N, A]
@@ -561,29 +543,6 @@ class YoloDecoder(Postprocessor):
                 topk = torch.topk(scores_flat, _MAX_DETS, largest=True, sorted=False)
                 global_boxes = global_boxes[topk.indices]
                 scores_flat  = scores_flat[topk.indices]
-
-            # ── Temporal confirmation filter ───────────────────────────────
-            # For YOLO-CROWD (yolov5 format): require each box to have a
-            # matching box (IoU ≥ 0.20) in the previous frame's output.
-            # This kills single-frame anchor-flip noise while keeping stable
-            # person detections that are present in every frame.
-            if self.decoder_format == "yolov5" and self.temporal_window >= 2:
-                _cur_for_prev = global_boxes  # unfiltered reference for next frame
-                _prev = self._prev_frame_boxes
-                if (
-                    _prev is not None
-                    and _prev.shape[0] > 0
-                    and global_boxes.shape[0] > 0
-                ):
-                    try:
-                        from torchvision.ops import box_iou as _box_iou  # type: ignore[import]
-                        _iou_mat = _box_iou(global_boxes.float(), _prev.float())  # [N_cur, N_prev]
-                        _has_prev_support = _iou_mat.max(dim=1).values >= 0.20
-                        global_boxes = global_boxes[_has_prev_support]
-                        scores_flat  = scores_flat[_has_prev_support]
-                    except Exception:
-                        pass  # skip temporal filter on error; degrade gracefully
-                self._prev_frame_boxes = _cur_for_prev
 
             # ── Single GPU→CPU transfer for ALL detections ────────────────
             boxes_cpu  = global_boxes.tolist()   # sync #2

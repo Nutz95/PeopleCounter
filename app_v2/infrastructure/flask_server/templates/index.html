@@ -115,6 +115,22 @@
           </div>
         </div>
 
+        <!-- ── Crowd confidence threshold (shown only in crowd modes) ── -->
+        <div class="control-section" id="crowd-confidence-section" style="display:none">
+          <div class="control-section-label">Seuil de confiance (Crowd)</div>
+          <div class="density-slider-row">
+            <span class="density-slider-label">Tol&eacute;rant</span>
+            <input type="range" id="crowd-confidence-slider"
+                   min="0.05" max="0.80" step="0.01" value="0.25"
+                   style="flex:1;accent-color:var(--accent)">
+            <span class="density-slider-label">Strict</span>
+            <span id="crowd-confidence-value" class="density-threshold-badge">0.25</span>
+          </div>
+          <div style="font-size:0.68rem;color:rgba(255,255,255,0.4);margin-top:4px">
+            Confidence minimale pour valider une d&eacute;tection. Baisser pour d&eacute;tecter plus, augmenter pour r&eacute;duire les faux positifs.
+          </div>
+        </div>
+
         <!-- ── Preview-only (always visible) ─────────────────────────── -->
         <div class="control-section" id="preview-only-row">
           <label class="toggle">
@@ -326,6 +342,33 @@
       });
     })();
 
+    // ── Crowd confidence slider ───────────────────────────────
+    let _crowdConfidence = 0.25;  // mirrors crowd_global/crowd_tiles confidence_threshold
+
+    (function () {
+      const slider = document.getElementById('crowd-confidence-slider');
+      const badge  = document.getElementById('crowd-confidence-value');
+      let _debounce = null;
+
+      slider.addEventListener('input', () => {
+        const v = parseFloat(slider.value);
+        _crowdConfidence = v;
+        badge.textContent = v.toFixed(2);
+        clearTimeout(_debounce);
+        _debounce = setTimeout(async () => {
+          try {
+            await fetch('/api/crowd/confidence', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ confidence: v }),
+            });
+          } catch(err) {
+            console.warn('crowd confidence update failed:', err);
+          }
+        }, 150);  // 150 ms debounce — avoids flooding during drag
+      });
+    })();
+
     document.getElementById('preview-only-toggle').addEventListener('change', e => {
       previewOnly = e.target.checked;
       if (previewOnly) {
@@ -350,6 +393,10 @@
       // Density threshold section: only visible in density mode.
       const hasDensity = overlays.includes('heatmap');
       document.getElementById('density-threshold-section').style.display = hasDensity ? '' : 'none';
+
+      // Crowd confidence section: visible in crowd_global / crowd_tiles.
+      const hasCrowd = mode.startsWith('crowd');
+      document.getElementById('crowd-confidence-section').style.display = hasCrowd ? '' : 'none';
 
       // Enable overlays by default when entering a mode that supports them;
       // disable them when leaving (keeps state clean on mode switch).
@@ -440,6 +487,13 @@
           _densityThreshold = v;
           document.getElementById('density-threshold-slider').value = v;
           document.getElementById('density-threshold-value').textContent = v.toFixed(2);
+        }
+        // Sync crowd confidence slider to server-side value.
+        if (typeof cfg.crowd_confidence === 'number') {
+          const v = cfg.crowd_confidence;
+          _crowdConfidence = v;
+          document.getElementById('crowd-confidence-slider').value = v;
+          document.getElementById('crowd-confidence-value').textContent = v.toFixed(2);
         }
       } catch(e) {
         // Server not up yet or no config endpoint — stay in passthrough
