@@ -5,14 +5,18 @@
   <meta charset="utf-8">
   <title>PeopleCounter v2</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 </head>
 
 <body>
   <header class="hero">
-    <div>
-      <p class="eyebrow">PeopleCounter v2</p>
-      <h1>GPU-first pipeline</h1>
+    <div style="display:flex;align-items:center;gap:16px;">
+      <img src="{{ url_for('static', filename='logo.svg') }}" alt="PeopleCounter logo" style="width:96px;height:96px;flex-shrink:0;">
+      <div>
+        <p class="eyebrow">PeopleCounter v2</p>
+        <h1>GPU-first pipeline</h1>
+      </div>
     </div>
     <div class="hero-note">
       <span>Port {{ port }}</span>

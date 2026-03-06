@@ -211,7 +211,5 @@ firefox app_v2/tests/integration/pipeline/artifacts/pipeline_e2e_metrics.html
 
 ## 📚 Références
 
-- **Migration plan**: [plans/app_v2_migration_plan.md](plans/app_v2_migration_plan.md)
-- **Session notes**: `/memories/session/plan.md`
 - **TensorRT INT8 docs**: https://docs.nvidia.com/deeplearning/tensorrt/developer-guide/index.html#working-with-int8
 - **Ultralytics export**: https://docs.ultralytics.com/modes/export/

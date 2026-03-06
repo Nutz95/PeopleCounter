@@ -1,125 +1,351 @@
 # PeopleCounter
 
-PeopleCounter counts people on a live camera stream (up to 4K) by combining YOLO and LWCC/density models with sparse mask overlays and latency-aware metrics. The legacy pipeline is now housed under `app_v1/`, while `app_v2/` contains the new TensorRT-only, GPU-first orchestrator described in the `app_v2/README.md` family of docs.
+![PeopleCounter Web UI](screenshot.jpg)
 
-## Quick start
+Real-time AI crowd counting on a 4K camera stream. Multiple inference modes
+(object detection, tiling, density estimation) run entirely inside a Docker
+container on an NVIDIA GPU. A web UI served by the container lets you switch
+modes live, watch overlays on the video feed, and monitor GPU utilisation,
+person count, and end-to-end latency.
 
-### 1. Clone & install Python dependencies
+The current codebase is `app_v2/` — a TensorRT-only, GPU-first orchestrator.
+The legacy pipeline lives under `app_v1/` for reference.
 
-- Clone the repository on your host (Windows or Linux) and navigate inside the source tree.
-- Create and activate a Python 3.11 virtual environment:
+---
+
+## Hardware Requirements
+
+`app_v2` was developed and tested on:
+
+| Component | Tested configuration |
+|-----------|---------------------|
+| GPU | **NVIDIA RTX 5060 Ti** (Blackwell sm_120, 16 GB GDDR7, 448 GB/s) |
+| CUDA | 13.1 |
+| TensorRT | 10.15.1 |
+| OS (host) | Ubuntu 24.04 (bare metal or WSL2) |
+
+**RTX 5000 series (Blackwell)** — recommended. All FP8-QDQ TensorRT engines and
+model conversions have been optimised for the Blackwell architecture.
+
+**RTX 4000 series (Ada Lovelace)** — should work; FP8 is supported, but the
+engines must be recompiled locally (TensorRT engines are hardware-specific).
+Real-world performance on Ada has not been measured.
+
+**OpenVINO / Intel GPU / NPU** — not supported in `app_v2`. WSL2 and Docker do
+not expose Intel accelerators. OpenVINO integration was part of `app_v1`, which
+ran natively on Windows and leveraged Intel NPU/GPU via the OpenVINO runtime.
+The conversion script (`convert_pth_to_openvino.py`) is preserved for `app_v1`
+reference only.
+
+---
+
+## Inference Modes
+
+| Mode | Model | Precision | Output |
+|------|-------|-----------|--------|
+| `passthrough` | — | — | raw video |
+| `yolo_global` | yolo26x (decoder: YOLOv8) | FP8-QDQ | bbox + seg masks |
+| `yolo_tiles` | yolo26n (decoder: YOLOv8) | FP8-QDQ | bbox (3×2 tiles) |
+| `density` | DM-Count QNRF (VGG16) | FP16 | density heatmap |
+| `crowd_global` | YOLO-CROWD (YOLOv5) | FP16 | bbox |
+| `crowd_tiles` | YOLO-CROWD (YOLOv5) | FP16 | bbox (3×2 tiles) |
+
+> **Model naming note**: The inference models are **yolo26** (YOLO v26 family).
+> "YOLOv8" refers to the TensorRT decoder engine format — the decoding logic
+> is compatible with YOLOv8, YOLO11, and yolo26 output tensors. The models
+> themselves are yolo26n/s/m/l/x.
+
+---
+
+## Quick Start
+
+### Prerequisites — Linux / WSL2 (Ubuntu 24.04)
+
+`app_v2` runs inside Docker. Clone and run on a machine with:
+- Ubuntu 24.04 (native or WSL2)
+- NVIDIA GPU with drivers that expose CUDA inside WSL/containers
+- Docker Engine + NVIDIA Container Toolkit
+
+> **Windows users**: `app_v2` is **not** run directly on Windows. Clone under
+> WSL2 (Ubuntu 24.04) to build and run the Docker container. The Windows
+> `windows/` sub-directory contains a separate **video streaming tool** — see
+> the [Windows Video Streamer](#windows-video-streamer) section.
+
+### 1. Clone (Linux / WSL2)
 
 ```bash
-python -m venv .venv
-source .venv/Scripts/activate  # Linux/WSL/macOS
+git clone <repo-url> PeopleCounter
+cd PeopleCounter
 ```
-- Install the runtime requirements:
+
+### 2. Build the Docker image
+
+Run once. Takes ~30–60 minutes (downloads CUDA base image, builds OpenCV from source).
 
 ```bash
-.venv/Scripts/python.exe -m pip install -r requirements.txt
+./0_build_image.sh
 ```
 
-### 2. Prepare the AI models
+This produces `people-counter:gpu-final`.
 
-- Run `./setup.sh` (WSL/Git Bash recommended). It downloads Ultralytics weights and converts them to ONNX/TensorRT `.engine` files inside `models/`.
-- CUDA/TensorRT is required to generate `.engine` files locally; if drivers are missing, the script still produces ONNX copies.
+### 3. Install the runtime toolchain layer
 
-### 3. Set up the Windows → WSL bridge
-
-- Clone the repository on your Windows host as well.
-- Run the helper in `windows/setup_and_run.bat`; it
-  1. creates `venv_bridge`,
-  2. installs Flask/OpenCV, and
-  3. launches `camera_bridge.py` that exposes the MJPEG stream (e.g. `http://192.168.1.62:5002/video_feed`).
-- Once the bridge is running, open WSL, `cd` into the repo, and launch:
+Installs TensorRT 10.15, Python packages, NVIDIA ModelOpt, and CUDA bindings
+on top of the base image. Takes ~5–10 minutes.
 
 ```bash
-./run_app.sh --profile rtx_extreme http://<windows-ip>:5002/video_feed
+./1_prepare.sh
 ```
 
-This pulls the correct Docker image, generates any missing models inside the container, and connects to the bridge stream.
+### 4. Build the NVDEC layer (required for app_v2)
 
-### 4. Run PeopleCounter
-
-We have split the workflow into six stages:
-
-1. `./0_build_image.sh` performs the heavy Docker image build (`people-counter:gpu-final`), so you only spend that hour once.
-2. `./1_prepare.sh` layers the apt/pip dependencies on top of the already built image.
-3. `./2_prepare_nvdec.sh` builds and installs VPF + PyNvCodec from source in a **new image layer**, committing `people-counter:gpu-final-nvdec`. NVDEC support is now required to run the `app_v2` orchestrator and the GPU test harness. The NVDEC layer also patches the FFmpeg demuxer so codecs that aren't H.264/HEVC skip the Annex-B bitstream filter, preventing the "unknown filter by name" failure that plagued the MJPEG bridge stream.
-
-  The installer first checks whether you placed `external/Video_Codec_SDK_13.0.37` inside the repository; if so, that folder is used. When it is missing, the script downloads the official archive from https://developer.nvidia.com/downloads/video-codec-sdk/13.0.37/video_codec_sdk_13.0.37.zip (a NVIDIA account sign-in is typically required), extracts it into `externals/`, and copies `libnvcuvid.so` plus the headers into `/usr/local/cuda` so PyNvCodec can build. If you already provisioned the SDK yourself (e.g., offline or due to corporate mirrors), set `VIDEO_CODEC_SDK_DIR=/path/to/Video_Codec_SDK` before running `./2_prepare_nvdec.sh` so the script will use that copy instead of downloading another archive.
-4. `./3_prepare_models.sh` runs `prepare_models.py` inside the prepared image so you can rebuild TensorRT/ONNX assets without re-running the installs.
-5. `./4_run_app.sh --app-version v1 <source>` launches the legacy pipeline from `app_v1/` with the existing worker graph. Use `--app-version v2` to start the new GPU-first orchestration in `app_v2/`, which now decodes via NVDEC, preprocesses on CUDA, executes the TensorRT engines, fuses metadata, and publishes through the Flask server.
-6. `./5_run_tests.sh` compiles `app_v2` and runs `pytest app_v2/tests` inside the NVDEC-ready `people-counter:gpu-final-nvdec` image so each implementation pass runs on the same GPU stack that ships to production.
-
-The `app_v2` orchestrator now drives NVDEC decode, CUDA preprocessing, TensorRT inference, and metadata fusion before the Flask streamer publishes the merged masks; see `app_v2/README.md` for the clean-architecture overview.
-
-Use `IMAGE_NAME=people-counter:gpu-final-nvdec` with `./4_run_app.sh` or `./5_run_tests.sh` when running on the optional NVDEC-enabled image.
-
-`run_app.sh` is kept as a lightweight wrapper for backwards compatibility; it now forwards all arguments to `./4_run_app.sh`.
-
-Pass any additional camera URL or resolution arguments after the profile (e.g., `./4_run_app.sh --app-version v2 --profile rtx_extreme http://...`).
-The recommended way to change backends remains modifying `.env` profiles as detailed below.
-
-### 5. Build the Docker image (optional)
-
-- Regenerate the Docker runtime with `./build_image.sh` from inside WSL.
-- Prerequisites: install Docker Desktop or Engine inside WSL, install the NVIDIA Container Toolkit (`nvidia-container-toolkit`), and ensure `nvidia-smi` works in WSL (requires NVIDIA drivers that expose CUDA inside the subsystem).
-- Verifying GPUs inside the container can be done with:
+Compiles PyNvCodec / VPF from source and commits a new image layer.
+NVDEC hardware video decode is required by the `app_v2` orchestrator.
 
 ```bash
-docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
+./2_prepare_nvdec.sh
 ```
 
-## Configuration via `.env`
+Produces `people-counter:gpu-final-nvdec`.
 
-- Each profile lives under `scripts/configs/<profile>.env` (examples: `rtx_extreme.env`, `cpu_fallback.env`, `balanced_tri_chip.env`). `run_app.sh --profile rtx_extreme` sources the file before launching the pipeline.
-- Common variables you can override:
-  - `YOLO_BACKEND`, `YOLO_MODEL`, `YOLO_DEVICE`
-  - `LWCC_BACKEND`, `OPENVINO_DEVICE`, `LWCC_THRESHOLD`
-  - `YOLO_TILING`, `DENSITY_TILING`, `DENSITY_THRESHOLD`
-  - `YOLO_USE_GPU_PREPROC`, `YOLO_USE_GPU_POST`, `YOLO_PIPELINE_MODE`
-  - `YOLO_SEG` to toggle segmentation models
-  - `DEBUG_TILING` to log tiles and `YOLO_CONF` to adjust thresholds
-- The `.env` files can also include overrides for `EXTREME_DEBUG`, `CAMERA_URL`, and the MQTT broker when running in distributed mode. Leave `EXTREME_DEBUG` unset to keep the console focused on the `[MASK TIMING]` timeline, or set it to `1` to surface the `[GPU PERF]`/average logs.
-- When you need granular guidance on each flag, consult [README_PARAMETERS.md](README_PARAMETERS.md) for a parameter-by-parameter breakdown.
+> The installer looks for `external/Video_Codec_SDK_13.0.37` inside the repo.
+> If absent it downloads the archive from NVIDIA's servers (sign-in may be
+> required). Set `VIDEO_CODEC_SDK_DIR=/path/to/sdk` to use a local copy.
 
-## Observability & metrics
+### 5. (Optional) Build TensorRT engines
 
-- The web UI surface now exposes a “mask timings” card (created/sent/received/displayed times) plus a latency history graph that paints the 25–30 fps target band. The chart and console use the same `[MASK TIMING]` payload stream so regressions appear in both places.
-- A `[MASK TIMING]` log line records backend creation and send latencies, breaking the delay into creation, send, and total segments so you can trace any regressions in the pipeline.
-- The metrics payload now carries `density_heatmap_payload` alongside the YOLO mask metadata so the browser can draw density overlays without rewiring the server.
-- Masks are downscaled and aligned to the client canvas before compositing, so overlays only tint the detected zones rather than the entire feed. More architecture detail is in the dedicated doc below.
-- After the NVDEC decoder delivers GPU frames you can capture the first baseline run with `plans/nvdec_performance_baseline.md` and, optionally, set `NVDEC_TEST_STREAM_URL` so `pytest app_v2/tests/test_nvdec_decode.py` verifies the real stream before TensorRT starts producing predictions.
+Pre-built `*.engine` files for RTX 5060 Ti are included in `models/tensorrt/`.
+Run this step only when you need to regenerate them (e.g. on a different GPU
+or after a TensorRT version change):
 
-## Important model notes
+```bash
+./3_prepare_models.sh
+```
 
-- TensorRT engines are built with CUDA 13.1 + TensorRT 10.14 on a RTX 5060 Ti. A working CUDA/TensorRT stack is required to reproduce `.engine` files locally.
-- PyTorch exports target Opset 18 so that Ultralytics stays compatible with TensorRT conversion and the automatic converter doesn’t downgrade the model.
-- OpenVINO IR artifacts are stored under `models/openvino/`; the conversion pipeline has moved to `convert_pth_to_openvino.py` in case you want to re-export from different backends.
+To rebuild individual model families:
+
+```bash
+# All YOLO26 variants (FP32 + FP16 + FP8-QDQ):
+./3_prepare_models.sh
+
+# FP16 only (skip FP8):
+SKIP_FP8=1 ./3_prepare_models.sh
+
+# FP8 only (skip FP16):
+SKIP_FP16=1 ./3_prepare_models.sh
+
+# Specific seg models only:
+SEG_MODELS="yolo26x-seg" ./3_prepare_models.sh
+
+# Specific bbox models only (yolo_tiles):
+BBOX_MODELS="yolo26n" SKIP_FP16=1 ./3_prepare_models.sh
+
+# Skip density model rebuild:
+SKIP_DENSITY=1 ./3_prepare_models.sh
+```
+
+For density model ONNX export and TensorRT conversion, see
+`export_density_to_onnx.py` and `convert_onnx_to_trt.py`.
+
+### 6. Run the application
+
+```bash
+./4_run_app.sh 'http://<windows-ip>:5002/video_feed' --app-version v2
+```
+
+Then open **http://localhost:5000** in your browser.
+
+Other source examples:
+
+```bash
+# Local USB camera:
+./4_run_app.sh /dev/video0 --app-version v2
+
+# RTSP stream:
+./4_run_app.sh 'rtsp://192.168.1.100:554/stream' --app-version v2
+
+# Pass extra environment variables:
+./4_run_app.sh 'http://...' --app-version v2 -e PERF_LOG=1
+
+# CUDA profiling (nsys):
+./4_run_app.sh 'http://...' --app-version v2 --cuda-profile
+```
+
+### 7. Run tests
+
+```bash
+./5_run_tests.sh
+```
+
+Runs 199 unit and integration tests inside `people-counter:gpu-final-nvdec`.
+Expected output: `199 passed, 1 skipped`.
+
+---
+
+## Windows Video Streamer
+
+The `windows/` directory contains a standalone streaming tool that runs on
+Windows and exposes any camera, image, or video file as an HTTP stream
+consumable by the Docker container.
+
+**Technology**: Python + FFmpeg (auto-downloaded on first run). Does **not**
+require CUDA or Docker on the Windows machine.
+
+### Setup and launch (interactive)
+
+Double-click `windows/setup_and_run.bat`, or run it from a terminal:
+
+```bat
+windows\setup_and_run.bat
+```
+
+On first run it:
+1. Creates a `venv_bridge` Python virtual environment
+2. Installs dependencies (Flask, OpenCV)
+3. Auto-downloads FFmpeg if not found in `windows/bin/`
+4. Asks you to choose a webcam, resolution, and H.264 encoder
+5. Starts streaming on `http://<your-ip>:5002/video_feed`
+
+### Streaming a reference image or video file
+
+Use `windows/setup_and_run_ref_image.bat` (pre-configured for 4K@30fps via
+Intel QSV encoder):
+
+```bat
+windows\setup_and_run_ref_image.bat
+```
+
+Or pass arguments directly to `camera_bridge.py`:
+
+```bat
+# Stream an image (looped endlessly):
+venv_bridge\Scripts\python.exe windows\camera_bridge.py ^
+    --input-file "windows\ref_images\people_walking.jpg" ^
+    --resolution 4K ^
+    --fps 30 ^
+    --bitrate 20000 ^
+    --encoder h264_qsv
+
+# Stream a video file (looped):
+venv_bridge\Scripts\python.exe windows\camera_bridge.py ^
+    --input-file "C:\Videos\crowd.mp4" ^
+    --fps 25
+
+# Specify a port:
+venv_bridge\Scripts\python.exe windows\camera_bridge.py --port 5003
+```
+
+### camera_bridge.py arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--input-file PATH` | — | Image (`.jpg`/`.png`) or video file to stream; looped endlessly. Omit to use a webcam. |
+| `--resolution` | source | Output resolution: `1080p`, `4K`, etc. Scales/letterboxes the source. |
+| `--fps N` | 30 | Output framerate (images or video cap). |
+| `--bitrate KBPS` | auto | Target bitrate in kbps (encoder-dependent if omitted). |
+| `--encoder ENC` | auto | H.264 encoder: `h264_nvenc` (NVENC), `h264_qsv` (Intel QSV), `libx264` (CPU). Auto-detected from available hardware. |
+| `--port N` | 5002 | HTTP listen port. |
+
+The stream URL to pass to `4_run_app.sh` is `http://<windows-ip>:<port>/video_feed`.
+
+---
+
+## Configuration (YAML)
+
+`app_v2` is configured via YAML files — not `.env` profiles. Key files:
+
+| File | Contents |
+|------|----------|
+| `app_v2/config/pipeline.yaml` | Fusion strategy, CUDA stream IDs, tile groups, tensor pool, enabled models |
+| `app_v2/config/model_inference.yaml` | Per-mode confidence thresholds, NMS IoU, density peak weight |
+| `app_v2/config/test_config.yaml` | Test harness settings (stream URL, timeouts) |
+
+See [app_v2/docs/README_ARCHI.md](app_v2/docs/README_ARCHI.md) for a full description of every configuration key.
+
+---
+
+## Important Model Notes
+
+- **Model family**: `yolo26` (not YOLOv8). The decoder is named `yolo_v8_decoder`
+  because it handles the YOLOv8-compatible output tensor format, which is also
+  produced by yolo26 and YOLO11 models.
+- **TensorRT engines are hardware-specific**: the `.engine` files included in
+  this repo were compiled for RTX 5060 Ti (sm_120, CUDA 13.1, TRT 10.15).
+  Running them on a different GPU requires recompiling with `./3_prepare_models.sh`.
+- **Opset 18**: ONNX exports target Opset 18 so that Ultralytics stays
+  compatible with TensorRT conversion.
+- **OpenVINO IR**: artifacts in `models/openvino/` are for `app_v1` only.
+  `app_v2` does not use OpenVINO.
+
+---
 
 ## Performance Optimization
 
-- **[PERFORMANCE_OPTIMIZATION.md](PERFORMANCE_OPTIMIZATION.md)** : Complete guide for YOLO inference optimization in app_v2 including:
-  - INT8 quantization workflow (2-4× speedup expected)
-  - Parallel tile splitting analysis (30% gain with 2 groups, scaling limitations explained)
-  - Detailed profiling metrics and calibration instructions
-  - Step-by-step optimization strategy
+**FP8-QDQ (production standard)**: All YOLO26 TensorRT engines use FP8 with
+quantize-dequantize (Q/DQ) nodes inserted by NVIDIA ModelOpt. This is the
+recommended precision for Blackwell GPUs, which have dedicated FP8 Tensor Core
+acceleration.
 
-**Current baseline (yolo26n-seg FP16)**:
-- `yolo_global`: ~6.3ms ✅
-- `yolo_tiles`: ~33ms 🔴 (target: ≤10ms)
-- With split x2: ~23ms 🟡 (30% gain)
+**INT8 quantization**: On paper, INT8 promises a 2–4× speedup over FP16.
+In practice, on RTX 5000 Blackwell GPUs optimised for FP8, INT8 calibration
+showed no significant advantage over FP8-QDQ. Gains were only marginally visible
+on larger models (yolo26m/l/x) and essentially absent on yolo26n. FP8-QDQ
+via ModelOpt is the correct path for this hardware.
 
-**Recommended path**: INT8 quantization first (use `./3b_prepare_int8_engines.sh`), then consider parallel split if needed.
+**Production numbers (FP8-QDQ engines)**:
+
+| Mode | Model | Input | Latency |
+|------|-------|-------|--------:|
+| `yolo_global` | yolo26x FP8-QDQ | 640×640 | ~3–5 ms |
+| `yolo_tiles` | yolo26n FP8-QDQ | 6 × 640×640 | ~10–15 ms |
+| `density` | DM-Count QNRF FP16 | 1920×1088 | 22.9 ms |
+| `crowd_global` | YOLO-CROWD FP16 | 640×640 | ~6–10 ms |
+| `crowd_tiles` | YOLO-CROWD FP16 | 6 × 640×640 | ~20–30 ms |
+
+See [app_v2/docs/README_PERFORMANCE_ANALYSIS.md](app_v2/docs/README_PERFORMANCE_ANALYSIS.md) for the full benchmark, latency budget, and metric reference.
+
+---
 
 ## See also
 
-- [README_DOCKER.md](README_DOCKER.md) : Docker build, runtime, and profiling documentation (includes the latest architecture diagrams for the containerized pipeline).
-- [app_v2/README.md](app_v2/README.md) : Clean architecture overview for the v2 orchestrator.
-- [README_ARCHITECTURE.md](README_ARCHITECTURE.md) : In-depth architecture, masking/metrics/tiling flows, mermaid diagrams, and `.env` reference for the legacy stack.
-- [plans/app_v2_migration_plan.md](plans/app_v2_migration_plan.md) : Tracks the remaining v2 scaffolding, configs, and docs updates so the clean rewrite stays on schedule.
-- [plans/tiling_adaptatif_analysis.md](plans/tiling_adaptatif_analysis.md) : Deep analysis of adaptive tiling approach (cost/benefit, risks, why it's not recommended for this use-case).
-- [windows/setup_and_run.bat](windows/setup_and_run.bat) : Windows helper to spin up the camera bridge that exports the MJPEG stream consumed by WSL.
+- [README_DOCKER.md](README_DOCKER.md) — Docker build steps, prerequisites, and GPU validation.
+- [app_v2/docs/README_ARCHI.md](app_v2/docs/README_ARCHI.md) — Full v2 architecture: data flow, video streams, inference modes, CUDA stream assignment, API surface.
+- [app_v2/docs/README_PERFORMANCE_ANALYSIS.md](app_v2/docs/README_PERFORMANCE_ANALYSIS.md) — Benchmark numbers, latency budget, metric key reference.
+- [app_v2/docs/README_PREPROCESS.md](app_v2/docs/README_PREPROCESS.md) — GPU preprocessing pipeline, GpuTensorPool, kernel routing.
+- [app_v2/docs/MAKER_FAIRE.md](app_v2/docs/MAKER_FAIRE.md) — Exhibition panels explaining the system at macro/micro level.
+- [DENSITY_PERFORMANCE.md](DENSITY_PERFORMANCE.md) — DM-Count QNRF full benchmark: all configurations, pixel-budget law, preprocessing strategies.
+- [PERFORMANCE_OPTIMIZATION.md](PERFORMANCE_OPTIMIZATION.md) — YOLO FP8-QDQ optimization guide, parallel tile split analysis.
 
-The main README remains the entry point: it should invite contributors to try the project, link to the Docker guide for profiles, the architecture doc for the deep dive, and reference the plans that must be kept synchronized.
+---
+
+## Credits & Licenses
+
+### LWCC — Lightweight Crowd Counting
+
+Used for DM-Count, CSRNet, Bayesian crowd counting, and SFANet models.
+
+> This library is a result of research by **Matija Teršek** and **Maša Kljun**.
+> Although the paper has not been published yet, please provide the link to the
+> GitHub repository if you use LWCC in your research.
+> Repository: <https://github.com/tersekmatija/lwcc>
+> License: [MIT](https://github.com/tersekmatija/lwcc/blob/master/LICENSE)
+> (model licenses — CSRNet, Bayesian, DM-Count, SFANet — are inherited from
+> their respective upstream repositories)
+
+### YOLO-CROWD
+
+Used for crowd-optimised bounding box detection (`crowd_global`, `crowd_tiles`).
+
+> Repository: <https://github.com/zaki1003/YOLO-CROWD>
+> License: MIT
+> References: [YOLOv5](https://github.com/ultralytics/yolov5) ·
+> [yolov5-face](https://github.com/deepcam-cn/yolov5-face) ·
+> [mmdetection](https://github.com/open-mmlab/mmdetection) ·
+> [repulsion_loss_pytorch](https://github.com/dongdonghy/repulsion_loss_pytorch)
+
+### Ultralytics (YOLOv8 decoder / yolo26 architecture)
+
+> Repository: <https://github.com/ultralytics/ultralytics>
+> License: **AGPL-3.0** for open-source use.
+> For commercial deployment, an Ultralytics Enterprise License is required —
+> see <https://www.ultralytics.com/license>.
