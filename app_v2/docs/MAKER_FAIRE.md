@@ -56,24 +56,41 @@ flowchart LR
     cam["📷 Camera<br/>4K H.264 / MJPEG"]
 
     subgraph gpu["⚡ GPU — RTX 5060 Ti"]
-        nvdec["NVDEC<br/>Hardware decoder<br/>~30 ms"]
-        bridge["CUDA kernel<br/>NV12 → RGB<br/>~12 ms"]
-        preproc["Preprocess<br/>letterbox / tiling<br/>~4 ms"]
+        nvdec["NVDEC<br/>Hardware decoder<br/>~1-2 ms"]
+
+        subgraph fused["Fused kernel — single grid_sample pass"]
+            direction LR
+            sample["YUV planes sampled<br/>at target resolution<br/>(letterbox / tiling grid)"]
+            yuv2rgb["BT.601 matrix multiply<br/>YUV → RGB fp16<br/>on small tensor"]
+            lbmask["Letterbox mask<br/>black padding"]
+            sample --> yuv2rgb --> lbmask
+        end
+
         trt["TensorRT<br/>AI Inference<br/>3–23 ms"]
-        nvjpeg["NVJPEG<br/>Encode output<br/>~5 ms"]
+        nvjpeg["NVJPEG encode<br/>~1-4 ms<br/>(MJPEG fallback only)"]
     end
 
     subgraph cpu["🖥️ CPU — Python / Flask"]
         agg["Decode + NMS<br/>result aggregator"]
         flask["Flask server<br/>SSE · REST · MJPEG"]
+        fwd["NvdecPacketForwarder<br/>raw H.264 demux<br/>(2nd connection)"]
+        wcs["WebCodecsServer<br/>WebSocket :4999"]
     end
 
     browser["Browser<br/>canvas overlays<br/>metrics"]
 
-    cam --> nvdec --> bridge --> preproc --> trt --> nvjpeg
+    cam --> nvdec
+    nvdec -->|"NV12 surface<br/>(Y + UV planes)"| fused --> trt
     trt --> agg --> flask --> browser
-    nvjpeg --> browser
+    fused -->|"RGB tensor<br/>(MJPEG path only)"| nvjpeg --> flask
+
+    cam -->|"H.264 stream<br/>(parallel tap)"| fwd --> wcs
+    wcs -->|"WebSocket binary<br/>zero re-encode"| browser
 ```
+
+> **Two video output paths — only one active at a time:**
+> - **WebCodecs** (preferred): raw H.264 packets forwarded directly to the browser, decoded natively with the `VideoDecoder` API — no GPU re-encode, no NV12→RGB conversion for display.
+> - **MJPEG** (fallback): when no WebCodecs client is connected, NVJPEG encodes the NV12 frame to JPEG and pushes it via Flask MJPEG stream.  NVJPEG is **skipped entirely** while WebCodecs clients are active.
 
 ### Why keep it on the GPU?
 
@@ -82,10 +99,13 @@ flowchart LR
 | CPU pipeline | camera → CPU decode → CPU resize → GPU infer → CPU draw | high — many memory copies |
 | **GPU pipeline (this project)** | camera → **GPU decode → GPU resize → GPU infer** → browser | **low — zero CPU copies** |
 
-### The key trick: NVDEC + GpuTensorPool
+### The key tricks: NVDEC + fused kernel + GpuTensorPool
 
 1. **NVDEC** (hardware video decode chip built into the GPU) decodes the camera stream **without using any GPU shader cores** — it's literally free compute.
-2. A **CUDA kernel** converts the raw NV12 pixel format to RGB directly in GPU memory — never leaving the GPU.
+2. **Fused CUDA kernel** (`nv12_to_rgb_nchw_fp16_letterbox` / `nv12_tiles_to_rgb_nchw_fp16_batch`): instead of decoding to full-resolution RGB then resizing, a single `grid_sample` call samples the raw YUV planes **directly at the target resolution** (e.g. 640×640), then applies the BT.601 YUV→RGB matrix multiply on the **small** tensor.
+   - Avoids the ~25 MB full-resolution RGB intermediate (NV12 = 1.5 bytes/pixel vs RGB = 3 bytes/pixel)
+   - The letterbox geometry is applied **in YUV space** — the RGB conversion never sees the full frame
+   - Plane buffer caches (`_PLANE_BUFFER_CACHE`, keyed by CUDA stream) and sampling grid caches (`_LETTERBOX_GRID_CACHE`, `_BATCH_GRID_CACHE`) are computed once and reused every frame
 3. A **GpuTensorPool** (a GPU memory cache) holds pre-allocated tensor buffers — so each frame doesn't allocate new GPU memory.
 4. **TensorRT** runs the AI model with compiler-optimised FP8 kernels — 8-bit floating point, half the memory bandwidth of FP16.
 
