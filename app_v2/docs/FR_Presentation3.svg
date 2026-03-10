@@ -9,6 +9,9 @@
    id="svg1"
    inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
    sodipodi:docname="FR_Presentation3.svg"
+   inkscape:export-filename="FR_Presentation3.png"
+   inkscape:export-xdpi="300"
+   inkscape:export-ydpi="300"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
@@ -23,9 +26,9 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
-     inkscape:zoom="0.50837798"
-     inkscape:cx="268.50101"
-     inkscape:cy="848.77792"
+     inkscape:zoom="0.35947752"
+     inkscape:cx="511.85399"
+     inkscape:cy="785.86278"
      inkscape:window-width="1920"
      inkscape:window-height="1009"
      inkscape:window-x="-8"
@@ -34,6 +37,12 @@
      inkscape:current-layer="layer1" />
   <defs
      id="defs1">
+    <rect
+       x="-13.769282"
+       y="328.49574"
+       width="782.88206"
+       height="47.208968"
+       id="rect179" />
     <rect
        x="52.854488"
        y="286.52696"
@@ -163,8 +172,8 @@
     <rect
        x="96.384979"
        y="276.36917"
-       width="399.85788"
-       height="93.997833"
+       width="277.37178"
+       height="51.444944"
        id="rect5-2-1-1-5" />
     <rect
        x="96.384979"
@@ -265,298 +274,309 @@
        transform="translate(8.49607,33.336407)"><tspan
          x="272.55033"
          y="62.424886"
-         id="tspan3">À l’intérieur du pipeline GPU</tspan></text>
+         id="tspan1">À l’intérieur du pipeline GPU</tspan></text>
     <g
        id="g228"
        transform="translate(0,34.425849)">
-      <text
-         xml:space="preserve"
-         id="text7-6"
-         style="font-size:42.6667px;text-align:start;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect7-36);display:inline;fill:#ffffff;fill-opacity:1;stroke-width:0.755906"
-         transform="translate(-10.498189,0.87063789)"
-         x="-708.45905"
-         y="0"><tspan
-           x="22.253906"
-           y="221.03035"
-           id="tspan8"><tspan
-             style="fill:#000000"
-             id="tspan7">Deux voies de sortie vidéo — une seule active à la fois :</tspan></tspan></text>
-      <text
-         xml:space="preserve"
-         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:31.6694px;line-height:0;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;white-space:pre;inline-size:1073.19;display:inline;fill:#000000;fill-opacity:1;stroke:#ffffff;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
-         x="38.097668"
-         y="728.52838"
-         id="text38"
-         transform="translate(1.1004894,-466.5825)"><tspan
+      <g
+         id="g247">
+        <text
+           xml:space="preserve"
+           id="text7-6"
+           style="font-size:42.6667px;text-align:start;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect7-36);display:inline;fill:#ffffff;fill-opacity:1;stroke-width:0.755906"
+           transform="translate(-10.498189,-41.129362)"
+           x="-708.45905"
+           y="0"><tspan
+             x="22.253906"
+             y="221.03035"
+             id="tspan3"><tspan
+               style="fill:#000000"
+               id="tspan2">Deux voies de sortie vidéo — une seule active à la fois :</tspan></tspan></text>
+        <text
+           xml:space="preserve"
+           style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:31.6694px;line-height:0;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;white-space:pre;inline-size:1073.19;display:inline;fill:#000000;fill-opacity:1;stroke:#ffffff;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
            x="38.097668"
            y="728.52838"
-           id="tspan18"><tspan
-             style="font-size:21.3333px;line-height:1;fill:#1770b8;stroke:none"
-             id="tspan9">☻</tspan><tspan
-             style="font-size:21.3333px;line-height:1;fill:#0c385c;stroke:#000000"
-             id="tspan16"> </tspan><tspan
-             style="font-size:21.3333px;line-height:1;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:#000000"
-             id="tspan17">WebCodecs (préféré) : 
+           id="text38"
+           transform="translate(1.1004894,-508.5825)"><tspan
+             x="38.097668"
+             y="728.52838"
+             id="tspan7"><tspan
+               style="font-size:21.3333px;line-height:1;fill:#1770b8;stroke:none"
+               id="tspan4">☻</tspan><tspan
+               style="font-size:21.3333px;line-height:1;fill:#0c385c;stroke:#000000"
+               id="tspan5"> </tspan><tspan
+               style="font-size:21.3333px;line-height:1;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:#000000"
+               id="tspan6">WebCodecs (préféré) : 
 </tspan></tspan><tspan
-           x="38.097668"
-           y="750.20278"
-           id="tspan20"><tspan
-             style="stroke:none"
-             id="tspan19">Paquets H.264 bruts transférés directement au navigateur, 
+             x="38.097668"
+             y="757.00686"
+             id="tspan10"><tspan
+               style="font-size:26.6667px;line-height:1.2;stroke:none"
+               id="tspan8">Paquets H.264 bruts transférés directement au navigateur, 
 </tspan></tspan><tspan
-           x="38.097668"
-           y="771.5361"
-           id="tspan25"><tspan
-             style="stroke:none"
-             id="tspan23">Décodés nativement avec l'API VideoDecoder. =&gt; Pas de ré-encodage GPU
+             x="38.097668"
+             y="789.00692"
+             id="tspan20"><tspan
+               style="font-size:26.6667px;line-height:1.2;stroke:none"
+               id="tspan12">Décodés nativement avec l'API VideoDecoder. =&gt; Pas de ré-encodage GPU</tspan><tspan
+               style="font-size:26.6667px;line-height:1.2;stroke:none"
+               id="tspan15">
 </tspan></tspan><tspan
-           x="38.097668"
-           y="792.86941"
-           id="tspan30"><tspan
-             style="stroke:none"
-             id="tspan26">=&gt; Pas de conversion NV12→RGB pour l'affichage.</tspan><tspan
-             style="font-size:21.3333px;line-height:1;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan29">
+             x="38.097668"
+             y="821.00698"
+             id="tspan23"><tspan
+               style="font-size:26.6667px;line-height:1.2;stroke:none"
+               id="tspan21">=&gt; Pas de conversion NV12→RGB pour l'affichage.</tspan><tspan
+               style="font-size:21.3333px;line-height:1;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+               id="tspan22">
 </tspan></tspan><tspan
-           x="38.097668"
-           y="814.20272"
-           id="tspan38"><tspan
-             style="font-size:21.3333px;line-height:1;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan34">
+             x="38.097668"
+             y="846.20297"
+             id="tspan25"><tspan
+               style="font-size:21.3333px;line-height:1;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+               id="tspan24">
 </tspan></tspan><tspan
-           x="38.097668"
-           y="835.53603"
-           id="tspan47"><tspan
-             style="font-size:21.3333px;line-height:1;-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#1770b8"
-             id="tspan43">☻ </tspan><tspan
-             style="font-size:21.3333px;line-height:1;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:#000000"
-             id="tspan46">MJPEG (fallback) : 
+             x="38.097668"
+             y="867.53628"
+             id="tspan28"><tspan
+               style="font-size:21.3333px;line-height:1;-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#1770b8"
+               id="tspan26">☻ </tspan><tspan
+               style="font-size:21.3333px;line-height:1;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:#000000"
+               id="tspan27">MJPEG (fallback) : 
 </tspan></tspan><tspan
-           x="38.097668"
-           y="859.34374"
-           id="tspan49"><tspan
-             style="font-size:21.3333px;line-height:1.2;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan48">Lorsqu'aucun client WebCodecs n'est connecté, NVJPEG encode la trame NV12 en JPEG et la pousse via le flux </tspan></tspan><tspan
-           x="38.097668"
-           y="884.94372"
-           id="tspan51"><tspan
-             style="font-size:21.3333px;line-height:1.2;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan50">MJPEG Flask. 
+             x="38.097668"
+             y="896.01474"
+             id="tspan30"><tspan
+               style="font-size:26.6667px;-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+               id="tspan29">Lorsqu'aucun client WebCodecs n'est connecté, NVJPEG encode la trame NV12 en JPEG </tspan></tspan><tspan
+             x="38.097668"
+             y="928.0148"
+             id="tspan32"><tspan
+               style="font-size:26.6667px;-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+               id="tspan31">et la pousse via le flux MJPEG Flask. 
 </tspan></tspan><tspan
-           x="38.097668"
-           y="919.59558"
-           id="tspan55"><tspan
-             style="font-size:21.3333px;line-height:1.2;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan52">NVJPEG est entièrement ignoré tant que des clients WebCodecs sont actifs.</tspan><tspan
-             style="line-height:1.2;stroke:none"
-             id="tspan54">
+             x="38.097668"
+             y="964.39599"
+             id="tspan37"><tspan
+               style="font-size:26.6667px;-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+               id="tspan34">NVJPEG est entièrement ignoré tant que des clients WebCodecs sont actifs</tspan><tspan
+               style="font-size:21.3333px;line-height:1.2;-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+               id="tspan35">.</tspan><tspan
+               style="line-height:1.2;stroke:none"
+               id="tspan36">
 </tspan></tspan></text>
+      </g>
+      <text
+         xml:space="preserve"
+         transform="translate(0,-34.425849)"
+         id="text179"
+         style="font-size:26.6667px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';text-align:start;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect179);display:inline;fill:#000000;stroke:#000000;stroke-width:0.944882" />
     </g>
+    <text
+       xml:space="preserve"
+       style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:31.6694px;font-family:sans-serif;-inkscape-font-specification:'sans-serif Bold';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;white-space:pre;inline-size:1073.19;display:inline;fill:#000000;fill-opacity:1;stroke:#ffffff;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
+       x="38.097668"
+       y="728.52838"
+       transform="translate(8.511835,412.92481)"
+       id="text35"><tspan
+         x="38.097668"
+         y="728.52838"
+         id="tspan39"><tspan
+           style="font-size:26.6667px"
+           id="tspan38">
+</tspan></tspan><tspan
+         x="38.097668"
+         y="768.11513"
+         id="tspan41"><tspan
+           style="font-weight:normal;-inkscape-font-specification:sans-serif;stroke:none"
+           id="tspan40">
+</tspan></tspan></text>
     <g
-       id="g226"
-       transform="translate(3.1331261,134)">
+       id="g269">
       <text
          xml:space="preserve"
          style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:31.6694px;line-height:1;font-family:sans-serif;-inkscape-font-specification:'sans-serif Bold';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;white-space:pre;inline-size:1073.19;display:inline;fill:#000000;fill-opacity:1;stroke:none;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
          x="38.097668"
          y="728.52838"
          id="text38-8"
-         transform="translate(1.4662713,222.43401)"><tspan
+         transform="translate(4.5993974,305.7796)"><tspan
            x="38.097668"
            y="728.52838"
-           id="tspan60"><tspan
+           id="tspan46"><tspan
              style="font-weight:normal;font-size:21.3333px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#1770b8"
-             id="tspan56">☻</tspan><tspan
-             style="font-weight:normal;font-size:21.3333px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#1770b8"
-             id="tspan57"> </tspan><tspan
+             id="tspan42">☻ </tspan><tspan
              style="font-weight:normal;font-size:26.6667px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:#000000"
-             id="tspan58">NVDEC</tspan><tspan
+             id="tspan43">NVDEC</tspan><tspan
              style="font-weight:normal;font-size:21.3333px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
-             id="tspan59"> (puce de décodage matérielle intégrée au GPU) 
+             id="tspan44"> </tspan><tspan
+             style="font-weight:normal;font-size:21.3333px;font-family:Sans;-inkscape-font-specification:'Sans, Normal'"
+             id="tspan45">(puce de décodage matérielle intégrée au GPU) 
 </tspan></tspan><tspan
            x="38.097668"
            y="760.19777"
-           id="tspan62"><tspan
-             style="font-weight:normal;font-size:21.3333px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
-             id="tspan61">décode le flux caméra sans utiliser de cœurs shader GPU 
+           id="tspan48"><tspan
+             style="font-weight:normal;font-size:21.3333px;font-family:Sans;-inkscape-font-specification:'Sans, Normal'"
+             id="tspan47">décode le flux caméra sans utiliser de cœurs shader GPU 
 </tspan></tspan><tspan
            x="38.097668"
            y="791.86715"
-           id="tspan64"><tspan
+           id="tspan51"><tspan
+             style="font-weight:normal;font-size:21.3333px;font-family:Sans;-inkscape-font-specification:'Sans, Normal'"
+             id="tspan49">C'est du calcul gratuit</tspan><tspan
              style="stroke:#000000"
-             id="tspan63">C'est du calcul gratuit.</tspan></tspan></text>
+             id="tspan50">.</tspan></tspan></text>
       <text
          xml:space="preserve"
-         style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:31.6694px;line-height:0;font-family:sans-serif;-inkscape-font-specification:'sans-serif Bold';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;white-space:pre;inline-size:1073.19;display:inline;fill:#000000;fill-opacity:1;stroke:none;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
+         style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:26.6667px;line-height:1.2;font-family:sans-serif;-inkscape-font-specification:'sans-serif Bold';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;white-space:pre;inline-size:1073.19;display:inline;fill:#000000;fill-opacity:1;stroke:none;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
          x="38.097668"
          y="728.52838"
          id="text38-8-2"
-         transform="translate(0.99383031,543.58448)"><tspan
+         transform="translate(-2.0754746,657.17413)"><tspan
            x="38.097668"
            y="728.52838"
-           id="tspan70"><tspan
-             style="font-size:26.6667px;fill:#1770b8"
-             id="tspan65">☻</tspan><tspan
-             style="fill:#1770b8"
-             id="tspan66"> </tspan><tspan
-             style="font-weight:normal;font-size:26.6667px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:#000000"
-             id="tspan67">Un GpuTensorPool</tspan><tspan
-             style="-inkscape-font-specification:sans-serif"
-             id="tspan68"> </tspan><tspan
-             style="font-weight:normal;font-size:21.3333px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
-             id="tspan69">(cache mémoire GPU) 
+           id="tspan55"><tspan
+             style="font-weight:normal;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#1770b8"
+             id="tspan52">☻ </tspan><tspan
+             style="font-weight:normal;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:#000000"
+             id="tspan53">Un GpuTensorPool</tspan><tspan
+             style="font-weight:normal;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+             id="tspan54"> (cache mémoire GPU) 
 </tspan></tspan><tspan
            x="38.097668"
-           y="755.84933"
-           id="tspan72"><tspan
-             style="line-height:1"
-             id="tspan71">Contient des tampons tensoriels préalloués 
+           y="761.19802"
+           id="tspan57"><tspan
+             style="font-weight:normal;font-size:21.3333px;font-family:Sans;-inkscape-font-specification:'Sans, Normal'"
+             id="tspan56">Contient des tampons tensoriels préalloués 
 </tspan></tspan><tspan
            x="38.097668"
-           y="777.18264"
-           id="tspan74"><tspan
-             style="line-height:1"
-             id="tspan73">Chaque trame n'alloue pas de nouvelle mémoire GPU.</tspan></tspan></text>
+           y="793.19808"
+           id="tspan59"><tspan
+             style="font-weight:normal;font-size:21.3333px;font-family:Sans;-inkscape-font-specification:'Sans, Normal'"
+             id="tspan58">Chaque trame n'alloue pas de nouvelle mémoire GPU.</tspan></tspan></text>
       <text
          xml:space="preserve"
          style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:31.6694px;line-height:0;font-family:sans-serif;-inkscape-font-specification:'sans-serif Bold';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;white-space:pre;inline-size:1073.19;display:inline;fill:#000000;fill-opacity:1;stroke:#ffffff;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
          x="38.097668"
          y="728.52838"
-         transform="translate(2.014662,297.55194)"
+         transform="translate(-0.7533331,392.18327)"
          id="text21"><tspan
            x="38.097668"
            y="728.52838"
-           id="tspan76"><tspan
+           id="tspan61"><tspan
              style="font-weight:normal;-inkscape-font-specification:sans-serif;stroke:none"
-             id="tspan75">
+             id="tspan60">
 </tspan></tspan><tspan
            x="38.097668"
-           y="763.5633"
-           id="tspan82"><tspan
-             style="font-size:26.6667px;fill:#1770b8"
-             id="tspan77">☻ </tspan><tspan
-             style="stroke:none"
-             id="tspan78">Noyau CUDA fusionné</tspan><tspan
-             style="stroke:#000000"
-             id="tspan79"> </tspan><tspan
-             style="font-size:26.6667px;fill:#1770b8"
-             id="tspan80">  </tspan><tspan
-             style="font-size:26.6667px"
-             id="tspan81"> : 
+           y="747.53"
+           id="tspan67"><tspan
+             style="font-size:26.6667px;line-height:1.2;fill:#1770b8"
+             id="tspan62">☻ </tspan><tspan
+             style="line-height:1.2;stroke:none"
+             id="tspan63">Noyau CUDA fusionné</tspan><tspan
+             style="line-height:1.2;stroke:#000000"
+             id="tspan64"> </tspan><tspan
+             style="font-size:26.6667px;line-height:1.2;fill:#1770b8"
+             id="tspan65">  </tspan><tspan
+             style="font-size:26.6667px;line-height:1.2"
+             id="tspan66"> : 
 </tspan></tspan><tspan
            x="38.097668"
-           y="789.85232"
-           id="tspan84"><tspan
-             style="font-weight:normal;font-size:21.3333px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan83">Au lieu de décoder en RGB pleine résolution puis de redimensionner
+           y="776.19256"
+           id="tspan69"><tspan
+             style="font-weight:normal;font-size:21.3333px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+             id="tspan68">Au lieu de décoder en RGB pleine résolution puis de redimensionner
 </tspan></tspan><tspan
            x="38.097668"
-           y="811.18563"
-           id="tspan86"><tspan
-             style="font-weight:normal;font-size:21.3333px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan85">un seul appel grid_sample échantillonne les plans YUV directement à la résolution cible (ex. 640×640), puis </tspan></tspan><tspan
+           y="801.79253"
+           id="tspan71"><tspan
+             style="font-weight:normal;font-size:21.3333px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+             id="tspan70">un seul appel grid_sample échantillonne les plans YUV directement à la résolution cible (ex. 640×640), puis </tspan></tspan><tspan
            x="38.097668"
-           y="832.51894"
-           id="tspan88"><tspan
-             style="font-weight:normal;font-size:21.3333px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan87">applique la multiplication matricielle BT.601 YUV→RGB sur le petit tenseur
+           y="827.39251"
+           id="tspan73"><tspan
+             style="font-weight:normal;font-size:21.3333px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+             id="tspan72">applique la multiplication matricielle BT.601 YUV→RGB sur le petit tenseur
 </tspan></tspan><tspan
            x="38.097668"
-           y="853.85226"
-           id="tspan90"><tspan
-             style="font-weight:normal;font-size:21.3333px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan89">
+           y="852.99249"
+           id="tspan75"><tspan
+             style="font-weight:normal;font-size:21.3333px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+             id="tspan74">
 </tspan></tspan><tspan
            x="38.097668"
-           y="875.18557"
-           id="tspan92"><tspan
-             style="font-weight:normal;font-size:21.3333px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan91"> - Évite l'intermédiaire RGB pleine résolution (~25 Mo) (NV12 = 1,5 octet/pixel vs RGB = 3 octets/pixel)
+           y="878.59246"
+           id="tspan85"><tspan
+             style="font-weight:normal;font-size:21.3333px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+             id="tspan84"> - Évite l'intermédiaire RGB pleine résolution (~25 Mo) (NV12 = 1,5 octet/pixel vs RGB = 3 octets/pixel)
 </tspan></tspan><tspan
            x="38.097668"
-           y="896.51888"
-           id="tspan94"><tspan
-             style="font-weight:normal;font-size:21.3333px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan93">- La géométrie letterbox est appliquée dans l'espace YUV — la conversion RGB ne voit jamais la trame complète
+           y="904.19244"
+           id="tspan87"><tspan
+             style="font-weight:normal;font-size:21.3333px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+             id="tspan86">- La géométrie letterbox est appliquée dans l'espace YUV — la conversion RGB ne voit jamais la trame complète
 </tspan></tspan><tspan
            x="38.097668"
-           y="917.8522"
-           id="tspan96"><tspan
-             style="font-weight:normal;font-size:21.3333px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan95">- Les caches de tampons de plans et les caches de grilles d'échantillonnage sont calculés une fois et réutilisés à </tspan></tspan><tspan
+           y="929.79241"
+           id="tspan89"><tspan
+             style="font-weight:normal;font-size:21.3333px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+             id="tspan88">- Les caches de tampons de plans et les caches de grilles d'échantillonnage sont calculés une fois et réutilisés à </tspan></tspan><tspan
            x="38.097668"
-           y="939.18551"
-           id="tspan98"><tspan
-             style="font-weight:normal;font-size:21.3333px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan97">chaque image</tspan></tspan></text>
-      <text
-         xml:space="preserve"
-         style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:31.6694px;font-family:sans-serif;-inkscape-font-specification:'sans-serif Bold';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;white-space:pre;inline-size:1073.19;display:inline;fill:#000000;fill-opacity:1;stroke:#ffffff;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
-         x="38.097668"
-         y="728.52838"
-         transform="translate(5.3787089,316.92481)"
-         id="text35"><tspan
-           x="38.097668"
-           y="728.52838"
-           id="tspan100"><tspan
-             style="font-size:26.6667px"
-             id="tspan99">
-</tspan></tspan><tspan
-           x="38.097668"
-           y="768.11513"
-           id="tspan102"><tspan
-             style="font-weight:normal;-inkscape-font-specification:sans-serif;stroke:none"
-             id="tspan101">
-</tspan></tspan></text>
+           y="955.39239"
+           id="tspan91"><tspan
+             style="font-weight:normal;font-size:21.3333px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+             id="tspan90">chaque image</tspan></tspan></text>
       <text
          xml:space="preserve"
          style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:31.6694px;line-height:0;font-family:sans-serif;-inkscape-font-specification:'sans-serif Bold';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;white-space:pre;inline-size:1073.19;display:inline;fill:#000000;fill-opacity:1;stroke:#ffffff;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
          x="38.097668"
          y="728.52838"
-         transform="translate(1.9938287,603.3163)"
+         transform="translate(-0.7741664,739.17919)"
          id="text21-5"><tspan
            x="38.097668"
            y="728.52838"
-           id="tspan104"><tspan
-             style="font-weight:normal;-inkscape-font-specification:sans-serif;stroke:none"
-             id="tspan103">
+           id="tspan93"><tspan
+             style="font-weight:normal;line-height:1.2;-inkscape-font-specification:sans-serif;stroke:none"
+             id="tspan92">
 </tspan></tspan><tspan
            x="38.097668"
-           y="763.5633"
+           y="766.53171"
+           id="tspan97"><tspan
+             style="font-size:26.6667px;line-height:1.2;fill:#1770b8"
+             id="tspan94">☻ </tspan><tspan
+             style="font-weight:normal;font-size:26.6667px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:#000000"
+             id="tspan95">TensorRT</tspan><tspan
+             style="line-height:1.2"
+             id="tspan96"> 
+</tspan></tspan><tspan
+           x="38.097668"
+           y="795.19427"
+           id="tspan100"><tspan
+             style="stroke:none"
+             id="tspan98">E</tspan><tspan
+             style="font-weight:normal;font-size:21.3333px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+             id="tspan99">xécute le modèle IA avec des noyaux FP8 optimisés par le compilateur 
+</tspan></tspan><tspan
+           x="38.097668"
+           y="830.13498"
            id="tspan107"><tspan
-   style="font-size:26.6667px;fill:#1770b8"
-   id="tspan105">☻ </tspan><tspan
-   style="font-weight:normal;font-size:26.6667px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:#000000"
-   id="tspan106">TensorRT</tspan> 
-</tspan><tspan
-           x="38.097668"
-           y="794.23295"
-           id="tspan110"><tspan
-             style="line-height:1"
-             id="tspan108">E</tspan><tspan
-             style="font-weight:normal;font-size:21.3333px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan109">xécute le modèle IA avec des noyaux FP8 optimisés par le compilateur 
-</tspan></tspan><tspan
-           x="38.097668"
-           y="824.82613"
-           id="tspan113"><tspan
-             style="font-weight:normal;font-size:21.3333px;line-height:1;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
-             id="tspan111">=&gt; moitié de la bande passante mémoire du FP16.</tspan><tspan
-             style="font-weight:normal;line-height:1;-inkscape-font-specification:sans-serif;stroke:none"
-             id="tspan112">
+             style="font-weight:normal;font-size:21.3333px;line-height:1.2;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:none"
+             id="tspan101">=&gt; moitié de la bande passante mémoire du FP16.</tspan><tspan
+             style="font-weight:normal;line-height:1.2;-inkscape-font-specification:sans-serif;stroke:none"
+             id="tspan102">
 </tspan></tspan></text>
       <text
          xml:space="preserve"
          id="text7-8-8"
          style="font-size:40px;text-align:start;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect7-3-8);display:inline;fill:#ffffff;fill-opacity:1;stroke-width:0.755906"
-         transform="translate(-9.4927215,678.0021)"
+         transform="translate(-6.3595954,774.0021)"
          x="-502.16571"
          y="0"><tspan
            x="22.253906"
            y="218.60399"
-           id="tspan115"><tspan
+           id="tspan109"><tspan
              style="fill:#000000"
-             id="tspan114">Astuces clés : NVDEC + noyau fusionné + GpuTensorPool</tspan></tspan></text>
+             id="tspan108">Astuces clés : NVDEC + noyau fusionné + GpuTensorPool</tspan></tspan></text>
     </g>
     <text
        xml:space="preserve"
@@ -567,7 +587,7 @@
        y="0" />
     <g
        id="g21"
-       transform="translate(0,-201.51983)">
+       transform="translate(0,-218.55972)">
       <g
          id="g218"
          transform="translate(0,8)">
@@ -580,9 +600,9 @@
            y="0"><tspan
              x="22.253906"
              y="221.03035"
-             id="tspan117"><tspan
+             id="tspan111"><tspan
                style="fill:#000000"
-               id="tspan116">Pourquoi tout garder sur le GPU ?</tspan></tspan></text>
+               id="tspan110">Pourquoi tout garder sur le GPU ?</tspan></tspan></text>
         <g
            id="g20">
           <path
@@ -605,9 +625,9 @@
              transform="matrix(0.59580803,0,0,0.59580803,32.558017,666.10084)"><tspan
                x="137.7887"
                y="316.6843"
-               id="tspan119"><tspan
+               id="tspan113"><tspan
                  style="font-size:44.7571px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
-                 id="tspan118">Approche</tspan></tspan></text>
+                 id="tspan112">Approche</tspan></tspan></text>
           <text
              xml:space="preserve"
              id="text4-9-1"
@@ -615,9 +635,9 @@
              transform="matrix(0.59580803,0,0,0.59580803,296.47199,666.10084)"><tspan
                x="113.23611"
                y="316.6843"
-               id="tspan121"><tspan
+               id="tspan115"><tspan
                  style="font-size:44.7571px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
-                 id="tspan120">Chemin des données</tspan></tspan></text>
+                 id="tspan114">Chemin des données</tspan></tspan></text>
           <text
              xml:space="preserve"
              id="text4-9-1-3"
@@ -625,9 +645,9 @@
              transform="matrix(0.59580803,0,0,0.59580803,746.05189,665.51618)"><tspan
                x="158.07672"
                y="316.6843"
-               id="tspan123"><tspan
+               id="tspan117"><tspan
                  style="font-size:44.7571px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
-                 id="tspan122">Latence</tspan></tspan></text>
+                 id="tspan116">Latence</tspan></tspan></text>
           <text
              xml:space="preserve"
              id="text4-9-7-1-4"
@@ -637,19 +657,33 @@
              y="0"><tspan
                x="96.384766"
                y="313.02019"
-               id="tspan125"><tspan
+               id="tspan121"><tspan
                  style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff"
-                 id="tspan124">Camera → décodage CPU → </tspan></tspan><tspan
+                 id="tspan118">Camera → décodage </tspan><tspan
+                 style="fill:#00ffff"
+                 id="tspan119">CPU</tspan><tspan
+                 style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff"
+                 id="tspan120"> → </tspan></tspan><tspan
                x="96.384766"
                y="363.73933"
-               id="tspan127"><tspan
+               id="tspan126"><tspan
                  style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff"
-                 id="tspan126">Redimensionnement CPU → </tspan></tspan><tspan
+                 id="tspan122">Redimensionnement </tspan><tspan
+                 style="fill:#00ffff"
+                 id="tspan123">CPU</tspan><tspan
+                 style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff"
+                 id="tspan124"> → </tspan></tspan><tspan
                x="96.384766"
                y="414.45848"
-               id="tspan129"><tspan
+               id="tspan131"><tspan
                  style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff"
-                 id="tspan128">Inférence GPU → rendu CPU</tspan></tspan></text>
+                 id="tspan127">Inférence </tspan><tspan
+                 style="fill:#00ff00"
+                 id="tspan128">GPU</tspan><tspan
+                 style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff"
+                 id="tspan129"> → rendu </tspan><tspan
+                 style="fill:#00ffff"
+                 id="tspan130">CPU</tspan></tspan></text>
           <g
              id="layer1-7-3"
              transform="translate(-15.283556,359.45019)">
@@ -657,74 +691,22 @@
                xml:space="preserve"
                id="text4-9-7-7-7"
                style="font-size:42.6667px;text-align:center;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect5-2-1-1-5);display:inline;fill:#1770b8;fill-opacity:1;stroke-width:0.755906"
-               transform="matrix(0.59580803,0,0,0.59580803,45.214364,389.05962)"
+               transform="matrix(0.59580803,0,0,0.59580803,46.399154,389.05962)"
                x="-136.49074"
                y="0"><tspan
-                 x="96.384766"
-                 y="316.6843"
-                 id="tspan132"><tspan
-                   style="font-size:44.7571px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
-                   id="tspan130">Pipeliune</tspan><tspan
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan131"> </tspan></tspan><tspan
-                 x="96.384766"
-                 y="409.18856"
-                 id="tspan150"><tspan
-                   dx="0 26.965353 25.813334 31.189392 20.479996 23.93605 39.893341 24.063995 16.76799 23.93605"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan133">CPUcamera </tspan><tspan
-                   dx="11.093353"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan134">→</tspan><tspan
-                   dx="35.750031 11.093353 26.23999 24.063995 20.480011 25.813324 26.240021 23.936066 26.240021 24.063995 11.093353 31.061401 25.813385 31.189362"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan135"> décodage GPU </tspan><tspan
-                   dx="11.093353"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan136">→</tspan><tspan
-                   dx="35.75 11.093323 16.768005 24.064026 26.23999 11.007996 39.893311 24.063965 26.368042 20.437378 11.007935 25.813354 26.368042 26.368042 24.063965 39.893311 24.063965 26.368042 15.40271 11.093384 31.06134 25.813293 31.189453"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan137"> redimensionnement GPU </tspan><tspan
-                   dx="11.093384"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan138">→</tspan><tspan
-                   dx="35.75 11.093384 11.007935 26.368042 14.677368 24.063965 16.767944 24.064087 26.36792 20.47998 24.063965 11.093262 31.061401 25.813354 31.189331"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan139"> inférence GPU </tspan><tspan
-                   dx="11.093262"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan140">→</tspan><tspan
-                   dx="35.75 11.093384 26.368042 23.936035 21.674683 11.007935 26.23999 23.936035 15.40271 24.063965 26.368042 16.767944 20.47998 23.935913 39.893433 24.063965 16.767944 23.935913"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan141"> navigateurcamera </tspan><tspan
-                   dx="11.093384"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan142">→</tspan><tspan
-                   dx="35.75 11.093384 26.23999 24.063965 20.480103 25.813354 26.23999 23.936035 26.23999 24.063965 11.093384 31.061401 25.813477 31.189331"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan143"> décodage GPU </tspan><tspan
-                   dx="11.093506"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan144">→</tspan><tspan
-                   dx="35.75 11.093262 16.768066 24.063965 26.23999 11.008057 39.893311 24.063965 26.368164 20.437256 11.008057 25.813232 26.368164 26.368164 24.063965 39.893311 24.063965 26.368164 15.402832 11.093262 31.061523 25.813232 31.189453"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan145"> redimensionnement GPU </tspan><tspan
-                   dx="11.093262"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan146">→</tspan><tspan
-                   dx="35.75 11.093262 11.008057 26.36792 14.67749 24.063965 16.768066 24.063965 26.36792 20.47998 24.063965 11.093506 31.061279 25.813477 31.189453"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan147"> inférence GPU </tspan><tspan
-                   dx="11.093506"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan148">→</tspan><tspan
-                   dx="35.75 11.093262 26.368164 23.936035 21.674561 11.008057 26.23999 23.936035 15.402588 24.063965 26.36792"
-                   style="text-align:start;fill:#ffffff"
-                   id="tspan149"> navigateur</tspan></tspan></text>
+                 x="105.696"
+                 y="317.09251"
+                 id="tspan135"><tspan
+                   style="fill:#ffffff"
+                   id="tspan132">Pipeline</tspan><tspan
+                   style="fill:#00ffff"
+                   id="tspan133"> </tspan><tspan
+                   style="font-size:44.7571px;font-family:Sans;-inkscape-font-specification:'Sans, Normal';fill:#00ffff;stroke:#ffffff"
+                   id="tspan134">CPU</tspan></tspan></text>
           </g>
           <g
              id="layer1-7-3-3"
-             transform="translate(-15.283556,486.74376)">
+             transform="translate(-10.760967,486.74376)">
             <text
                xml:space="preserve"
                id="text4-9-7-7-7-8"
@@ -734,40 +716,52 @@
                y="0"><tspan
                  x="96.384766"
                  y="316.6843"
-                 id="tspan152"><tspan
+                 id="tspan138"><tspan
                    style="font-size:44.7571px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';text-align:start;fill:#ffffff"
-                   id="tspan151">Pipeliune CPU</tspan></tspan></text>
+                   id="tspan136">Pipeline </tspan><tspan
+                   style="fill:#00ff00;stroke:#ffffff"
+                   id="tspan137">GPU</tspan></tspan></text>
           </g>
           <text
              xml:space="preserve"
              id="text4-9-7-7-7-5"
              style="font-size:42.6667px;text-align:center;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect5-2-1-1-5-1);display:inline;fill:#1770b8;fill-opacity:1;stroke-width:0.755906"
              transform="matrix(0.59580802,0,0,0.59580802,640.6122,748.58608)"><tspan
-               x="155.61938"
-               y="315.19051"
-               id="tspan155"><tspan
+               x="115.46456"
+               y="324.7474"
+               id="tspan144"><tspan
+                 style="font-size:53.7086px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff;stroke:#ffffff"
+                 id="tspan139">Elevée</tspan><tspan
                  style="stroke:#ffffff"
-                 id="tspan153">Elevée </tspan><tspan
+                 id="tspan140"> </tspan><tspan
                  style="font-size:40.2814px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff"
-                 id="tspan154">— nombreuses copies </tspan></tspan><tspan
+                 id="tspan141">— </tspan><tspan
+                 style="font-size:44.7571px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+                 id="tspan142">nombreuses copies</tspan><tspan
+                 style="font-size:40.2814px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff"
+                 id="tspan143"> </tspan></tspan><tspan
                x="96.384766"
                y="379.47567"
-               id="tspan157"><tspan
+               id="tspan146"><tspan
                  dx="0 33.554718 22.402596 33.554718 22.402596 9.185257 13.414017"
                  style="font-size:40.2814px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff"
-                 id="tspan156">mémoire</tspan></tspan></text>
+                 id="tspan145">mémoire</tspan></tspan></text>
           <text
              xml:space="preserve"
              id="text4-9-7-7-7-5-2"
              style="font-size:42.6667px;text-align:center;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect5-2-1-1-5-1-4);display:inline;fill:#1770b8;fill-opacity:1;stroke-width:0.755906"
              transform="matrix(0.59580802,0,0,0.59580802,641.32399,875.87965)"><tspan
-               x="196.07779"
-               y="315.19051"
-               id="tspan160"><tspan
-                 style="stroke:#ffffff"
-                 id="tspan158">Faible</tspan><tspan
+               x="160.30045"
+               y="324.7474"
+               id="tspan151"><tspan
+                 style="font-size:53.7086px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff;stroke:#ffffff"
+                 id="tspan147">Faible</tspan><tspan
+                 style="font-size:53.7086px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';stroke:#ffffff"
+                 id="tspan148"> </tspan><tspan
                  style="font-size:40.2814px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';fill:#ffffff"
-                 id="tspan159"> — zéro copie CPU</tspan></tspan></text>
+                 id="tspan149">— </tspan><tspan
+                 style="font-size:44.7571px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+                 id="tspan150">zéro copie CPU</tspan></tspan></text>
           <path
              style="fill:#ffffff;fill-opacity:1;stroke:#ffffff;stroke-width:3.77953;stroke-dasharray:none;stroke-opacity:1"
              d="M 48.816162,873.92932 H 1079.5453"
@@ -788,25 +782,39 @@
              id="path35-8" />
           <text
              xml:space="preserve"
-             style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:24px;font-family:sans-serif;-inkscape-font-specification:sans-serif;text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#ffffff;fill-opacity:1;stroke:none;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
+             style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:24px;font-family:sans-serif;-inkscape-font-specification:sans-serif;text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;white-space:pre;inline-size:326.303;display:inline;fill:#ffffff;fill-opacity:1;stroke:none;stroke-width:0.944882;stroke-dasharray:none;stroke-opacity:1"
              x="312.75943"
              y="1032.6963"
              id="text11"><tspan
-               sodipodi:role="line"
-               id="tspan11"
                x="312.75943"
                y="1032.6963"
-               style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:24px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal">Camera → décodage GPU → </tspan><tspan
-               sodipodi:role="line"
+               id="tspan155"><tspan
+                 style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+                 id="tspan152">Camera → décodage </tspan><tspan
+                 style="fill:#00ff00"
+                 id="tspan153">GPU</tspan><tspan
+                 style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+                 id="tspan154"> → 
+</tspan></tspan><tspan
                x="312.75943"
-               y="1062.9152"
-               style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:24px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal"
-               id="tspan13">Redimensionnement GPU → </tspan><tspan
-               sodipodi:role="line"
+               y="1062.9153"
+               id="tspan159"><tspan
+                 style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+                 id="tspan156">Redimensionnement </tspan><tspan
+                 style="fill:#00ff00"
+                 id="tspan157">GPU</tspan><tspan
+                 style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+                 id="tspan158"> → 
+</tspan></tspan><tspan
                x="312.75943"
-               y="1093.134"
-               style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:24px;font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal"
-               id="tspan14">Inférence GPU → navigateur</tspan></text>
+               y="1093.1341"
+               id="tspan163"><tspan
+                 style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+                 id="tspan160">Inférence </tspan><tspan
+                 style="fill:#00ff00"
+                 id="tspan161">GPU</tspan><tspan
+                 style="font-family:'Microsoft Sans Serif';-inkscape-font-specification:'Microsoft Sans Serif, Normal'"
+                 id="tspan162"> → navigateur</tspan></tspan></text>
         </g>
       </g>
     </g>
@@ -821,7 +829,7 @@
        y="1499.3984"
        id="text33"><tspan
          sodipodi:role="line"
-         id="tspan33"></tspan></text>
+         id="tspan33" /></text>
     <text
        xml:space="preserve"
        id="text39"
