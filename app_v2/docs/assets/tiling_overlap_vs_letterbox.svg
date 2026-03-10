@@ -1,0 +1,467 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="1500"
+   height="920"
+   viewBox="0 0 1500 920"
+   role="img"
+   aria-labelledby="title desc"
+   version="1.1"
+   id="svg37"
+   sodipodi:docname="tiling_overlap_vs_letterbox.svg"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview37"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.87717391"
+     inkscape:cx="886.93928"
+     inkscape:cy="498.76084"
+     inkscape:window-width="1920"
+     inkscape:window-height="1009"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg37" />
+  <title
+     id="title">Overlap behaviour in tiling and black bars in letterbox</title>
+  <desc
+     id="desc">Infographic comparing overlap in crowd tile planning with the presence of black bars in global letterbox modes and their absence in tiling mode.</desc>
+  <defs
+     id="defs1">
+    <style
+       id="style1">
+      .bg { fill: #0b1220; }
+      .card { fill: #111827; stroke: #334155; stroke-width: 2; rx: 18; }
+      .panel { fill: #0f172a; stroke: #475569; stroke-width: 2; rx: 12; }
+      .title { font: 700 28px Arial, sans-serif; fill: #e5e7eb; }
+      .subtitle { font: 600 18px Arial, sans-serif; fill: #cbd5e1; }
+      .label { font: 600 18px Arial, sans-serif; fill: #e5e7eb; }
+      .small { font: 14px Arial, sans-serif; fill: #cbd5e1; }
+      .tiny { font: 12px Arial, sans-serif; fill: #cbd5e1; }
+      .dark { fill: #111827; }
+      .frame { fill: #dbeafe; stroke: #2563eb; stroke-width: 3; }
+      .tileA { fill: rgba(14,165,233,0.18); stroke: #0ea5e9; stroke-width: 3; }
+      .tileB { fill: rgba(249,115,22,0.18); stroke: #f97316; stroke-width: 3; }
+      .overlap { fill: rgba(234,179,8,0.35); stroke: #eab308; stroke-width: 2; }
+      .good { fill: #dcfce7; stroke: #16a34a; stroke-width: 2; rx: 12; }
+      .warn { fill: #fef3c7; stroke: #f59e0b; stroke-width: 2; rx: 12; }
+      .bad { fill: #fee2e2; stroke: #ef4444; stroke-width: 2; rx: 12; }
+      .blackbar { fill: #020617; }
+      .img { fill: #c7d2fe; }
+    </style>
+  </defs>
+  <rect
+     class="bg"
+     x="0"
+     y="0"
+     width="1500"
+     height="920"
+     id="rect1" />
+  <text
+     class="title"
+     x="50"
+     y="50"
+     id="text1">Overlap and black bars — what really happens in the current pipeline</text>
+  <text
+     class="subtitle"
+     x="50"
+     y="82"
+     id="text2">Tiling uses real crops then resize. Letterbox uses full-frame resize plus padding. They are not the same operation.</text>
+  <rect
+     class="card"
+     x="40"
+     y="120"
+     width="690"
+     height="340"
+     rx="18"
+     id="rect2" />
+  <text
+     class="label"
+     x="65"
+     y="160"
+     id="text3">A. Horizontal overlap in current <tspan
+   fill="#fdba74"
+   id="tspan2">crowd_tiles</tspan> config</text>
+  <text
+     class="small"
+     x="65"
+     y="187"
+     id="text4">4K crop width = 1280 px, nominal step = 1024 px, so the first overlaps are exactly 256 px = 20%</text>
+  <rect
+     class="panel"
+     x="70"
+     y="215"
+     width="620"
+     height="180"
+     rx="12"
+     id="rect4" />
+  <rect
+     class="tileA"
+     x="110"
+     y="255"
+     width="180"
+     height="120"
+     id="rect5" />
+  <rect
+     class="tileB"
+     x="254"
+     y="255"
+     width="180"
+     height="120"
+     id="rect6" />
+  <rect
+     class="overlap"
+     x="254"
+     y="255"
+     width="36"
+     height="120"
+     id="rect7" />
+  <text
+     class="tiny"
+     x="150"
+     y="245"
+     id="text7">tile 0</text>
+  <text
+     class="tiny"
+     x="305"
+     y="245"
+     id="text8">tile 1</text>
+  <text
+     class="small"
+     x="320"
+     y="325"
+     id="text9">overlap = 256 px on 4K</text>
+  <text
+     class="small"
+     x="320"
+     y="347"
+     id="text10">= 128 px in the virtual 1920×1080 planning space</text>
+  <g
+     id="g42"
+     transform="translate(-1.4489517)">
+    <rect
+       class="warn"
+       x="54.717201"
+       y="410.03345"
+       width="663.4635"
+       height="34.933064"
+       id="rect10" />
+    <text
+       class="small dark"
+       x="66.239967"
+       y="433"
+       id="text11"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">At the right edge, the last tile is clamped to x = 2560, so the final overlap becomes larger: 768 px on 4K.</text>
+  </g>
+  <rect
+     class="card"
+     x="770"
+     y="120"
+     width="690"
+     height="340"
+     rx="18"
+     id="rect11" />
+  <text
+     class="label"
+     x="795"
+     y="160"
+     id="text12">B. Vertical overlap is not exactly 20% on the last row</text>
+  <text
+     class="small"
+     x="795"
+     y="187"
+     id="text13">Because the bottom row is clamped to the lower frame edge, row overlap grows beyond the nominal step</text>
+  <rect
+     class="panel"
+     x="800"
+     y="215"
+     width="620"
+     height="180"
+     rx="12"
+     id="rect13" />
+  <rect
+     class="tileA"
+     x="1015"
+     y="230"
+     width="140"
+     height="140"
+     id="rect14" />
+  <rect
+     class="tileB"
+     x="1015"
+     y="326"
+     width="140"
+     height="140"
+     id="rect15" />
+  <rect
+     class="overlap"
+     x="1015"
+     y="326"
+     width="140"
+     height="44"
+     id="rect16" />
+  <text
+     class="tiny"
+     x="1170"
+     y="300"
+     id="text16">row 0</text>
+  <text
+     class="tiny"
+     x="1170"
+     y="395"
+     id="text17">row 1</text>
+  <text
+     class="small"
+     x="1210"
+     y="318"
+     id="text18">crop height = 1280 px</text>
+  <text
+     class="small"
+     x="1210"
+     y="340"
+     id="text19">row starts = 0 and 880 px</text>
+  <text
+     class="small"
+     x="1210"
+     y="362"
+     id="text20">vertical overlap = 400 px</text>
+  <text
+     class="small"
+     x="1210"
+     y="384"
+     id="text21">≈ 31.25% on 4K</text>
+  <rect
+     class="warn"
+     x="800"
+     y="410"
+     width="620"
+     height="35"
+     id="rect21" />
+  <text
+     class="small dark"
+     x="1113.0698"
+     y="423"
+     id="text22"
+     style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif;text-align:center;text-anchor:middle"><tspan
+       sodipodi:role="line"
+       id="tspan38"
+       x="1113.0698"
+       y="423"><tspan
+   style="font-weight:bold;text-align:center;text-anchor:middle"
+   id="tspan37">Conclusion:</tspan> the configured overlap is the nominal grid step, but the effective overlap increases</tspan><tspan
+       sodipodi:role="line"
+       id="tspan39"
+       x="1113.0698"
+       y="440.5">on the final column / final row because of edge clamping.</tspan></text>
+  <rect
+     class="card"
+     x="40"
+     y="500"
+     width="690"
+     height="360"
+     rx="18"
+     id="rect22" />
+  <text
+     class="label"
+     x="65"
+     y="540"
+     id="text23">C. Tiling mode: no black bars</text>
+  <text
+     class="small"
+     x="65"
+     y="567"
+     id="text24">The kernel crops a real square patch from the source frame and resizes it to 640×640.</text>
+  <g
+     id="g45"
+     transform="translate(25)">
+    <g
+       id="g43">
+      <rect
+         class="panel"
+         x="80"
+         y="600"
+         width="250"
+         height="190"
+         rx="12"
+         id="rect24" />
+      <rect
+         class="img"
+         x="120"
+         y="630"
+         width="170"
+         height="120"
+         id="rect25" />
+      <rect
+         class="tileA"
+         x="145"
+         y="640"
+         width="120"
+         height="120"
+         id="rect26" />
+      <text
+         class="small"
+         x="128.9707"
+         y="778"
+         id="text26"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">real crop from the image</text>
+    </g>
+    <g
+       id="g44">
+      <rect
+         class="panel"
+         x="390"
+         y="600"
+         width="250"
+         height="190"
+         rx="12"
+         id="rect27" />
+      <rect
+         class="tileA"
+         x="455"
+         y="635"
+         width="120"
+         height="120"
+         id="rect28" />
+      <text
+         class="small"
+         x="455.14111"
+         y="778"
+         id="text28"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">resized to 640×640</text>
+    </g>
+  </g>
+  <g
+     id="g41"
+     transform="translate(25)">
+    <rect
+       class="good"
+       x="80"
+       y="812"
+       width="560"
+       height="30"
+       id="rect29" />
+    <text
+       class="small dark"
+       x="164.10254"
+       y="833"
+       id="text29"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">No letterbox mask, no black padding: tiling = crop + resize only.</text>
+  </g>
+  <rect
+     class="card"
+     x="770"
+     y="500"
+     width="690"
+     height="360"
+     rx="18"
+     id="rect30" />
+  <text
+     class="label"
+     x="795"
+     y="540"
+     id="text30">D. Global letterbox mode: black bars are added here</text>
+  <text
+     class="small"
+     x="795"
+     y="567"
+     id="text31">This happens in `yolo_global`, `crowd_global`, and density/global-style resize pipelines — not in tiling.</text>
+  <g
+     id="g49"
+     transform="translate(25)">
+    <g
+       id="g46">
+      <rect
+         class="panel"
+         x="810"
+         y="600"
+         width="250"
+         height="190"
+         rx="12"
+         id="rect31" />
+      <rect
+         class="img"
+         x="840"
+         y="640"
+         width="190"
+         height="106.875"
+         id="rect32" />
+      <text
+         class="small"
+         x="835.84131"
+         y="778"
+         id="text32"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">16:9 frame before square target</text>
+    </g>
+    <g
+       id="g48">
+      <rect
+         class="panel"
+         x="1120"
+         y="600"
+         width="250"
+         height="190"
+         rx="12"
+         id="rect33" />
+      <g
+         id="g47">
+        <rect
+           class="blackbar"
+           x="1185"
+           y="635"
+           width="120"
+           height="18"
+           id="rect34" />
+        <rect
+           class="img"
+           x="1185"
+           y="653"
+           width="120"
+           height="67.5"
+           id="rect35" />
+        <rect
+           class="blackbar"
+           x="1185"
+           y="720.5"
+           width="120"
+           height="18"
+           id="rect36" />
+      </g>
+      <text
+         class="small"
+         x="1162.7534"
+         y="778"
+         id="text36"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">square target with padding</text>
+    </g>
+  </g>
+  <rect
+     class="bad"
+     x="781.22522"
+     y="812.23517"
+     width="667.54956"
+     height="38.396923"
+     id="rect37" />
+  <text
+     class="small dark"
+     x="1115.4443"
+     y="826.22125"
+     id="text37"
+     style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif;text-align:center;text-anchor:middle"><tspan
+       sodipodi:role="line"
+       id="tspan40"
+       x="1115.4443"
+       y="826.22125">Black bands belong to letterbox modes only.</tspan><tspan
+       sodipodi:role="line"
+       id="tspan41"
+       x="1115.4443"
+       y="843.72125">They are expected when preserving aspect ratio inside a fixed square input.</tspan></text>
+</svg>

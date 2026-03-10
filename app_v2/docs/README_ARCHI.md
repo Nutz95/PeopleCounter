@@ -106,10 +106,10 @@ flowchart LR
 
     frame --> pa["passthrough<br/>no AI<br/>raw stream only"]:::gpu
     frame --> yg["yolo_global<br/>yolo26x FP8-QDQ<br/>decoder: YOLOv8<br/>640×640 letterbox<br/>bbox + seg masks"]:::gpu
-    frame --> yt["yolo_tiles<br/>yolo26n FP8-QDQ<br/>decoder: YOLOv8<br/>3×2 tiling 640 px<br/>bbox only — fast"]:::gpu
+    frame --> yt["yolo_tiles<br/>yolo26n FP8-QDQ<br/>decoder: YOLOv8<br/>overlapping tiled crops → 640 px<br/>bbox only — fast"]:::gpu
     frame --> d["density<br/>DM-Count QNRF VGG16<br/>1920×1088 resize<br/>heatmap + peak count"]:::gpu
     frame --> cg["crowd_global<br/>YOLO-CROWD FP16<br/>YOLOv5 nc=1<br/>640×640 letterbox<br/>bbox"]:::gpu
-    frame --> ct["crowd_tiles<br/>YOLO-CROWD FP16<br/>YOLOv5 nc=1<br/>3×2 tiling 640 px<br/>bbox + cross-tile NMS"]:::gpu
+    frame --> ct["crowd_tiles<br/>YOLO-CROWD FP16<br/>YOLOv5 nc=1<br/>overlapping tiled crops → 640 px<br/>bbox + cross-tile NMS"]:::gpu
 
     classDef gpu fill:#b7e1cd,color:#000,stroke:#2e7d32,stroke-width:1.5px;
 ```
@@ -118,10 +118,10 @@ flowchart LR
 |------|-------|---------|-----------|-----------|--------|------------|
 | `passthrough` | — | — | — | — | raw video | none |
 | `yolo_global` | yolo26x | YOLOv8 | **FP8-QDQ** | 640×640 letterbox | bbox + proto seg | bbox + seg masks |
-| `yolo_tiles` | yolo26n | YOLOv8 | **FP8-QDQ** | 3×2 crops × 640 px | bbox | bounding boxes |
+| `yolo_tiles` | yolo26n | YOLOv8 | **FP8-QDQ** | overlapping crops resized to 640×640 | bbox | bounding boxes |
 | `density` | DM-Count QNRF (VGG16) | — | **FP16** | 1920×1088 resize | density map | heatmap |
 | `crowd_global` | YOLO-CROWD (YOLOv5, nc=1) | YOLOv5 | **FP16** | 640×640 letterbox | bbox | bounding boxes |
-| `crowd_tiles` | YOLO-CROWD (YOLOv5, nc=1) | YOLOv5 | **FP16** | 3×2 crops × 640 px | bbox | bbox + cross-tile NMS |
+| `crowd_tiles` | YOLO-CROWD (YOLOv5, nc=1) | YOLOv5 | **FP16** | overlapping crops resized to 640×640 | bbox | bbox + cross-tile NMS |
 
 ### YOLO-CROWD detection head architecture
 
@@ -151,7 +151,7 @@ flowchart LR
 
     lb_yolo["Letterbox kernel<br/>→ 640×640<br/>yolo_global / crowd_global<br/>CUDA stream 3"]:::gpu
     lb_density["Letterbox kernel<br/>→ 1920×1088<br/>density<br/>CUDA stream 5"]:::gpu
-    tiling["Tiling kernel<br/>3×2 crops 640 px<br/>20% overlap<br/>yolo_tiles / crowd_tiles<br/>CUDA stream 4"]:::gpu
+    tiling["Tiling kernel<br/>overlapping crops → 640 px<br/>20% nominal overlap<br/>yolo_tiles / crowd_tiles<br/>CUDA stream 4"]:::gpu
 
     pool["GpuTensorPool<br/>RGB NCHW FP16<br/>zero-copy leases<br/>max_per_key: 64"]:::gpu
     out["Model inputs<br/>routed by model name<br/>flatten_inputs()"]:::gpu

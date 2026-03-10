@@ -1,0 +1,508 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="1500"
+   height="900"
+   viewBox="0 0 1500 900"
+   role="img"
+   aria-labelledby="title desc"
+   version="1.1"
+   id="svg48"
+   sodipodi:docname="tiling_crowd_tiles_workflow.svg"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview48"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.63403908"
+     inkscape:cx="805.94401"
+     inkscape:cy="543.3419"
+     inkscape:window-width="1920"
+     inkscape:window-height="1009"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg48" />
+  <title
+     id="title">Crowd tiles workflow: 4K frame to virtual planning canvas to 640 by 640 tile inputs</title>
+  <desc
+     id="desc">Infographic showing that crowd tiling uses a virtual 1920 by 1080 planning space, maps square crops back to the 4K source, and resizes each crop to 640 by 640 without black bars.</desc>
+  <defs
+     id="defs1">
+    <style
+       id="style1">
+      .bg { fill: #0b1220; }
+      .card { fill: #111827; stroke: #334155; stroke-width: 2; rx: 18; }
+      .panel { fill: #0f172a; stroke: #475569; stroke-width: 2; rx: 14; }
+      .frame { fill: #dbeafe; stroke: #2563eb; stroke-width: 3; }
+      .virtual { fill: #dcfce7; stroke: #16a34a; stroke-width: 3; }
+      .crop { fill: rgba(249,115,22,0.16); stroke: #f97316; stroke-width: 3; }
+      .tile { fill: #f8fafc; stroke: #0f172a; stroke-width: 2; }
+      .note { fill: #fef3c7; stroke: #f59e0b; stroke-width: 2; rx: 12; }
+      .title { font: 700 28px Arial, sans-serif; fill: #e5e7eb; }
+      .subtitle { font: 600 18px Arial, sans-serif; fill: #cbd5e1; }
+      .label { font: 600 16px Arial, sans-serif; fill: #e5e7eb; }
+      .small { font: 14px Arial, sans-serif; fill: #cbd5e1; }
+      .tiny { font: 12px Arial, sans-serif; fill: #cbd5e1; }
+      .dark { fill: #111827; }
+      .accent { fill: #93c5fd; }
+      .green { fill: #86efac; }
+      .orange { fill: #fdba74; }
+      .arrow { stroke: #94a3b8; stroke-width: 4; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker
+       id="arrowhead"
+       markerWidth="10"
+       markerHeight="7"
+       refX="9"
+       refY="3.5"
+       orient="auto">
+      <polygon
+         points="0 0, 10 3.5, 0 7"
+         fill="#94a3b8"
+         id="polygon1" />
+    </marker>
+  </defs>
+  <rect
+     class="bg"
+     x="0"
+     y="0"
+     width="1500"
+     height="900"
+     id="rect1" />
+  <text
+     class="title"
+     x="50"
+     y="50"
+     id="text1">Current tiling workflow — <tspan
+   fill="#fdba74"
+   id="tspan1">crowd_tiles</tspan> on a 4K frame</text>
+  <text
+     class="subtitle"
+     x="50"
+     y="82"
+     id="text2">Important: the 1920×1080 stage is a virtual planning canvas only — the code does not materialize an intermediate 1080p image for tiling.</text>
+  <rect
+     class="card"
+     x="40"
+     y="110"
+     width="430"
+     height="520"
+     rx="18"
+     id="rect2" />
+  <text
+     class="label"
+     x="60"
+     y="145"
+     id="text3">1. Source frame</text>
+  <text
+     class="small"
+     x="60"
+     y="170"
+     id="text4">Real input in GPU memory</text>
+  <rect
+     class="frame"
+     x="70"
+     y="200"
+     width="360"
+     height="202.5"
+     id="rect4" />
+  <text
+     class="label dark"
+     x="158.85156"
+     y="306.89844"
+     id="text5"
+     style="font-style:normal;font-variant:normal;font-weight:600;font-stretch:normal;font-size:16px;line-height:normal;font-family:Arial, sans-serif">4K source — 3840×2160</text>
+  <text
+     class="small"
+     x="70"
+     y="445"
+     id="text6">Aspect ratio: 16:9</text>
+  <text
+     class="small"
+     x="70"
+     y="472"
+     id="text7">No black bands here. This is the real decoded frame.</text>
+  <rect
+     class="note"
+     x="70.067253"
+     y="500.06726"
+     width="359.86548"
+     height="108.24839"
+     id="rect7" />
+  <g
+     id="g48"
+     transform="translate(0,-5.9574699)">
+    <text
+       class="label dark"
+       x="88"
+       y="530"
+       id="text8"
+       style="font-style:normal;font-variant:normal;font-weight:600;font-stretch:normal;font-size:16px;line-height:normal;font-family:Arial, sans-serif">Config used by the planner</text>
+    <text
+       class="small dark"
+       x="88"
+       y="555"
+       id="text9"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">prescale_width = 1920</text>
+    <text
+       class="small dark"
+       x="88"
+       y="577"
+       id="text10"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">prescale_height = 1080</text>
+    <text
+       class="small dark"
+       x="88"
+       y="599"
+       id="text11"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">target = 640×640, overlap = 20%</text>
+  </g>
+  <rect
+     class="card"
+     x="535"
+     y="110"
+     width="430"
+     height="520"
+     rx="18"
+     id="rect11" />
+  <text
+     class="label"
+     x="555"
+     y="145"
+     id="text12">2. Virtual planning canvas</text>
+  <text
+     class="small"
+     x="555"
+     y="170"
+     id="text13">Used only to compute crop positions</text>
+  <rect
+     class="virtual"
+     x="565"
+     y="200"
+     width="360"
+     height="202.5"
+     id="rect13" />
+  <g
+     id="g50">
+    <rect
+       class="crop"
+       x="565"
+       y="200"
+       width="120"
+       height="120"
+       id="rect14"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="661"
+       y="200"
+       width="120"
+       height="120"
+       id="rect15"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="757"
+       y="200"
+       width="120"
+       height="120"
+       id="rect16"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="805"
+       y="200"
+       width="120"
+       height="120"
+       id="rect17"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="565"
+       y="282.5"
+       width="120"
+       height="120"
+       id="rect18"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="661"
+       y="282.5"
+       width="120"
+       height="120"
+       id="rect19"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="757"
+       y="282.5"
+       width="120"
+       height="120"
+       id="rect20"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="805"
+       y="282.5"
+       width="120"
+       height="120"
+       id="rect21"
+       style="opacity:0.5" />
+  </g>
+  <text
+     class="label dark"
+     x="653.26172"
+     y="305.42188"
+     id="text21"
+     style="font-style:normal;font-variant:normal;font-weight:600;font-stretch:normal;font-size:16px;line-height:normal;font-family:Arial, sans-serif;fill:#ffffff">1920×1080 virtual space</text>
+  <text
+     class="small"
+     x="565"
+     y="445"
+     id="text22">The planner uses square virtual tiles: 640×640</text>
+  <text
+     class="small"
+     x="565"
+     y="472"
+     id="text23">Step = 640 × (1 − 0.20) = 512 pixels</text>
+  <text
+     class="small"
+     x="565"
+     y="499"
+     id="text24">cols = 4, rows = 2  →  8 tiles total</text>
+  <rect
+     class="note"
+     x="565"
+     y="525"
+     width="360"
+     height="70"
+     id="rect24" />
+  <text
+     class="small dark"
+     x="582"
+     y="552"
+     id="text25">Virtual origins: x = [0, 512, 1024, 1280]</text>
+  <text
+     class="small dark"
+     x="582"
+     y="576"
+     id="text26">Virtual origins: y = [0, 440]</text>
+  <rect
+     class="card"
+     x="1030"
+     y="110"
+     width="430"
+     height="520"
+     rx="18"
+     id="rect26" />
+  <text
+     class="label"
+     x="1050"
+     y="145"
+     id="text27">3. Crops mapped back to the real 4K frame</text>
+  <text
+     class="small"
+     x="1050"
+     y="170"
+     id="text28">Scale factors: sx = 2.0, sy = 2.0</text>
+  <rect
+     class="frame"
+     x="1060"
+     y="200"
+     width="360"
+     height="202.5"
+     id="rect28" />
+  <g
+     id="g49">
+    <rect
+       class="crop"
+       x="1060"
+       y="200"
+       width="120"
+       height="120"
+       id="rect29"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="1156"
+       y="200"
+       width="120"
+       height="120"
+       id="rect30"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="1252"
+       y="200"
+       width="120"
+       height="120"
+       id="rect31"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="1300"
+       y="200"
+       width="120"
+       height="120"
+       id="rect32"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="1060"
+       y="282.5"
+       width="120"
+       height="120"
+       id="rect33"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="1156"
+       y="282.5"
+       width="120"
+       height="120"
+       id="rect34"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="1252"
+       y="282.5"
+       width="120"
+       height="120"
+       id="rect35"
+       style="opacity:0.5" />
+    <rect
+       class="crop"
+       x="1300"
+       y="282.5"
+       width="120"
+       height="120"
+       id="rect36"
+       style="opacity:0.5" />
+  </g>
+  <text
+     class="label dark"
+     x="1166.6914"
+     y="305.42188"
+     id="text36"
+     style="font-style:normal;font-variant:normal;font-weight:600;font-stretch:normal;font-size:16px;line-height:normal;font-family:Arial, sans-serif;fill:#ffffff;stroke:#ffffff">8 real square crops</text>
+  <text
+     class="small"
+     x="1060"
+     y="445"
+     id="text37">Each crop in 4K space is 1280×1280 pixels</text>
+  <text
+     class="small"
+     x="1060"
+     y="472"
+     id="text38">Actual x = [0, 1024, 2048, 2560]</text>
+  <text
+     class="small"
+     x="1060"
+     y="499"
+     id="text39">Actual y = [0, 880]</text>
+  <g
+     id="g51"
+     transform="translate(-7.6174622)">
+    <rect
+       class="note"
+       x="1060.0338"
+       y="525.03387"
+       width="385.1673"
+       height="69.932274"
+       id="rect39" />
+    <text
+       class="small dark"
+       x="1077"
+       y="552"
+       id="text40"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">The last column / last row are clamped to the frame edge.</text>
+    <text
+       class="small dark"
+       x="1077"
+       y="576"
+       id="text41"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:14px;line-height:normal;font-family:Arial, sans-serif">That makes the final overlap larger than the nominal 20%.</text>
+  </g>
+  <path
+     class="arrow"
+     d="M 470 310 C 500 310, 505 310, 525 310"
+     id="path41" />
+  <path
+     class="arrow"
+     d="M 965 310 C 995 310, 1000 310, 1020 310"
+     id="path42" />
+  <rect
+     class="panel"
+     x="200"
+     y="680"
+     width="1100"
+     height="150"
+     rx="14"
+     id="rect42" />
+  <text
+     class="label"
+     x="230"
+     y="720"
+     id="text42">4. What the model actually receives</text>
+  <rect
+     class="tile"
+     x="260"
+     y="740"
+     width="110"
+     height="110"
+     id="rect43" />
+  <rect
+     class="tile"
+     x="390"
+     y="740"
+     width="110"
+     height="110"
+     id="rect44" />
+  <rect
+     class="tile"
+     x="520"
+     y="740"
+     width="110"
+     height="110"
+     id="rect45" />
+  <text
+     class="small"
+     x="655"
+     y="790"
+     id="text45">… 8 tiles total …</text>
+  <rect
+     class="tile"
+     x="850"
+     y="740"
+     width="110"
+     height="110"
+     id="rect46" />
+  <rect
+     class="tile"
+     x="980"
+     y="740"
+     width="110"
+     height="110"
+     id="rect47" />
+  <rect
+     class="tile"
+     x="1110"
+     y="740"
+     width="110"
+     height="110"
+     id="rect48" />
+  <text
+     class="small"
+     x="230"
+     y="872"
+     id="text48">Each 1280×1280 crop is resized to 640×640 for inference. This is a resize, not a letterbox: no black padding is added in tiling mode.</text>
+</svg>

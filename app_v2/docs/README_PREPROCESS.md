@@ -58,18 +58,119 @@ flowchart LR
 
 - **Letterbox**: resize the full frame into the target dimensions while preserving aspect ratio (adds grey padding). Used for single-pass global inference. No spatial information is lost.
 - **Tiling**: extract overlapping crops from the frame, each scaled to 640×640. Used for high-resolution scenes where small objects would be undetectable in a downscaled global view.
-  - **4K tiling grid**: for a 4K source prescaled to a 1920×1080 virtual frame, the grid is 3×2 = 6 tiles. Each tile covers a 640×720 region of the virtual frame, then is square-cropped and resized to 640×640.
-  - **20% overlap** ensures persons at tile boundaries appear fully in at least one tile.
+  - **Important**: in the current code, `prescale_width` / `prescale_height` define a **virtual planning canvas**. The pipeline does **not** first build a real 1920×1080 RGB image and then tile it.
+  - **Current `crowd_tiles` config on a 4K source**: the planner computes tiles on a virtual `1920×1080` canvas, then maps those coordinates back to the real `3840×2160` frame.
+  - **20% overlap** is the **nominal step reduction** used to place tiles. Because the last column / last row are clamped to the frame edge, the **effective overlap becomes larger** on those boundaries.
+
+### Detailed example — current `crowd_tiles` geometry on a 4K source
+
+![Crowd tiles workflow](assets/tiling_crowd_tiles_workflow.svg)
+
+Configuration used by the planner:
+
+```yaml
+preprocess:
+  crowd_tiles:
+    target_width: 640
+    target_height: 640
+    mode: tiles
+    overlap: 0.2
+    prescale_width: 1920
+    prescale_height: 1080
+```
+
+This means:
+
+1. Build the tile grid on a **virtual** `1920×1080` canvas.
+2. Use square virtual tiles of `640×640`.
+3. Apply the overlap via the placement step:
+
+$$
+step = 640 \times (1 - 0.2) = 512
+$$
+
+4. Compute the grid size:
+
+$$
+cols = \left\lceil \frac{1920 - 640}{512} \right\rceil + 1 = 4
+$$
+
+$$
+rows = \left\lceil \frac{1080 - 640}{512} \right\rceil + 1 = 2
+$$
+
+So the current planner generates **4×2 = 8 tiles**, not 6.
+
+Virtual tile origins:
+
+- `x = [0, 512, 1024, 1280]`
+- `y = [0, 440]`
+
+Those coordinates are then mapped back to the real 4K frame with:
+
+$$
+s_x = 3840 / 1920 = 2.0, \qquad s_y = 2160 / 1080 = 2.0
+$$
+
+So each real crop becomes:
+
+- crop size: **1280×1280** pixels
+- `x = [0, 1024, 2048, 2560]`
+- `y = [0, 880]`
+
+Each of those 8 square crops is then resized to the model input size `640×640`.
+
+### Overlap: where it is uniform, and where it grows
+
+![Overlap versus letterbox](assets/tiling_overlap_vs_letterbox.svg)
+
+For the first neighbouring tiles, the overlap matches the configured value:
+
+- horizontal overlap: `1280 - 1024 = 256 px` on the real 4K frame = **20%** of a 1280-px crop
+
+But because the final tiles are clamped to the frame borders, the effective overlap is larger at the edges:
+
+- last horizontal pair: tile starts at `2048` and `2560` → overlap = `2048 + 1280 - 2560 = 768 px`
+- vertical pair: row starts at `0` and `880` → overlap = `1280 - 880 = 400 px` ≈ **31.25%**
+
+So the practical rule is:
+
+- **inside the grid**: overlap follows the configured 20% step logic,
+- **on the last column / last row**: overlap increases because the planner clamps the final tile to the image edge.
 
 ### Tiling pre-scale
 
-`crowd_tiles` and `yolo_tiles` use a virtual `prescale_width: 1920 / prescale_height: 1080` to compute the tile grid. This makes the tile layout resolution-independent:
+`crowd_tiles` currently uses a virtual `prescale_width: 1920 / prescale_height: 1080` to compute the tile grid. This makes the tile layout resolution-independent without materializing a real 1080p intermediate image:
 
 | Source | Crop in source | Scale to tile |
 |--------|---------------|---------------|
 | 1920×1080 | 640×640 | 1:1 (no resize) |
 | 2560×1440 | 853×853 | 0.75× |
 | 3840×2160 | 1280×1280 | 0.5× |
+
+### Black bands: only in letterbox modes, not in tiling
+
+The tiling kernels do **not** add black bars. They:
+
+1. crop a real rectangular / square region from the source frame,
+2. resize that crop to the target size.
+
+There is **no letterbox mask** in tiling mode.
+
+Black padding appears only in **letterbox** paths such as:
+
+- `yolo_global`
+- `crowd_global`
+- `density` when using a full-frame aspect-preserving letterbox-style resize
+
+### Current config nuance: `yolo_tiles` vs `crowd_tiles`
+
+The current YAML is **not symmetrical**:
+
+- `crowd_tiles` has `prescale_width/prescale_height`, so its tile layout is computed on a virtual `1920×1080` canvas.
+- `yolo_tiles` currently has **no** `prescale_width/prescale_height`, so on a raw `3840×2160` frame with `overlap: 0.2` it produces a denser grid: **8×4 = 32 tiles** of `640×640` source crops.
+
+If you want both tiled modes to share the exact same grid geometry, that must be configured explicitly.
 
 ---
 

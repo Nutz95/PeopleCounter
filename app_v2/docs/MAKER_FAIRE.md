@@ -111,15 +111,48 @@ flowchart LR
 
 ### CUDA stream parallelism
 
-Different stages run on different **CUDA streams** (GPU work queues) so they overlap:
+The YAML configuration reserves **6 logical CUDA stream IDs** — but they do
+**not** all execute meaningful work on every frame.
 
+| Stream ID | Reserved role | Used by |
+|----------:|---------------|---------|
+| 0 | transfer / default stream | shared low-level GPU work |
+| 1 | YOLO-family inference | `yolo_global`, `yolo_tiles`, `crowd_global`, `crowd_tiles` |
+| 2 | density inference | `density` |
+| 3 | global preprocess | `yolo_global`, `crowd_global` |
+| 4 | tiled preprocess | `yolo_tiles`, `crowd_tiles` |
+| 5 | density preprocess | `density` |
+
+> **Important:** the UI exposes **one inference mode at a time**.  At runtime,
+> the orchestrator enables only the selected model branch and its matching
+> preprocess branch.  So the real per-frame picture is:
+>
+> - **one active preprocess stream** for the selected mode,
+> - **one active inference stream** for the selected mode,
+> - plus separate video-output streams outside `pipeline.yaml` when MJPEG is used.
+
+```mermaid
+flowchart TB
+    frame["One decoded frame"]
+    mode{"Selected mode"}
+
+    yg["YOLO Global / YOLO-Crowd Global<br/>preprocess stream 3 → inference stream 1"]
+    yt["YOLO Tiling / YOLO-Crowd Tiling<br/>preprocess stream 4 → inference stream 1"]
+    dens["Density Map<br/>preprocess stream 5 → inference stream 2"]
+    pass["Passthrough<br/>no AI stream active"]
+    video["Optional display path<br/>dedicated `_video_stream` + `_nvjpeg_stream`<br/>(MJPEG fallback only)"]
+
+    frame --> mode
+    mode --> yg
+    mode --> yt
+    mode --> dens
+    mode --> pass
+    frame --> video
 ```
-Stream 0: ──[DMA transfer]───────────────────────────────────
-Stream 1: ────────────────[YOLO inference]───────────────────
-Stream 3: ──────────────[YOLO global preprocess]─────────────
-Stream 4: ──────────────[YOLO tiles preprocess]──────────────
-                         (both run simultaneously ↑)
-```
+
+This is more accurate than drawing `yolo_global`, `yolo_tiles`, and `density`
+as if they were all processing the same frame simultaneously — they are
+**alternative branches**, not concurrent production branches.
 
 ---
 
@@ -133,12 +166,12 @@ flowchart TB
 
     subgraph det["Object Detection — yolo26 family (decoder: YOLOv8)"]
         global["YOLO Global<br/>yolo26x FP8-QDQ<br/>Resize → 640×640<br/>Full frame, max accuracy<br/>~3–5 ms"]
-        tiles["YOLO Tiling<br/>yolo26n FP8-QDQ<br/>3×2 zones × 640×640<br/>Fast, handles small people<br/>~10–15 ms"]
+        tiles["YOLO Tiling<br/>yolo26n FP8-QDQ<br/>overlapping crops → 640×640<br/>Fast, handles small people<br/>~10–15 ms"]
     end
 
     subgraph crowd["Crowd Counting — YOLO-CROWD family (decoder: YOLOv5)"]
         cg["YOLO-Crowd Global<br/>YOLOv5 nc=1 FP16<br/>100 800 anchors / frame<br/>Optimised for groups<br/>~6–10 ms"]
-        ct["YOLO-Crowd Tiling<br/>YOLOv5 nc=1 FP16<br/>6 tiles + cross-NMS<br/>~20–30 ms"]
+        ct["YOLO-Crowd Tiling<br/>YOLOv5 nc=1 FP16<br/>tiled batch + cross-NMS<br/>~20–30 ms"]
     end
 
     subgraph density_branch["Density Estimation — DM-Count"]
@@ -154,21 +187,21 @@ flowchart TB
 
 ### How does tiling work?
 
-A single high-resolution frame is divided into a **3×2 grid of overlapping zones**.
-Each zone is processed independently by the AI model.
+A single high-resolution frame is divided into **overlapping square crops**.
+Each crop is processed independently by the AI model.
 
 ```
-┌──────────┬──────────┬──────────┐
-│  Zone 1  │  Zone 2  │  Zone 3  │
-│  640×640 │  640×640 │  640×640 │
-├──────────┼──────────┼──────────┤
-│  Zone 4  │  Zone 5  │  Zone 6  │
-│  640×640 │  640×640 │  640×640 │
-└──────────┴──────────┴──────────┘
-    20% overlap at each border — nobody gets cut off
+┌──────────┬──────────┬──────────┬──────────┐
+│ crop  1  │ crop  2  │ crop  3  │ crop  4  │
+│ overlap  │ overlap  │ overlap  │ clamped  │
+├──────────┼──────────┼──────────┼──────────┤
+│ crop  5  │ crop  6  │ crop  7  │ crop  8  │
+│ overlap  │ overlap  │ overlap  │ clamped  │
+└──────────┴──────────┴──────────┴──────────┘
+ nominal overlap = 20%; edge overlap can be larger because the last crop is clamped to the frame border
 ```
 
-**Why tile?** A 4K frame downscaled to 640×640 loses 36× resolution.
+**Why tile?** A full 4K frame globally downscaled to 640×640 loses 36× resolution.
 A person who is 50 pixels tall at native resolution becomes just **1.4 pixels** — invisible to AI.
 Tiling preserves local resolution.
 
@@ -197,24 +230,41 @@ Instead of detecting each person, DM-Count learns a **spatial density function**
 
 ## Pipeline latency at a glance
 
-```
-Camera pixel → Browser overlay
+The exact timing depends on the **selected mode**.  The safest way to explain
+it is to separate the **common stages** from the **single active AI branch**:
 
- 0 ms ──────────────────────────────────────────────── ~33 ms
- │                │             │              │
-[NVDEC]       [Preproc]   [TensorRT]     [Browser]
- ~2-3 ms         ~3-5 ms     3–23 ms         ~5 ms
+```mermaid
+flowchart LR
+    cam["Camera frame"] --> nvdec["NVDEC decode<br/>~1–3 ms"]
+    nvdec --> pre["Active preprocess branch<br/>~3–4 ms"]
+    pre --> infer{"Selected AI mode"}
+
+    infer --> yg["YOLO Global<br/>~3–5 ms"]
+    infer --> yt["YOLO Tiling<br/>~10–15 ms"]
+    infer --> dens["Density Map<br/>22.9 ms"]
+    infer --> cg["YOLO-Crowd Global<br/>~6–10 ms"]
+    infer --> ct["YOLO-Crowd Tiling<br/>~20–30 ms"]
+
+    yg --> out["Decode + publish<br/>~5–8 ms"]
+    yt --> out
+    dens --> out
+    cg --> out
+    ct --> out
 ```
+
+So the latency story is:
+
+- **Fixed cost**: decode + routing/preprocess setup
+- **One active AI branch**: selected by the user
+- **Publish/display cost**: browser transport + overlay rendering
 
 | Stage | Time | Processing unit |
 |-------|-----:|-----------------|
-| NVDEC hardware decode | ~2-3 ms | GPU (fixed hardware decoder) |
-| NV12→RGB CUDA kernel | ~3-5 ms | GPU (shader cores) |
-| Preprocessing (letterbox / tiling) | ~1-4 ms | GPU (CUDA kernels, parallel) |
-| TensorRT AI inference | 3–23 ms | GPU (Tensor Cores) |
-| Result decode + NMS | ~5 ms | CPU |
-| Flask → browser | ~5 ms | CPU / network |
-| **Total end-to-end** | **~12-33 ms** | — |
+| NVDEC hardware decode | ~1-3 ms | GPU fixed-function decoder |
+| Active preprocess branch | ~3-4 ms | GPU CUDA stream (depends on mode) |
+| TensorRT AI inference | ~3-30 ms | GPU Tensor Cores / CUDA |
+| Result decode + publish | ~5-8 ms | CPU + network / browser |
+| **Total end-to-end** | **mode-dependent** | — |
 
 ---
 
