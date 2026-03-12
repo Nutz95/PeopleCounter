@@ -1,0 +1,542 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="297mm"
+   height="420mm"
+   viewBox="0 0 1122.5197 1587.4016"
+   version="1.1"
+   id="svg57"
+   sodipodi:docname="FR_Presentation1_Expo.svg"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview57"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     inkscape:zoom="1.016756"
+     inkscape:cx="547.32898"
+     inkscape:cy="1180.716"
+     inkscape:window-width="1920"
+     inkscape:window-height="1009"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg57" />
+  <defs
+     id="defs1">
+    <style
+       id="style1">
+      .bg{fill:#f6f9fc;}.header{fill:#1770b8;}.title{font:700 34px 'Microsoft Sans Serif', Arial, sans-serif;fill:#fff;}.subtitle{font:400 17px 'Microsoft Sans Serif', Arial, sans-serif;fill:#eaf4ff;}.section{font:700 20px 'Microsoft Sans Serif', Arial, sans-serif;fill:#0e2d47;}.body{font:400 14px 'Microsoft Sans Serif', Arial, sans-serif;fill:#12324d;}.small{font:400 12px 'Microsoft Sans Serif', Arial, sans-serif;fill:#234760;}.card{fill:#fff;stroke:#c8d9ea;stroke-width:1.4;rx:16;}.accent{fill:#1770b8;}.accent2{fill:#00a0d2;}.green{fill:#17a673;}.orange{fill:#f28c28;}.purple{fill:#7c5cff;}.gray{fill:#5f768b;}.chipText{font:700 13px 'Microsoft Sans Serif', Arial, sans-serif;fill:#fff;}.cardTitle{font:700 18px 'Microsoft Sans Serif', Arial, sans-serif;fill:#0e2d47;}.metric{font:700 16px 'Microsoft Sans Serif', Arial, sans-serif;fill:#1770b8;}.footer{font:400 11px 'Microsoft Sans Serif', Arial, sans-serif;fill:#6d8196;}
+    </style>
+  </defs>
+  <rect
+     class="bg"
+     x="0"
+     y="0"
+     width="1122.5197"
+     height="1587.4016"
+     id="rect1" />
+  <rect
+     class="header"
+     x="0"
+     y="0"
+     width="1122.5197"
+     height="146"
+     id="rect2" />
+  <text
+     class="title"
+     x="48"
+     y="58"
+     id="text2">PeopleCounter — Panneau 1</text>
+  <text
+     class="title"
+     x="48"
+     y="97"
+     id="text3">Ce que voit le visiteur</text>
+  <text
+     class="subtitle"
+     x="50"
+     y="126"
+     id="text4">Une caméra 4K, plusieurs modes d’analyse, et une interface qui rend l’IA visible en direct.</text>
+  <rect
+     class="card"
+     x="36"
+     y="176"
+     width="1050"
+     height="188"
+     rx="18"
+     id="rect4" />
+  <text
+     class="section"
+     x="58"
+     y="208"
+     id="text5">L’idée de la démo</text>
+  <text
+     class="body"
+     x="58"
+     y="238"
+     id="text6">PeopleCounter reçoit un flux vidéo 4K en direct, l’analyse avec plusieurs modèles IA possibles, puis affiche le résultat dans un navigateur.</text>
+  <text
+     class="body"
+     x="58"
+     y="262"
+     id="text7"
+     style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">On voit immédiatement la différence entre les modes : détection globale, tiling, crowd counting, ou flux brut sans IA.</text>
+  <rect
+     class="accent"
+     x="64"
+     y="292"
+     width="176"
+     height="42"
+     rx="14"
+     id="rect7" />
+  <text
+     class="chipText"
+     x="92.341553"
+     y="318"
+     id="text8"
+     style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Caméra 4K en direct</text>
+  <rect
+     class="accent2"
+     x="260"
+     y="292"
+     width="188"
+     height="42"
+     rx="14"
+     id="rect8" />
+  <text
+     class="chipText"
+     x="287.57495"
+     y="318"
+     id="text9"
+     style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Modes sélectionnables</text>
+  <rect
+     class="green"
+     x="468"
+     y="292"
+     width="202"
+     height="42"
+     rx="14"
+     id="rect9" />
+  <text
+     class="chipText"
+     x="519.03125"
+     y="318"
+     id="text10"
+     style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Comptage visible</text>
+  <rect
+     class="orange"
+     x="688"
+     y="292"
+     width="196"
+     height="42"
+     rx="14"
+     id="rect10" />
+  <text
+     class="chipText"
+     x="733.4541"
+     y="318"
+     id="text11"
+     style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Overlays en direct</text>
+  <rect
+     class="purple"
+     x="902"
+     y="292"
+     width="160"
+     height="42"
+     rx="14"
+     id="rect11" />
+  <text
+     class="chipText"
+     x="938.71216"
+     y="318"
+     id="text12"
+     style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Bascule rapide</text>
+  <rect
+     class="card"
+     x="36"
+     y="392"
+     width="1050"
+     height="246"
+     rx="18"
+     id="rect12" />
+  <text
+     class="section"
+     x="58"
+     y="424"
+     id="text13">Ce qu’on voit à l’écran</text>
+  <text
+     class="body"
+     x="58"
+     y="458"
+     id="text14">• vidéo 4K en direct avec superpositions IA dessinées en temps réel</text>
+  <text
+     class="body"
+     x="58"
+     y="486"
+     id="text15">• nombre de personnes mis à jour en continu</text>
+  <text
+     class="body"
+     x="58"
+     y="514"
+     id="text16">• changement de mode instantané pour comparer les approches</text>
+  <text
+     class="body"
+     x="58"
+     y="542"
+     id="text17">• affichage des performances : latence, charge GPU, historique</text>
+  <text
+     class="body"
+     x="58"
+     y="580"
+     id="text18">La démo n’est pas seulement “un compteur” :</text>
+  <text
+     class="small"
+     x="58"
+     y="606"
+     id="text19"
+     style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:12px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif;-inkscape-font-specification:'Microsoft Sans Serif, Arial, sans-serif, Normal';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;fill:#234760"><tspan
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:13.3333px;font-family:Sans;-inkscape-font-specification:'Sans, Normal';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal"
+       id="tspan57">c’est aussi un outil pédagogique pour montrer comment plusieurs stratégies IA lisent la même scène différemment.</tspan></text>
+  <text
+     class="section"
+     x="38"
+     y="682"
+     id="text20">Les 6 modes disponibles</text>
+  <rect
+     class="card"
+     x="36"
+     y="708"
+     width="500"
+     height="150"
+     rx="18"
+     id="rect20" />
+  <rect
+     class="gray"
+     x="54"
+     y="726"
+     width="150"
+     height="34"
+     rx="12"
+     id="rect21" />
+  <text
+     class="chipText"
+     x="80"
+     y="748"
+     id="text21">Passthrough</text>
+  <text
+     class="cardTitle"
+     x="56"
+     y="790"
+     id="text22">Flux brut</text>
+  <text
+     class="body"
+     x="56"
+     y="816"
+     id="text23">Vidéo seule, sans IA : utile comme référence.</text>
+  <text
+     class="metric"
+     x="56"
+     y="842"
+     id="text24">Latence minimale</text>
+  <rect
+     class="card"
+     x="584"
+     y="708"
+     width="500"
+     height="150"
+     rx="18"
+     id="rect24" />
+  <rect
+     class="accent"
+     x="602"
+     y="726"
+     width="150"
+     height="34"
+     rx="12"
+     id="rect25" />
+  <text
+     class="chipText"
+     x="626"
+     y="748"
+     id="text25">YOLO Global</text>
+  <text
+     class="cardTitle"
+     x="604"
+     y="790"
+     id="text26">Détection plein cadre</text>
+  <text
+     class="body"
+     x="604"
+     y="816"
+     id="text27">Boîtes + silhouettes sur l’image complète.</text>
+  <text
+     class="metric"
+     x="604"
+     y="842"
+     id="text28">Mode le plus équilibré</text>
+  <rect
+     class="card"
+     x="36"
+     y="878"
+     width="500"
+     height="150"
+     rx="18"
+     id="rect28" />
+  <rect
+     class="accent2"
+     x="54"
+     y="896"
+     width="150"
+     height="34"
+     rx="12"
+     id="rect29" />
+  <text
+     class="chipText"
+     x="78"
+     y="918"
+     id="text29">YOLO Tiling</text>
+  <text
+     class="cardTitle"
+     x="56"
+     y="960"
+     id="text30">Détection par tuiles</text>
+  <text
+     class="body"
+     x="56"
+     y="986"
+     id="text31">Découpe la scène en crops pour mieux voir les petites personnes.</text>
+  <text
+     class="metric"
+     x="56"
+     y="1012"
+     id="text32">Plus de détails locaux</text>
+  <rect
+     class="card"
+     x="584"
+     y="878"
+     width="500"
+     height="150"
+     rx="18"
+     id="rect32" />
+  <rect
+     class="green"
+     x="602"
+     y="896"
+     width="176"
+     height="34"
+     rx="12"
+     id="rect33" />
+  <text
+     class="chipText"
+     x="627"
+     y="918"
+     id="text33">Density Map</text>
+  <text
+     class="cardTitle"
+     x="604"
+     y="960"
+     id="text34">Carte de densité</text>
+  <text
+     class="body"
+     x="604"
+     y="986"
+     id="text35">Montre la densité de foule au lieu de dessiner des boîtes.</text>
+  <text
+     class="metric"
+     x="604"
+     y="1012"
+     id="text36">Idéal pour les foules denses</text>
+  <rect
+     class="card"
+     x="36"
+     y="1048"
+     width="500"
+     height="150"
+     rx="18"
+     id="rect36" />
+  <rect
+     class="orange"
+     x="54"
+     y="1066"
+     width="196"
+     height="34"
+     rx="12"
+     id="rect37" />
+  <text
+     class="chipText"
+     x="79"
+     y="1088"
+     id="text37">YOLO-CROWD Global</text>
+  <text
+     class="cardTitle"
+     x="56"
+     y="1130"
+     id="text38">Détecteur foule plein cadre</text>
+  <text
+     class="body"
+     x="56"
+     y="1156"
+     id="text39">Spécialisé pour les groupes compacts et les têtes.</text>
+  <text
+     class="metric"
+     x="56"
+     y="1182"
+     id="text40">Détection foule spécialisée</text>
+  <rect
+     class="card"
+     x="584"
+     y="1048"
+     width="500"
+     height="150"
+     rx="18"
+     id="rect40" />
+  <rect
+     class="purple"
+     x="602"
+     y="1066"
+     width="206"
+     height="34"
+     rx="12"
+     id="rect41" />
+  <text
+     class="chipText"
+     x="626"
+     y="1088"
+     id="text41">YOLO-CROWD Tiling</text>
+  <text
+     class="cardTitle"
+     x="604"
+     y="1130"
+     id="text42">Foule + tuiles</text>
+  <text
+     class="body"
+     x="604"
+     y="1156"
+     id="text43">Meilleure couverture dans les scènes très chargées.</text>
+  <text
+     class="metric"
+     x="604"
+     y="1182"
+     id="text44">Mode dense le plus complet</text>
+  <rect
+     class="card"
+     x="36"
+     y="1228"
+     width="1050"
+     height="263.31311"
+     rx="18"
+     id="rect44" />
+  <text
+     class="section"
+     x="58"
+     y="1260"
+     id="text45">Messages clés à retenir</text>
+  <text
+     class="body"
+     x="58"
+     y="1292"
+     id="text46">1. Une seule caméra 4K alimente plusieurs lectures possibles de la même scène.</text>
+  <text
+     class="body"
+     x="58"
+     y="1318"
+     id="text47">2. Les boîtes, les silhouettes et les heatmaps permettent d’expliquer visuellement les différences entre modèles.</text>
+  <text
+     class="body"
+     x="58"
+     y="1344"
+     id="text48"
+     style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">3. On peut comparer instantanément les résultats selon le mode choisi.</text>
+  <text
+     class="body"
+     x="58"
+     y="1370"
+     id="text49">4. Le projet montre à la fois du traitement vidéo temps réel, de l’IA embarquée GPU et une interface de démonstration claire.</text>
+  <rect
+     class="gray"
+     x="56"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect50" />
+  <text
+     class="small"
+     x="76"
+     y="1526"
+     id="text51">Passthrough</text>
+  <rect
+     class="accent"
+     x="182"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect51" />
+  <text
+     class="small"
+     x="202"
+     y="1526"
+     id="text52">YOLO Global</text>
+  <rect
+     class="accent2"
+     x="332"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect52" />
+  <text
+     class="small"
+     x="352"
+     y="1526"
+     id="text53">YOLO Tiling</text>
+  <rect
+     class="green"
+     x="473"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect53" />
+  <text
+     class="small"
+     x="493"
+     y="1526"
+     id="text54">Density</text>
+  <rect
+     class="orange"
+     x="588"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect54" />
+  <text
+     class="small"
+     x="608"
+     y="1526"
+     id="text55">Crowd Global</text>
+  <rect
+     class="purple"
+     x="767"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect55" />
+  <text
+     class="small"
+     x="787"
+     y="1526"
+     id="text56">Crowd Tiling</text>
+</svg>

@@ -1,0 +1,627 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="297mm"
+   height="420mm"
+   viewBox="0 0 1122.5197 1587.4016"
+   version="1.1"
+   id="svg57"
+   sodipodi:docname="FR_Presentation4_Expo.svg"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview57"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     inkscape:zoom="1.016756"
+     inkscape:cx="510.93874"
+     inkscape:cy="316.20174"
+     inkscape:window-width="1920"
+     inkscape:window-height="1009"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg57" />
+  <defs
+     id="defs1">
+    <style
+       id="style1">
+      .bg{fill:#f6f9fc;}.header{fill:#1770b8;}.title{font:700 34px 'Microsoft Sans Serif', Arial, sans-serif;fill:#fff;}.subtitle{font:400 17px 'Microsoft Sans Serif', Arial, sans-serif;fill:#eaf4ff;}.section{font:700 20px 'Microsoft Sans Serif', Arial, sans-serif;fill:#0e2d47;}.body{font:400 14px 'Microsoft Sans Serif', Arial, sans-serif;fill:#12324d;}.small{font:400 12px 'Microsoft Sans Serif', Arial, sans-serif;fill:#234760;}.card{fill:#fff;stroke:#c8d9ea;stroke-width:1.4;rx:16;}.accent{fill:#1770b8;}.accent2{fill:#00a0d2;}.green{fill:#17a673;}.orange{fill:#f28c28;}.purple{fill:#7c5cff;}.gray{fill:#5f768b;}.red{fill:#d94b4b;}.chipText{font:700 13px 'Microsoft Sans Serif', Arial, sans-serif;fill:#fff;}.metric{font:700 18px 'Microsoft Sans Serif', Arial, sans-serif;fill:#1770b8;}.bar1{fill:#1770b8;}.bar2{fill:#f28c28;}.bar3{fill:#00a0d2;}.bar4{fill:#17a673;}.bar5{fill:#7c5cff;}.footer{font:400 11px 'Microsoft Sans Serif', Arial, sans-serif;fill:#6d8196;}
+    </style>
+  </defs>
+  <rect
+     class="bg"
+     x="0"
+     y="0"
+     width="1122.5197"
+     height="1587.4016"
+     id="rect1" />
+  <rect
+     class="header"
+     x="0"
+     y="0"
+     width="1122.5197"
+     height="146"
+     id="rect2" />
+  <text
+     class="title"
+     x="48"
+     y="58"
+     id="text2">PeopleCounter — Panneau 4</text>
+  <text
+     class="title"
+     x="48"
+     y="97"
+     id="text3">Performance : les chiffres utiles</text>
+  <text
+     class="subtitle"
+     x="50"
+     y="126"
+     id="text4">Version synthétique pour exposition : on garde les messages forts, sans la partie couverture de tests.</text>
+  <rect
+     class="card"
+     x="36"
+     y="176"
+     width="1050"
+     height="142.87274"
+     rx="18"
+     id="rect4" />
+  <text
+     class="section"
+     x="58"
+     y="208"
+     id="text5">Matériel de démonstration</text>
+  <g
+     id="g60">
+    <rect
+       class="accent2"
+       x="62"
+       y="232"
+       width="204"
+       height="36"
+       rx="12"
+       id="rect5" />
+    <text
+       class="chipText"
+       x="108.42627"
+       y="255"
+       id="text6"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">GPU : RTX 5060 Ti</text>
+  </g>
+  <g
+     id="g59"
+     transform="translate(4.6045303)">
+    <rect
+       class="gray"
+       x="284"
+       y="232"
+       width="167.57275"
+       height="36"
+       rx="12"
+       id="rect6" />
+    <text
+       class="chipText"
+       x="301.89453"
+       y="255"
+       id="text7"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">VRAM : 16 Go GDDR7</text>
+  </g>
+  <g
+     id="g58"
+     transform="translate(-13.209061)">
+    <rect
+       class="orange"
+       x="491.99088"
+       y="232"
+       width="170.00912"
+       height="36"
+       rx="12"
+       id="rect7" />
+    <text
+       class="chipText"
+       x="525.72223"
+       y="255"
+       id="text8"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">TensorRT 10.15.1</text>
+  </g>
+  <g
+     id="g57"
+     transform="translate(-6.6045303)">
+    <rect
+       class="accent2"
+       x="678"
+       y="232"
+       width="160"
+       height="36"
+       rx="12"
+       id="rect8" />
+    <text
+       class="chipText"
+       x="726.07764"
+       y="255"
+       id="text9"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">CUDA 13.1</text>
+  </g>
+  <g
+     id="g61">
+    <rect
+       class="gray"
+       x="854"
+       y="232"
+       width="208"
+       height="36"
+       rx="12"
+       id="rect9" />
+    <text
+       class="chipText"
+       x="892.98096"
+       y="255"
+       id="text10"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Docker · Ubuntu 24.04</text>
+  </g>
+  <text
+     class="body"
+     x="58"
+     y="295"
+     id="text11"
+     style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Bande passante mémoire élevée, décodage matériel NVDEC, et inférence TensorRT optimisée : c’est la combinaison qui permet de tenir la 4K en temps réel.</text>
+  <rect
+     class="card"
+     x="36.259853"
+     y="336.24124"
+     width="1050"
+     height="256.39026"
+     rx="18"
+     id="rect11" />
+  <text
+     class="section"
+     x="58.259853"
+     y="368.24124"
+     id="text12"
+     style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:20px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Latence bout en bout</text>
+  <text
+     class="body"
+     x="58.259853"
+     y="396.24124"
+     id="text13"
+     style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">La latence dépend du mode sélectionné, mais la structure reste toujours la même :</text>
+  <g
+     id="g67"
+     transform="translate(0.25985219,-21.758758)">
+    <text
+       class="body"
+       x="64"
+       y="525"
+       id="text18"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">• Décodage NVDEC : <tspan
+   class="metric"
+   id="tspan17"
+   style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:18px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">~ 1 à 3 ms</tspan></text>
+    <text
+       class="body"
+       x="64"
+       y="549"
+       id="text19"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">• Preprocess GPU : <tspan
+   class="metric"
+   id="tspan18"
+   style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:18px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">~ 3 à 4 ms</tspan></text>
+    <text
+       class="body"
+       x="64"
+       y="573"
+       id="text20"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">• Décodage résultat + overlay / réseau : <tspan
+   class="metric"
+   id="tspan19"
+   style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:18px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">~ 5 à 8 ms</tspan></text>
+  </g>
+  <g
+     id="g66"
+     transform="translate(0.25985219,-21.758758)">
+    <text
+       class="body"
+       x="520"
+       y="525"
+       id="text21"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Le coût variable principal est l’inférence IA :</text>
+    <text
+       class="body"
+       x="520"
+       y="549"
+       id="text22"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">• YOLO Global : 3–5 ms</text>
+    <text
+       class="body"
+       x="520"
+       y="573"
+       id="text23"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">• YOLO Tiling : 10–15 ms</text>
+    <text
+       class="body"
+       x="520"
+       y="597"
+       id="text24"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">• Density Map : 22,9 ms</text>
+  </g>
+  <text
+     class="body"
+     x="520"
+     y="621"
+     id="text25">• YOLO-CROWD Tiling : 20–30 ms</text>
+  <rect
+     class="card"
+     x="36"
+     y="610"
+     width="1050"
+     height="390"
+     rx="18"
+     id="rect25" />
+  <text
+     class="section"
+     x="58"
+     y="642"
+     id="text26">Comparaison visuelle des latences d’inférence</text>
+  <text
+     class="small"
+     x="58"
+     y="668"
+     id="text27">Échelle qualitative : plus la barre est longue, plus l’inférence est coûteuse.</text>
+  <text
+     class="body"
+     x="62"
+     y="720"
+     id="text28">YOLO Global</text>
+  <rect
+     class="bar1"
+     x="220"
+     y="700"
+     width="170"
+     height="26"
+     rx="10"
+     id="rect28" />
+  <text
+     class="small"
+     x="405"
+     y="719"
+     id="text29">3–5 ms</text>
+  <text
+     class="body"
+     x="62"
+     y="782"
+     id="text30">YOLO-CROWD Global</text>
+  <rect
+     class="bar2"
+     x="220"
+     y="762"
+     width="250"
+     height="26"
+     rx="10"
+     id="rect30" />
+  <text
+     class="small"
+     x="485"
+     y="781"
+     id="text31">6–10 ms</text>
+  <text
+     class="body"
+     x="62"
+     y="844"
+     id="text32">YOLO Tiling</text>
+  <rect
+     class="bar3"
+     x="220"
+     y="824"
+     width="390"
+     height="26"
+     rx="10"
+     id="rect32" />
+  <text
+     class="small"
+     x="625"
+     y="843"
+     id="text33">10–15 ms</text>
+  <text
+     class="body"
+     x="62"
+     y="906"
+     id="text34">Density Map</text>
+  <rect
+     class="bar4"
+     x="220"
+     y="886"
+     width="580"
+     height="26"
+     rx="10"
+     id="rect34" />
+  <text
+     class="small"
+     x="815"
+     y="905"
+     id="text35">22,9 ms</text>
+  <text
+     class="body"
+     x="62"
+     y="968"
+     id="text36">YOLO-CROWD Tiling</text>
+  <rect
+     class="bar5"
+     x="220"
+     y="948"
+     width="720"
+     height="26"
+     rx="10"
+     id="rect36" />
+  <text
+     class="small"
+     x="955"
+     y="967"
+     id="text37">20–30 ms</text>
+  <text
+     class="body"
+     x="58"
+     y="1014"
+     id="text38"
+     style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">La 4K temps réel est tenue grâce au GPU, mais tous les modes n’ont pas le même coût.</text>
+  <rect
+     class="card"
+     x="36"
+     y="1037.261"
+     width="1050"
+     height="181.47792"
+     rx="18"
+     id="rect38" />
+  <g
+     id="g71"
+     transform="translate(0,7.885742)">
+    <text
+       class="section"
+       x="58"
+       y="1062"
+       id="text39"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:20px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Pourquoi FP8-QDQ change la donne ?</text>
+    <text
+       class="body"
+       x="58"
+       y="1090"
+       id="text40"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Le FP8-QDQ réduit fortement le coût mémoire et accélère l’inférence sur les GPU NVIDIA récents.</text>
+    <text
+       class="body"
+       x="58"
+       y="1120"
+       id="text41"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">• FP32 : référence</text>
+    <text
+       class="body"
+       x="58"
+       y="1144"
+       id="text42"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">• FP16 : déjà rapide</text>
+    <text
+       class="body"
+       x="58"
+       y="1168"
+       id="text43"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">• <tspan
+   class="metric"
+   id="tspan42"
+   style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:18px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">FP8-QDQ : ~ 3 à 4× plus rapide que la base</tspan></text>
+    <text
+       class="body"
+       x="58"
+       y="1192"
+       id="text44"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">=&gt; intérêt principal : beaucoup de vitesse sans trop sacrifier la qualité sur YOLO.</text>
+  </g>
+  <g
+     id="g72"
+     transform="translate(0,-14)">
+    <rect
+       class="card"
+       x="36"
+       y="1270"
+       width="1050"
+       height="240"
+       rx="18"
+       id="rect44" />
+    <text
+       class="section"
+       x="58"
+       y="1302"
+       id="text45"
+       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:20px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Messages clés à retenir</text>
+    <text
+       class="body"
+       x="58"
+       y="1334"
+       id="text46"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">1. Le GPU prend en charge le décodage, le preprocess et l’inférence : c’est ce qui rend la 4K temps réel possible.</text>
+    <text
+       class="body"
+       x="58"
+       y="1358"
+       id="text47"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">2. Les modes “tiling” coûtent plus cher, mais voient mieux les petites personnes.</text>
+    <text
+       class="body"
+       x="58"
+       y="1382"
+       id="text48"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">3. La density map est plus lente qu’un détecteur global, mais reste utile dans les foules très serrées.</text>
+    <text
+       class="body"
+       x="58"
+       y="1406"
+       id="text49"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">4. FP8-QDQ permet d’accélérer fortement l’inférence sur les modèles YOLO.</text>
+    <text
+       class="body"
+       x="58"
+       y="1430"
+       id="text50"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">5. Le mode de démonstration le plus “lisible” est souvent YOLO Global ou YOLO Tiling.</text>
+  </g>
+  <rect
+     class="gray"
+     x="56"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect50" />
+  <text
+     class="small"
+     x="76"
+     y="1526"
+     id="text51">Passthrough</text>
+  <rect
+     class="accent"
+     x="182"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect51" />
+  <text
+     class="small"
+     x="202"
+     y="1526"
+     id="text52">YOLO Global</text>
+  <rect
+     class="accent2"
+     x="332"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect52" />
+  <text
+     class="small"
+     x="352"
+     y="1526"
+     id="text53">YOLO Tiling</text>
+  <rect
+     class="green"
+     x="473"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect53" />
+  <text
+     class="small"
+     x="493"
+     y="1526"
+     id="text54">Density</text>
+  <rect
+     class="orange"
+     x="588"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect54" />
+  <text
+     class="small"
+     x="608"
+     y="1526"
+     id="text55">Crowd Global</text>
+  <rect
+     class="purple"
+     x="767"
+     y="1514"
+     width="14"
+     height="14"
+     rx="4"
+     id="rect55" />
+  <text
+     class="small"
+     x="787"
+     y="1526"
+     id="text56">Crowd Tiling</text>
+  <g
+     id="g70"
+     transform="translate(0,-4)">
+    <g
+       id="g62"
+       transform="translate(0.25985219,-21.758758)">
+      <rect
+         class="accent2"
+         x="64"
+         y="448"
+         width="180"
+         height="42"
+         rx="12"
+         id="rect13" />
+      <text
+         class="chipText"
+         x="92.351562"
+         y="472.36743"
+         id="text14"
+         style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">1. Décodage NVDEC</text>
+    </g>
+    <g
+       id="g65"
+       transform="translate(0.59318552,-21.758758)">
+      <rect
+         class="accent2"
+         x="268"
+         y="448"
+         width="220"
+         height="42"
+         rx="12"
+         id="rect14" />
+      <text
+         class="chipText"
+         x="308.15039"
+         y="472.43726"
+         id="text15"
+         style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">2. Preprocess GPU actif</text>
+    </g>
+    <g
+       id="g63"
+       transform="translate(0.25985219,-21.758758)">
+      <rect
+         class="purple"
+         x="731"
+         y="448"
+         width="248"
+         height="42"
+         rx="12"
+         id="rect16" />
+      <text
+         class="chipText"
+         x="784.39185"
+         y="472.36743"
+         id="text17"
+         style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">4. Publication / affichage</text>
+    </g>
+    <g
+       id="g64"
+       transform="translate(-0.07348114,-21.758758)">
+      <rect
+         class="orange"
+         x="513"
+         y="448"
+         width="194"
+         height="42"
+         rx="12"
+         id="rect15" />
+      <text
+         class="chipText"
+         x="567.59131"
+         y="473.65283"
+         id="text16"
+         style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:13px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">3. Inférence IA</text>
+    </g>
+  </g>
+</svg>

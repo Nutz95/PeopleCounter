@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="297mm" height="420mm" viewBox="0 0 1122.5197 1587.4016" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs><style>.bg{fill:#f6f9fc;}.header{fill:#1770b8;}.title{font:700 34px 'Microsoft Sans Serif', Arial, sans-serif;fill:#fff;}.subtitle{font:400 17px 'Microsoft Sans Serif', Arial, sans-serif;fill:#eaf4ff;}.section{font:700 20px 'Microsoft Sans Serif', Arial, sans-serif;fill:#0e2d47;}.body{font:400 14px 'Microsoft Sans Serif', Arial, sans-serif;fill:#12324d;}.small{font:400 12px 'Microsoft Sans Serif', Arial, sans-serif;fill:#234760;}.card{fill:#fff;stroke:#c8d9ea;stroke-width:1.4;rx:16;}.accent{fill:#1770b8;}.accent2{fill:#00a0d2;}.green{fill:#17a673;}.orange{fill:#f28c28;}.purple{fill:#7c5cff;}.gray{fill:#5f768b;}.chipText{font:700 13px 'Microsoft Sans Serif', Arial, sans-serif;fill:#fff;}.cardTitle{font:700 18px 'Microsoft Sans Serif', Arial, sans-serif;fill:#0e2d47;}.footer{font:400 11px 'Microsoft Sans Serif', Arial, sans-serif;fill:#6d8196;}</style></defs>
+  <rect class="bg" x="0" y="0" width="1122.5197" height="1587.4016"/>
+  <rect class="header" x="0" y="0" width="1122.5197" height="146"/>
+  <text class="title" x="48" y="58">PeopleCounter — Panneau 6</text>
+  <text class="title" x="48" y="97">Modèles, architecture et open source</text>
+  <text class="subtitle" x="50" y="126">Le “catalogue” des briques métiers du projet : quels modèles, quelle architecture logicielle, et sur quels composants il s’appuie.</text>
+
+  <rect class="card" x="36" y="180" width="1050" height="340" rx="18"/>
+  <text class="section" x="58" y="212">Le zoo de modèles</text>
+  <rect class="accent" x="60" y="242" width="220" height="34" rx="12"/><text class="chipText" x="85" y="264">yolo26x</text>
+  <text class="body" x="64" y="300">• Architecture : CSPDarknet + neck</text>
+  <text class="body" x="64" y="324">• Décodeur : YOLOv8</text>
+  <text class="body" x="64" y="348">• Tâche : détection + segmentation</text>
+  <text class="body" x="64" y="372">• Moteur : FP8-QDQ `.engine`</text>
+
+  <rect class="accent2" x="322" y="242" width="220" height="34" rx="12"/><text class="chipText" x="347" y="264">yolo26n</text>
+  <text class="body" x="326" y="300">• Architecture : version nano</text>
+  <text class="body" x="326" y="324">• Décodeur : YOLOv8</text>
+  <text class="body" x="326" y="348">• Tâche : détection rapide</text>
+  <text class="body" x="326" y="372">• Moteur : FP8-QDQ `.engine`</text>
+
+  <rect class="green" x="584" y="242" width="220" height="34" rx="12"/><text class="chipText" x="608" y="264">YOLO-CROWD</text>
+  <text class="body" x="588" y="300">• Architecture : YOLOv5 nc=1 + tête P2/4</text>
+  <text class="body" x="588" y="324">• Décodeur : YOLOv5</text>
+  <text class="body" x="588" y="348">• Tâche : détection de foule / têtes</text>
+  <text class="body" x="588" y="372">• Moteur : FP16 `.engine`</text>
+
+  <rect class="orange" x="846" y="242" width="220" height="34" rx="12"/><text class="chipText" x="870" y="264">DM-Count QNRF</text>
+  <text class="body" x="850" y="300">• Backbone : VGG16</text>
+  <text class="body" x="850" y="324">• Décodeur : spécifique densité</text>
+  <text class="body" x="850" y="348">• Tâche : crowd counting</text>
+  <text class="body" x="850" y="372">• Moteur : FP16 `.engine`</text>
+
+  <text class="body" x="58" y="432">Message important :</text>
+  <text class="small" x="58" y="458">dans le projet, “YOLOv8” décrit surtout le format du décodeur TensorRT, pas forcément le nom exact des poids entraînés.</text>
+  <text class="small" x="58" y="480">Les moteurs sont compilés à partir d’exports ONNX et sont spécifiques au matériel cible.</text>
+
+  <rect class="card" x="36" y="552" width="1050" height="280" rx="18"/>
+  <text class="section" x="58" y="584">Architecture logicielle</text>
+  <rect class="accent" x="64" y="618" width="220" height="40" rx="12"/><text class="chipText" x="92" y="644">core</text>
+  <text class="small" x="64" y="680">Interfaces abstraites :</text>
+  <text class="small" x="64" y="702">FrameSource, InferenceModel, ResultPublisher…</text>
+
+  <rect class="accent2" x="318" y="618" width="220" height="40" rx="12"/><text class="chipText" x="344" y="644">application</text>
+  <text class="small" x="318" y="680">Orchestration :</text>
+  <text class="small" x="318" y="702">PipelineOrchestrator, FrameScheduler…</text>
+
+  <rect class="green" x="572" y="618" width="220" height="40" rx="12"/><text class="chipText" x="598" y="644">infrastructure</text>
+  <text class="small" x="572" y="680">Implémentations concrètes :</text>
+  <text class="small" x="572" y="702">NVDEC, TensorRT, Flask, WebCodecs…</text>
+
+  <rect class="orange" x="826" y="618" width="220" height="40" rx="12"/><text class="chipText" x="854" y="644">kernels</text>
+  <text class="small" x="826" y="680">Noyaux CUDA :</text>
+  <text class="small" x="826" y="702">NV12 bridge, letterbox, tiling…</text>
+
+  <text class="body" x="58" y="760">Pourquoi c’est intéressant pour une démo :</text>
+  <text class="body" x="58" y="786">• le projet n’est pas un script monolithique : il suit une architecture propre et testable ;</text>
+  <text class="body" x="58" y="810">• les interfaces du cœur restent découplées des implémentations GPU et web.</text>
+
+  <rect class="card" x="36" y="864" width="1050" height="360" rx="18"/>
+  <text class="section" x="58" y="896">Composants open source et dépendances majeures</text>
+  <text class="body" x="58" y="928">• PyTorch — export / travail sur les modèles</text>
+  <text class="body" x="58" y="952">• Ultralytics YOLOv8 — architecture et écosystème de détection</text>
+  <text class="body" x="58" y="976">• OpenCV — traitement d’image</text>
+  <text class="body" x="58" y="1000">• Flask — serveur web / API</text>
+  <text class="body" x="58" y="1024">• TensorRT — moteur d’inférence NVIDIA</text>
+  <text class="body" x="58" y="1048">• CUDA / NVDEC — calcul GPU et décodage vidéo</text>
+  <text class="body" x="58" y="1072">• DM-Count — estimation de densité</text>
+  <text class="body" x="58" y="1096">• YOLO-CROWD — détection spécialisée foule</text>
+  <text class="small" x="58" y="1140">Pour le public : ce panneau montre que le projet réutilise des briques connues, mais les assemble dans une chaîne cohérente et spécifique à la démo.</text>
+
+  <rect class="card" x="36" y="1256" width="1050" height="254" rx="18"/>
+  <text class="section" x="58" y="1288">Messages clés à retenir</text>
+  <text class="body" x="58" y="1320">1. Chaque modèle a un rôle précis : détection globale, tiling, comptage dense, ou foule spécialisée.</text>
+  <text class="body" x="58" y="1344">2. Les moteurs TensorRT compilés sont adaptés au matériel de démo.</text>
+  <text class="body" x="58" y="1368">3. L’architecture du code est organisée en couches, ce qui facilite la maintenance et les tests.</text>
+  <text class="body" x="58" y="1392">4. PeopleCounter repose sur un mélange de briques open source et de technologies NVIDIA.</text>
+  <text class="body" x="58" y="1416">5. La valeur du projet vient aussi de l’intégration de toutes ces briques en temps réel sur une caméra 4K.</text>
+  <text class="footer" x="38" y="1560">Panneau A3 “modèles + architecture + open source” · synthèse dérivée du panneau 5 de `MAKER_FAIRE_FR.md`.</text>
+</svg>
