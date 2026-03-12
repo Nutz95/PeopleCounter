@@ -21,9 +21,9 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
-     inkscape:zoom="1.016756"
-     inkscape:cx="563.0653"
-     inkscape:cy="283.74557"
+     inkscape:zoom="0.71895506"
+     inkscape:cx="255.23153"
+     inkscape:cy="1255.294"
      inkscape:window-width="1920"
      inkscape:window-height="1009"
      inkscape:window-x="-8"
@@ -744,82 +744,110 @@
        id="text72"
        style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:14px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Référence sans IA : utile pour comparer directement “avec / sans traitement”. Le poster tiling détaille ensuite le mode `YT` en grand format.</text>
   </g>
-  <rect
-     class="gray"
-     x="56"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rect72" />
-  <text
-     class="legendText"
-     x="76"
-     y="1526"
-     id="text73">Passthrough</text>
-  <rect
-     class="accent"
-     x="182"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rect73" />
-  <text
-     class="legendText"
-     x="202"
-     y="1526"
-     id="text74">YOLO Global</text>
-  <rect
-     class="accent2"
-     x="332"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rect74" />
-  <text
-     class="legendText"
-     x="352"
-     y="1526"
-     id="text75">YOLO Tiling</text>
-  <rect
-     class="green"
-     x="473"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rect75" />
-  <text
-     class="legendText"
-     x="493"
-     y="1526"
-     id="text76">Density</text>
-  <rect
-     class="orange"
-     x="588"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rect76" />
-  <text
-     class="legendText"
-     x="608"
-     y="1526"
-     id="text77">Crowd Global</text>
-  <rect
-     class="purple"
-     x="767"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rect77" />
-  <text
-     class="legendText"
-     x="787"
-     y="1526"
-     id="text78">Crowd Tiling</text>
+  <g
+     id="g6">
+    <rect
+       class="gray"
+       x="56"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rect72" />
+    <text
+       class="legendText"
+       x="76"
+       y="1523.7822"
+       id="text73"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:11px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Passthrough</text>
+  </g>
+  <g
+     id="g5"
+     transform="translate(19.755664)">
+    <rect
+       class="accent"
+       x="182"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rect73" />
+    <text
+       class="legendText"
+       x="202"
+       y="1524.937"
+       id="text74"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:11px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">YOLO Global</text>
+  </g>
+  <g
+     id="g4"
+     transform="translate(19.142187)">
+    <rect
+       class="accent2"
+       x="332"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rect74" />
+    <text
+       class="legendText"
+       x="352"
+       y="1523.8494"
+       id="text75"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:11px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">YOLO Tiling</text>
+  </g>
+  <g
+     id="g3"
+     transform="translate(22.077051)">
+    <rect
+       class="green"
+       x="473"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rect75" />
+    <text
+       class="legendText"
+       x="493"
+       y="1523.7822"
+       id="text76"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:11px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Density</text>
+  </g>
+  <g
+     id="g2"
+     transform="translate(28.394238)">
+    <rect
+       class="orange"
+       x="588"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rect76" />
+    <text
+       class="legendText"
+       x="608"
+       y="1524.937"
+       id="text77"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:11px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Crowd Global</text>
+  </g>
+  <g
+     id="g1">
+    <rect
+       class="purple"
+       x="767"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rect77" />
+    <text
+       class="legendText"
+       x="787"
+       y="1523.8494"
+       id="text78"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:11px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">Crowd Tiling</text>
+  </g>
 </svg>

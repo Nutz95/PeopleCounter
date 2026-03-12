@@ -22,8 +22,8 @@
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
      inkscape:zoom="1.016756"
-     inkscape:cx="554.21362"
-     inkscape:cy="1226.9414"
+     inkscape:cx="597.98024"
+     inkscape:cy="1221.0402"
      inkscape:window-width="1920"
      inkscape:window-height="1009"
      inkscape:window-x="-8"
@@ -500,69 +500,92 @@
      x="58"
      y="1380"
      id="text50">pipeline CPU = beaucoup de copies et de conversions ; pipeline GPU = moins d’étapes coûteuses, donc plus rapide.</text>
-  <rect
-     class="gray"
-     x="56"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rectLegend21" />
-  <text
-     class="small"
-     x="76"
-     y="1526"
-     id="textLegend21">runtime / buffer</text>
-  <rect
-     class="accent"
-     x="224"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rectLegend22" />
-  <text
-     class="small"
-     x="244"
-     y="1526"
-     id="textLegend22">source / caméra</text>
-  <rect
-     class="accent2"
-     x="392"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rectLegend23" />
-  <text
-     class="small"
-     x="412"
-     y="1526"
-     id="textLegend23">GPU / preprocess</text>
-  <rect
-     class="orange"
-     x="584"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rectLegend24" />
-  <text
-     class="small"
-     x="604"
-     y="1526"
-     id="textLegend24">IA / TensorRT</text>
-  <rect
-     class="purple"
-     x="752"
-     y="1514"
-     width="14"
-     height="14"
-     rx="4"
-     id="rectLegend25" />
-  <text
-     class="small"
-     x="772"
-     y="1526"
-     id="textLegend25">navigateur / UI</text>
+  <g
+     id="g1">
+    <rect
+       class="gray"
+       x="56"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rectLegend21" />
+    <text
+       class="small"
+       x="76"
+       y="1525.2949"
+       id="textLegend21"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:12px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">runtime / buffer</text>
+  </g>
+  <g
+     id="g2"
+     transform="translate(2.980957)">
+    <rect
+       class="accent"
+       x="224"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rectLegend22" />
+    <text
+       class="small"
+       x="244"
+       y="1525.2949"
+       id="textLegend22"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:12px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">source / caméra</text>
+  </g>
+  <g
+     id="g3"
+     transform="translate(10.356445)">
+    <rect
+       class="accent2"
+       x="392"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rectLegend23" />
+    <text
+       class="small"
+       x="412"
+       y="1524.1729"
+       id="textLegend23"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:12px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">GPU / preprocess</text>
+  </g>
+  <g
+     id="g4"
+     transform="translate(3.4174805)">
+    <rect
+       class="orange"
+       x="584"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rectLegend24" />
+    <text
+       class="small"
+       x="604"
+       y="1525.2217"
+       id="textLegend24"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:12px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">IA / TensorRT</text>
+  </g>
+  <g
+     id="g5">
+    <rect
+       class="purple"
+       x="752"
+       y="1514"
+       width="14"
+       height="14"
+       rx="4"
+       id="rectLegend25" />
+    <text
+       class="small"
+       x="772"
+       y="1524.0352"
+       id="textLegend25"
+       style="font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:12px;line-height:normal;font-family:'Microsoft Sans Serif', Arial, sans-serif">navigateur / UI</text>
+  </g>
 </svg>
