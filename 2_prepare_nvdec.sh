@@ -13,6 +13,13 @@ if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     exit 1
 fi
 
+if ! docker run --rm --entrypoint bash "$IMAGE_NAME" -lc 'command -v nvcc >/dev/null 2>&1'; then
+    echo "❌ Base image $IMAGE_NAME does not contain nvcc."
+    echo "   ./1_prepare.sh must provide a CUDA devel toolchain before NVDEC/VPF can be built."
+    echo "   Try rerunning ./1_prepare.sh with the updated script, or rebuild from ./0_build_image.sh if the base image is stale."
+    exit 1
+fi
+
 echo "🧪 Building NVDEC/VPF layer from image: $IMAGE_NAME"
 
 NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-compute,utility,video}"

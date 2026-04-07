@@ -22,9 +22,32 @@ action() {
     apt-get update -qq
     apt-get install -y --no-install-recommends git curl unzip ninja-build build-essential pkg-config cmake || true
     
-    # Verify CUDA
+    # Verify / repair CUDA toolchain
     if ! command -v nvcc >/dev/null 2>&1; then 
-        echo '⚠️ nvcc introuvable : votre image doit fournir un CUDA 13.x compatible'
+        echo '⚠️ nvcc introuvable dans l image de base; tentative d installation du toolkit CUDA 13.1...'
+        apt-get install -y --no-install-recommends \
+            cuda-nvcc-13-1 \
+            cuda-compiler-13-1 \
+            cuda-cudart-dev-13-1 \
+            cuda-libraries-dev-13-1 || \
+        apt-get install -y --no-install-recommends \
+            cuda-toolkit-13-1 || \
+        echo '⚠️ Installation du toolkit CUDA échouée'
+    fi
+    # VPF also needs CUDA development libraries such as NPP (CUDA::npps)
+    if [[ ! -e /usr/local/cuda/lib64/libnpps.so && ! -e /usr/local/cuda/targets/x86_64-linux/lib/libnpps.so ]]; then
+        echo '⚠️ Bibliothèques CUDA de développement incomplètes; installation de cuda-libraries-dev-13-1...'
+        apt-get install -y --no-install-recommends cuda-libraries-dev-13-1 libnpp-dev-13-1 || \
+        apt-get install -y --no-install-recommends cuda-toolkit-13-1 || \
+        echo '⚠️ Installation des bibliothèques CUDA dev échouée'
+    fi
+    if command -v nvcc >/dev/null 2>&1; then
+        echo '✅ nvcc détecté:'
+        nvcc --version | tail -n 1 || true
+        ls -ld /usr/local/cuda /usr/local/cuda/bin || true
+    else
+        echo '❌ nvcc reste introuvable après prepare : la couche NVDEC échouera. Rebuild recommandé via ./0_build_image.sh.'
+        exit 1
     fi
     
     # Install TensorRT 10.15 runtime + trtexec (Blackwell sm_120 FP8/FP16 fixes)
