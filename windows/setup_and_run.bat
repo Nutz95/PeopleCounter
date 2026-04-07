@@ -20,11 +20,11 @@ if not exist "venv_bridge" (
     python -m venv venv_bridge
 )
 
-:: Installation des paquets
-echo [+] Verification des dependances...
+:: camera_bridge.py n'utilise que la bibliotheque standard Python.
+:: On evite tout pip install ici pour que la demo puisse tourner hors-ligne.
+echo [+] Activation de l'environnement virtuel...
 call venv_bridge\Scripts\activate
-python -m pip install --upgrade pip
-python -m pip install flask opencv-python
+echo [+] Aucune dependance Python externe requise.
 
 echo.
 echo [+] Lancement du bridge...

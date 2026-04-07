@@ -4,6 +4,7 @@ import logging
 import os
 import queue
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -200,9 +201,20 @@ def ensure_ffmpeg() -> Path | None:
     if ffmpeg_path and ffmpeg_path.exists():
         return ffmpeg_path
 
+    ffmpeg_on_path = shutil.which("ffmpeg")
+    if ffmpeg_on_path:
+        print(f"[i] Utilisation de FFmpeg trouvé dans le PATH : {ffmpeg_on_path}")
+        return Path(ffmpeg_on_path)
+
     archive_path = FFMPEG_BIN_DIR / "ffmpeg.zip"
     print("[i] Téléchargement de FFmpeg (quelques Mo)...")
-    urllib.request.urlretrieve(FFMPEG_DOWNLOAD_URL, archive_path)
+    try:
+        urllib.request.urlretrieve(FFMPEG_DOWNLOAD_URL, archive_path)
+    except Exception as exc:
+        print("[!] Téléchargement automatique de FFmpeg impossible.")
+        print("    Pour une démo hors-ligne, placez ffmpeg.exe dans windows\\bin\\ ou installez FFmpeg dans le PATH Windows avant la démo.")
+        print(f"    Détail: {exc}")
+        return None
     print("[i] Extraction de FFmpeg...")
     with zipfile.ZipFile(archive_path, "r") as archive:
         archive.extractall(FFMPEG_BIN_DIR)
@@ -715,7 +727,9 @@ if __name__ == "__main__":
     else:
         print("      WINDOWS CAMERA BRIDGE POUR DOCKER (H.264 via FFmpeg)")
     print("="*60)
-    print(f"\n[+] Flux disponible sur : http://{ip}:{listen_port}/video_feed")
+    print(f"\n[+] Flux disponible sur le réseau local : http://{ip}:{listen_port}/video_feed")
+    print(f"[+] Même machine Windows : http://127.0.0.1:{listen_port}/video_feed")
+    print(f"[+] Depuis Docker/WSL via 4_run_app.sh : http://host.docker.internal:{listen_port}/video_feed")
     print(f"[+] Encodeur sélectionné : {encoder} @ {bitrate_kbps} kbps")
 
     try:
@@ -762,7 +776,7 @@ if __name__ == "__main__":
                 print(f"[+] Périphérique utilisé : {device.friendly_name}{input_note}")
                 print(f"[+] Mode retenu : {width}×{height} @ {fps} fps")
                 print(f"[!] COMMANDE A COPIER DANS LE TERMINAL WSL :")
-                print(f"    ./run_app.sh http://{ip}:{listen_port}/video_feed")
+                print(f"    ./4_run_app.sh http://host.docker.internal:{listen_port}/video_feed --app-version v2")
 
                 ffmpeg_proc = start_ffmpeg_stream(
                     ffmpeg_path,
