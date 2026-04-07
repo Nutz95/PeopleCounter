@@ -94,6 +94,14 @@ DOCKER_ARGS=("--gpus" "all" "-p" "5000:5000" "-p" "4999:4999" "-e" "DISPLAY=$DIS
 
 if [[ "$SOURCE" == http* ]] || [[ "$SOURCE" == rtsp* ]]; then
     echo "🌐 Using Network Stream mode"
+    DOCKER_ARGS+=("--add-host" "host.docker.internal:host-gateway")
+    if [[ "$SOURCE" =~ ^(https?://)(127\.0\.0\.1|localhost)(:[0-9]+)?(/.*)?$ ]]; then
+        SOURCE="${BASH_REMATCH[1]}host.docker.internal${BASH_REMATCH[3]}${BASH_REMATCH[4]}"
+        echo "ℹ️ Rewriting localhost source for container reachability → $SOURCE"
+    elif [[ "$SOURCE" =~ ^(rtsp://)(127\.0\.0\.1|localhost)(:[0-9]+)?(/.*)?$ ]]; then
+        SOURCE="${BASH_REMATCH[1]}host.docker.internal${BASH_REMATCH[3]}${BASH_REMATCH[4]}"
+        echo "ℹ️ Rewriting localhost source for container reachability → $SOURCE"
+    fi
     DOCKER_ARGS+=("-e" "CAPTURE_MODE=rtsp" "-e" "RTSP_URL=$SOURCE")
 else
     echo "🔌 Using Local Device mode"
