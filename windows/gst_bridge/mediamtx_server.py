@@ -76,6 +76,7 @@ class MediaMtxServer:
                 [
                     f"rtspAddress: :{self._rtsp_port}",
                     "rtspTransports: [tcp]",
+                    "writeQueueSize: 2048",
                     f"rtmpAddress: :{self._rtmp_port}",
                     "hls: no",
                     "webrtc: no",

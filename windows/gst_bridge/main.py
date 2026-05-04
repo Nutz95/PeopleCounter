@@ -25,7 +25,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=5002)
     parser.add_argument("--rtmp-port", type=int, default=1935)
     parser.add_argument("--rtsp-path", default="live")
-    parser.add_argument("--standby-path", default="standby")
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--profile-seconds", type=float)
     parser.add_argument("--profile-dir")
@@ -48,7 +47,7 @@ def build_config(args: argparse.Namespace) -> BridgeConfig:
         rtsp_port=args.port,
         rtmp_port=args.rtmp_port,
         rtsp_path=args.rtsp_path,
-        standby_path=args.standby_path,
+        standby_path="standby",
         profile=args.profile,
         profile_seconds=args.profile_seconds,
         profile_dir=Path(args.profile_dir).expanduser().resolve() if args.profile_dir else None,

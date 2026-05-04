@@ -1,11 +1,18 @@
 @echo off
 SETLOCAL EnableDelayedExpansion
 
+set "ROOT_DIR=%~dp0"
+set "MEDIA_DIR_SETTING=windows\ref_videos"
+set "IMAGE_DIR_SETTING=windows\ref_images"
+
 set "WIN_DIR=%~dp0windows"
 cd /d "%WIN_DIR%"
 set "REQ_FILE=%WIN_DIR%\requirements-gst-bridge.txt"
 set "VENV_DIR=venv_bridge"
 set "PY_VERSION_FILE=%TEMP%\peoplecounter_gst_bridge_python_version.txt"
+
+call :resolve_user_path "%MEDIA_DIR_SETTING%" MEDIA_DIR_RESOLVED
+call :resolve_user_path "%IMAGE_DIR_SETTING%" IMAGE_DIR_RESOLVED
 
 for %%V in (GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0 GST_PLUGIN_SYSTEM_PATH GST_PLUGIN_SYSTEM_PATH_1_0 GST_REGISTRY GST_REGISTRY_FORK GST_REGISTRY_REUSE_PLUGIN_SCANNER GST_PLUGIN_SCANNER GST_PLUGIN_SCANNER_1_0) do (
     set "%%V="
@@ -72,11 +79,25 @@ if errorlevel 1 (
 )
 
 echo [+] Launching gst_bridge ...
+echo     media dir : %MEDIA_DIR_RESOLVED%
+echo     image dir : %IMAGE_DIR_RESOLVED%
 echo.
-"%VENV_DIR%\Scripts\python.exe" -m gst_bridge.main %*
+"%VENV_DIR%\Scripts\python.exe" -m gst_bridge.main --media-dir "%MEDIA_DIR_RESOLVED%" --image-dir "%IMAGE_DIR_RESOLVED%" %*
 
 call :maybe_pause
 exit /b %ERRORLEVEL%
+
+:resolve_user_path
+set "INPUT_PATH=%~1"
+if "%INPUT_PATH:~1,1%"==":" (
+    set "ABS_PATH=%INPUT_PATH%"
+) else if "%INPUT_PATH:~0,2%"=="\\" (
+    set "ABS_PATH=%INPUT_PATH%"
+) else (
+    set "ABS_PATH=%ROOT_DIR%%INPUT_PATH%"
+)
+for %%I in ("%ABS_PATH%") do set "%~2=%%~fI"
+exit /b 0
 
 :maybe_pause
 if "%GST_BRIDGE_NO_PAUSE%"=="1" exit /b 0

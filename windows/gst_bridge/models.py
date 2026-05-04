@@ -9,8 +9,11 @@ class MediaItem:
     source_id: str
     name: str
     kind: str
-    path: Path
+    path: Path | None
     details: str
+    source_spec: str | None = None
+    thumbnail_path: Path | None = None
+    metadata_lines: tuple[str, ...] = ()
 
 
 @dataclass
@@ -22,6 +25,7 @@ class RuntimeMetrics:
     dropped_fps: float = 0.0
     queue_fill: str = "n/a"
     warnings: int = 0
+    rtsp_queue_warnings: int = 0
     errors: int = 0
     last_log: str = ""
     gst_version: str = "unknown"
@@ -41,6 +45,7 @@ class RuntimeMetrics:
             f"gst version     : {self.gst_version}",
             f"encoder         : {self.encoder}",
             f"publisher       : {self.publisher}",
+            f"rtsp queue warn : {self.rtsp_queue_warnings}",
             f"warnings/errors : {self.warnings}/{self.errors}",
             f"last log        : {self.last_log[:110]}",
         ]

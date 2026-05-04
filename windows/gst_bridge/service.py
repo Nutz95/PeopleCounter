@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime
+import json
 import re
 import socket
 import subprocess
@@ -14,7 +15,7 @@ from .catalog import MediaCatalog
 from .config import BridgeConfig
 from .mediamtx_server import MediaMtxServer
 from .models import MediaItem, RuntimeMetrics, ValidationResult
-from .persistent_stream import (
+from .persistent import (
     PersistentFrameBridge,
     SourceDecoder,
     StreamEncoder,
@@ -28,13 +29,27 @@ H264_DISCOVERY_LINE = re.compile(r"video\s+#\d+:\s+H\.264", re.IGNORECASE)
 H265_DISCOVERY_LINE = re.compile(r"video\s+#\d+:\s+H\.265", re.IGNORECASE)
 WIDTH_LINE = re.compile(r"^\s*Width:\s*(?P<width>\d+)", re.IGNORECASE | re.MULTILINE)
 HEIGHT_LINE = re.compile(r"^\s*Height:\s*(?P<height>\d+)", re.IGNORECASE | re.MULTILINE)
+RTSP_WRITE_QUEUE_FULL_LINE = re.compile(r"\brtsp\b.*\bwrite queue is full\b", re.IGNORECASE)
+KIND_LABELS = {
+    "camera": "Camera",
+    "image": "Image",
+    "video": "Video",
+}
 
 
 class GstBridgeService:
     def __init__(self, config: BridgeConfig, validation: ValidationResult) -> None:
         self._config = config
         self._validation = validation
-        self._catalog = MediaCatalog(config.media_dir, config.image_dir)
+        self._ffmpeg_path = find_ffmpeg(config.base_dir)
+        self._catalog = MediaCatalog(
+            config.media_dir,
+            config.image_dir,
+            self._ffmpeg_path,
+            config.width,
+            config.height,
+            config.fps,
+        )
         self._metrics = RuntimeMetrics(gst_version=validation.gst_version)
         self._metrics_lock = threading.Lock()
         self._items: list[MediaItem] = []
@@ -49,7 +64,6 @@ class GstBridgeService:
             config.rtmp_port,
             on_log=self._on_mediamtx_log,
         )
-        self._ffmpeg_path = find_ffmpeg(config.base_dir)
         self._black_frame = build_black_frame(config.width, config.height)
         self._encoder = StreamEncoder(
             self._ffmpeg_path,
@@ -168,6 +182,19 @@ class GstBridgeService:
         with self._metrics_lock:
             return RuntimeMetrics(**self._metrics.__dict__)
 
+    def get_ffmpeg_path(self) -> Path:
+        return self._ffmpeg_path
+
+    def get_current_source_metadata_lines(self) -> list[str]:
+        item = self._current_source_item
+        if item is None:
+            return [
+                "No source selected yet.",
+                "",
+                "Click a camera, image, or video thumbnail on the left to start playback.",
+            ]
+        return list(item.metadata_lines or self._fallback_metadata_lines(item))
+
     def get_execution_log_lines(self) -> list[str]:
         with self._execution_log_lock:
             return list(self._execution_log)
@@ -184,6 +211,7 @@ class GstBridgeService:
             self._metrics.dropped_fps = 0.0
             self._metrics.queue_fill = "preroll"
             self._metrics.warnings = 0
+            self._metrics.rtsp_queue_warnings = 0
             self._metrics.errors = 0
             self._metrics.last_log = "Preparing decoder"
         threading.Thread(
@@ -270,6 +298,11 @@ class GstBridgeService:
             )
 
     def _on_mediamtx_log(self, line: str) -> None:
+        if RTSP_WRITE_QUEUE_FULL_LINE.search(line):
+            with self._metrics_lock:
+                self._metrics.warnings += 1
+                self._metrics.rtsp_queue_warnings += 1
+                self._metrics.last_log = "RTSP client write queue is full"
         self._append_execution_log(line)
 
     def _profile_loop(self) -> None:
@@ -291,6 +324,7 @@ class GstBridgeService:
         ranked_items: list[tuple[int, MediaItem]] = []
         for item in items:
             codec, resolution, blocked_reason = self._probe_source(item, discoverer, env)
+            probe_data = self._probe_ffmpeg_metadata(item)
             details = item.details
             if codec is not None:
                 details = f"{details} | codec {codec}"
@@ -299,7 +333,13 @@ class GstBridgeService:
             if blocked_reason is not None:
                 details = f"{details} | {blocked_reason}"
                 self._blocked_sources[item.source_id] = blocked_reason
-            ranked_items.append((self._source_priority(item, codec, resolution, blocked_reason), replace(item, details=details)))
+            metadata_lines = self._build_metadata_lines(item, codec, resolution, blocked_reason, probe_data)
+            ranked_items.append(
+                (
+                    self._source_priority(item, codec, resolution, blocked_reason),
+                    replace(item, details=details, metadata_lines=tuple(metadata_lines)),
+                )
+            )
         ranked_items.sort(key=lambda entry: (entry[0], entry[1].name.lower()))
         return [item for _, item in ranked_items]
 
@@ -329,8 +369,142 @@ class GstBridgeService:
         if H264_DISCOVERY_LINE.search(output):
             return "H.264", resolution, None
         if H265_DISCOVERY_LINE.search(output):
-            return "H.265", resolution, "manual start disabled: H.265/HEVC file publishing is unstable on this Windows RTSP bridge"
+            return "H.265", resolution, None
         return None, resolution, None
+
+    def _probe_ffmpeg_metadata(self, item: MediaItem) -> dict[str, str]:
+        if item.path is None:
+            return {}
+        ffprobe_path = self._ffmpeg_path.with_name("ffprobe.exe")
+        if not ffprobe_path.exists():
+            return {}
+        result = subprocess.run(
+            [
+                str(ffprobe_path),
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_name,profile,width,height,sample_aspect_ratio,display_aspect_ratio,pix_fmt,avg_frame_rate:format=duration,format_name",
+                "-of",
+                "json",
+                str(item.path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {}
+        stream = next(iter(payload.get("streams") or []), {})
+        format_info = payload.get("format") or {}
+        metadata: dict[str, str] = {}
+        for key in (
+            "codec_name",
+            "profile",
+            "width",
+            "height",
+            "sample_aspect_ratio",
+            "display_aspect_ratio",
+            "pix_fmt",
+            "avg_frame_rate",
+        ):
+            value = stream.get(key)
+            if value not in (None, "", "0/0"):
+                metadata[key] = str(value)
+        for key in ("duration", "format_name"):
+            value = format_info.get(key)
+            if value not in (None, ""):
+                metadata[key] = str(value)
+        return metadata
+
+    def _build_metadata_lines(
+        self,
+        item: MediaItem,
+        codec: str | None,
+        resolution: tuple[int, int] | None,
+        blocked_reason: str | None,
+        probe_data: dict[str, str],
+    ) -> list[str]:
+        lines = [
+            f"name       : {item.name}",
+            f"type       : {KIND_LABELS.get(item.kind, item.kind.title())}",
+        ]
+        if item.path is not None:
+            lines.append(f"path       : {item.path}")
+        if item.source_spec:
+            lines.append(f"input spec : {item.source_spec}")
+        if codec is not None:
+            lines.append(f"codec      : {codec}")
+        elif "codec_name" in probe_data:
+            lines.append(f"codec      : {probe_data['codec_name']}")
+        if "profile" in probe_data:
+            lines.append(f"profile    : {probe_data['profile']}")
+        if resolution is not None:
+            lines.append(f"resolution : {resolution[0]}x{resolution[1]}")
+        elif "width" in probe_data and "height" in probe_data:
+            lines.append(f"resolution : {probe_data['width']}x{probe_data['height']}")
+        if "display_aspect_ratio" in probe_data:
+            lines.append(f"display AR : {probe_data['display_aspect_ratio']}")
+        if "sample_aspect_ratio" in probe_data:
+            lines.append(f"sample AR  : {probe_data['sample_aspect_ratio']}")
+        if "avg_frame_rate" in probe_data:
+            lines.append(f"fps        : {self._format_frame_rate(probe_data['avg_frame_rate'])}")
+        if "duration" in probe_data:
+            lines.append(f"duration   : {self._format_duration(probe_data['duration'])}")
+        if "pix_fmt" in probe_data:
+            lines.append(f"pixel fmt  : {probe_data['pix_fmt']}")
+        if "format_name" in probe_data:
+            lines.append(f"container  : {probe_data['format_name']}")
+        lines.append("")
+        lines.append(f"summary    : {item.details}")
+        if blocked_reason is not None:
+            lines.append("")
+            lines.append(f"warning    : {blocked_reason}")
+        return lines
+
+    @staticmethod
+    def _fallback_metadata_lines(item: MediaItem) -> list[str]:
+        lines = [
+            f"name       : {item.name}",
+            f"type       : {KIND_LABELS.get(item.kind, item.kind.title())}",
+        ]
+        if item.path is not None:
+            lines.append(f"path       : {item.path}")
+        if item.source_spec is not None:
+            lines.append(f"input spec : {item.source_spec}")
+        lines.append("")
+        lines.append(f"summary    : {item.details}")
+        return lines
+
+    @staticmethod
+    def _format_duration(duration_text: str) -> str:
+        try:
+            total_seconds = float(duration_text)
+        except ValueError:
+            return duration_text
+        minutes, seconds = divmod(total_seconds, 60.0)
+        hours, minutes = divmod(minutes, 60.0)
+        if hours >= 1:
+            return f"{int(hours):02d}:{int(minutes):02d}:{seconds:05.2f}"
+        return f"{int(minutes):02d}:{seconds:05.2f}"
+
+    @staticmethod
+    def _format_frame_rate(frame_rate_text: str) -> str:
+        if "/" not in frame_rate_text:
+            return frame_rate_text
+        numerator_text, denominator_text = frame_rate_text.split("/", 1)
+        try:
+            numerator = float(numerator_text)
+            denominator = float(denominator_text)
+        except ValueError:
+            return frame_rate_text
+        if denominator == 0:
+            return frame_rate_text
+        return f"{(numerator / denominator):.2f}"
 
     @staticmethod
     def _source_priority(
@@ -355,6 +529,8 @@ class GstBridgeService:
             return 30
         if item.kind == "image":
             return 10
+        if item.kind == "camera":
+            return 15
         if item.kind == "video":
             return 20
         return 50

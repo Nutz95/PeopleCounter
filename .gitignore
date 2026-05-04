@@ -244,3 +244,6 @@ vendors/lwcc
 external/lwcc
 windows/venv_bridge/
 venv_bridge/
+windows/ref_videos/
+windows/third_party/gstreamer/*
+windows/third_party/mediamtx/*
