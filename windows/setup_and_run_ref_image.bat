@@ -1,6 +1,9 @@
 @echo off
 SETLOCAL EnableDelayedExpansion
 
+set SCRIPT_DIR=%~dp0
+cd /d "%SCRIPT_DIR%"
+
 echo ---------------------------------------------------------
 echo Initialisation du Bridge Python
 echo ---------------------------------------------------------
@@ -29,7 +32,7 @@ echo [+] Aucune dependance Python externe requise.
 echo.
 echo [+] Lancement du bridge...
 :: Récupérer le chemin complet du fichier image
-for %%I in ("%~dp0\ref_images\people_walking.jpg") do set FULL_PATH=%%~fI
-venv_bridge\Scripts\python.exe camera_bridge.py --input-file "%FULL_PATH%" --resolution 4K --fps 30 --bitrate 20000 --encoder h264_qsv
+for %%I in ("%SCRIPT_DIR%ref_images\people_walking.jpg") do set FULL_PATH=%%~fI
+venv_bridge\Scripts\python.exe "%SCRIPT_DIR%camera_bridge.py" --input-file "%FULL_PATH%" --resolution 4K --fps 30 --bitrate 20000 --encoder h264_qsv
 
 pause

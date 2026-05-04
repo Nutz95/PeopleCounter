@@ -1,6 +1,9 @@
 @echo off
 SETLOCAL EnableDelayedExpansion
 
+set SCRIPT_DIR=%~dp0
+cd /d "%SCRIPT_DIR%"
+
 echo ---------------------------------------------------------
 echo Initialisation du Bridge Python
 echo ---------------------------------------------------------
@@ -23,11 +26,10 @@ if not exist "venv_bridge" (
 :: camera_bridge.py n'utilise que la bibliotheque standard Python.
 :: On evite tout pip install ici pour que la demo puisse tourner hors-ligne.
 echo [+] Activation de l'environnement virtuel...
-call venv_bridge\Scripts\activate
 echo [+] Aucune dependance Python externe requise.
 
 echo.
 echo [+] Lancement du bridge...
-venv_bridge\Scripts\python.exe camera_bridge.py
+venv_bridge\Scripts\python.exe "%SCRIPT_DIR%camera_bridge.py"
 
 pause

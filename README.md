@@ -184,11 +184,17 @@ Expected output: `199 passed, 1 skipped`.
 
 ## Windows Video Streamer
 
-The `windows/` directory contains a standalone streaming tool that runs on
-Windows and exposes any camera, image, or video file as an HTTP stream
-consumable by the Docker container.
+The `windows/` directory contains standalone streaming tools that run on
+Windows and expose camera, image, or video sources for the rest of the project.
 
-**Technology**: Python + FFmpeg (auto-downloaded on first run). Does **not**
+- **Legacy bridge**: Python + FFmpeg over HTTP MPEG-TS (documented below)
+- **New bridge**: Python UI + GStreamer + MediaMTX over RTSP, under active development
+
+For the new Windows GStreamer workflow, installation notes, manual recovery
+steps, and plugin verification commands, see
+[`windows/README_GST_BRIDGE.md`](windows/README_GST_BRIDGE.md).
+
+**Legacy technology**: Python + FFmpeg (auto-downloaded on first run). Does **not**
 require CUDA or Docker on the Windows machine.
 
 ### Setup and launch (interactive)

@@ -243,3 +243,4 @@ PeopleCounter.code-workspace
 vendors/lwcc
 external/lwcc
 windows/venv_bridge/
+venv_bridge/
