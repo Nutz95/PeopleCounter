@@ -21,6 +21,7 @@ from typing import Any, Sequence
 
 from app_v2.config import load_model_inference_config
 from app_v2.core.result_publisher import ResultPublisher
+from app_v2.enums import FusionStrategyType
 from app_v2.infrastructure.flask_server.mode_registry import (
     _MODE_LABELS,
     _MODE_OVERLAYS,
@@ -91,6 +92,17 @@ class FlaskStreamServer(ResultPublisher):
         self._active_mode: str = detect_mode_from_config(_cfg)
         self._pending_mode: str | None = None
         self._available_modes: list[str] = self._compute_available_modes(_cfg)
+        # Runtime synchronization mode:
+        # - "async" => RAW_STREAM_WITH_METADATA (realtime passthrough + best effort inference)
+        # - "sync"  => STRICT_SYNC (inference/overlay synchronized, may lag)
+        self._active_sync_mode: str = self._sync_mode_from_strategy(
+            str(_cfg.get("fusion_strategy", FusionStrategyType.RAW_STREAM_WITH_METADATA.value))
+        )
+        self._pending_sync_mode: str | None = None
+        self._sync_mode_labels: dict[str, str] = {
+            "async": "Async (realtime video)",
+            "sync": "Sync (video + inference aligned)",
+        }
         # Density threshold state — mirrors pipeline density.min_peak_weight.
         # Protected by _mode_lock for simplicity (low contention).
         _dcfg = _cfg.get("density") or {}
@@ -163,6 +175,8 @@ class FlaskStreamServer(ResultPublisher):
                 density_threshold = self._density_threshold
                 crowd_conf        = self._crowd_confidence_by_mode.get(mode, self._crowd_confidence)
                 crowd_conf_modes  = dict(self._crowd_confidence_by_mode)
+                sync_mode         = self._active_sync_mode
+                pending_sync_mode = self._pending_sync_mode
             return jsonify({
                 "mode":              mode,
                 "pending_mode":      pending,
@@ -172,6 +186,10 @@ class FlaskStreamServer(ResultPublisher):
                 "density_threshold":       density_threshold,
                 "crowd_confidence":        crowd_conf,
                 "crowd_confidence_by_mode": crowd_conf_modes,
+                "sync_mode":             sync_mode,
+                "pending_sync_mode":     pending_sync_mode,
+                "sync_mode_labels":      self._sync_mode_labels,
+                "sync_mode_options":     ["async", "sync"],
             })
 
         @self._app.post("/api/mode")
@@ -188,6 +206,22 @@ class FlaskStreamServer(ResultPublisher):
                 return jsonify({"ok": True, "mode": requested, "changed": False})
             with self._mode_lock:
                 self._pending_mode = requested
+            return jsonify({"ok": True, "mode": requested, "changed": True})
+
+        @self._app.post("/api/sync_mode")
+        def api_set_sync_mode() -> Any:
+            from flask import request
+
+            body = request.get_json(silent=True) or {}
+            requested = str(body.get("mode", "")).strip().lower()
+            if requested not in ("async", "sync"):
+                return jsonify({"ok": False, "error": "mode must be 'async' or 'sync'"}), 400
+            with self._mode_lock:
+                current = self._active_sync_mode
+            if requested == current:
+                return jsonify({"ok": True, "mode": requested, "changed": False})
+            with self._mode_lock:
+                self._pending_sync_mode = requested
             return jsonify({"ok": True, "mode": requested, "changed": True})
 
         @self._app.post("/api/crowd/confidence")
@@ -388,6 +422,13 @@ class FlaskStreamServer(ResultPublisher):
             self._pending_mode = None
             return mode
 
+    def get_and_clear_pending_sync_mode(self) -> str | None:
+        """Return and consume any pending sync-mode change from POST /api/sync_mode."""
+        with self._mode_lock:
+            mode = self._pending_sync_mode
+            self._pending_sync_mode = None
+            return mode
+
     def get_and_clear_pending_density_threshold(self) -> float | None:
         """Return and consume any pending density threshold from POST /api/density/threshold."""
         with self._mode_lock:
@@ -406,6 +447,10 @@ class FlaskStreamServer(ResultPublisher):
         """Record the mode that is now active (called after mode switch completes)."""
         with self._mode_lock:
             self._active_mode = mode
+
+    def set_active_sync_mode(self, mode: str) -> None:
+        with self._mode_lock:
+            self._active_sync_mode = mode
 
     def update_available_modes(self, config: dict[str, Any]) -> None:
         """Recompute available modes after a config update."""
@@ -454,3 +499,14 @@ class FlaskStreamServer(ResultPublisher):
         if have["crowd_tiles"]:
             available.append("crowd_tiles")
         return available
+
+    @staticmethod
+    def _sync_mode_from_strategy(strategy: str) -> str:
+        """Map fusion strategy string to UI sync-mode value."""
+        try:
+            st = FusionStrategyType(strategy)
+        except ValueError:
+            return "async"
+        if st == FusionStrategyType.RAW_STREAM_WITH_METADATA:
+            return "async"
+        return "sync"

@@ -25,6 +25,7 @@ from app_v2.enums import FusionStrategyType
 from app_v2.infrastructure.cuda_preprocessor import CudaPreprocessor
 from app_v2.infrastructure.density_decoder import DensityDecoder
 from app_v2.infrastructure.flask_server.server import FlaskStreamServer
+from app_v2.infrastructure.nvdec_decoder import build_stream_open_opts
 from app_v2.infrastructure.nvdec_packet_forwarder import NvdecPacketForwarder
 from app_v2.infrastructure.stream_pool import SimpleStreamPool
 from app_v2.infrastructure.webcodecs_server import WebCodecsServer
@@ -108,6 +109,9 @@ class PipelineOrchestrator:
         self._pending_chw: torch.Tensor | None = None
         self._pending_enc_event: torch.cuda.Event | None = None
         self._encode_running: bool = False
+        # When sync mode is active the browser displays MJPEG instead of WebCodecs,
+        # so NVJPEG must run even when a WebCodecs WS client is still connected.
+        self._force_mjpeg: bool = False
         # When a WebCodecs client is connected the browser renders video via the
         # zero-encode WebSocket path, so MJPEG/NVJPEG encoding is unnecessary.
         # We track nothing here — the check is done live in _push_video_frame_async.
@@ -283,6 +287,9 @@ class PipelineOrchestrator:
                     pending_mode = self.publisher.get_and_clear_pending_mode()
                     if pending_mode is not None:
                         self._apply_mode_change(pending_mode)
+                    pending_sync_mode = self.publisher.get_and_clear_pending_sync_mode()
+                    if pending_sync_mode is not None:
+                        self._apply_sync_mode_change(pending_sync_mode)
                     pending_threshold = self.publisher.get_and_clear_pending_density_threshold()
                     if pending_threshold is not None:
                         self._density_decoder.min_peak_weight = pending_threshold
@@ -365,6 +372,35 @@ class PipelineOrchestrator:
             f"Mode switched to '{new_mode}' — {len(self._models)} model(s) active",
         )
 
+    def _apply_sync_mode_change(self, sync_mode: str) -> None:
+        """Hot-swap fusion strategy between async and sync publication modes."""
+        mode = (sync_mode or "").strip().lower()
+        if mode not in ("async", "sync"):
+            log_warning(LogChannel.GLOBAL, f"Unknown sync mode '{sync_mode}' — ignoring")
+            return
+
+        if mode == "async":
+            self.fusion_strategy = RawStreamFusionStrategy()
+            self.config["fusion_strategy"] = FusionStrategyType.RAW_STREAM_WITH_METADATA.value
+            self._force_mjpeg = False
+        else:
+            strict = SimpleFusionStrategy(strategy_type=FusionStrategyType.STRICT_SYNC)
+            strict.expected_count = len(self._models) if self._models else 1
+            self.fusion_strategy = strict
+            self.config["fusion_strategy"] = FusionStrategyType.STRICT_SYNC.value
+            self._force_mjpeg = True
+
+        # Keep aggregator aligned with the newly active strategy.
+        self.aggregator.fusion_strategy = self.fusion_strategy
+
+        if isinstance(self.publisher, FlaskStreamServer):
+            self.publisher.set_active_sync_mode(mode)
+
+        log_info(
+            LogChannel.GLOBAL,
+            f"Synchronization mode switched to '{mode}' (fusion={self.fusion_strategy.strategy_type.value})",
+        )
+
     def _shutdown(self) -> None:
         self._video_executor.shutdown(wait=False)
         if self._packet_forwarder is not None:
@@ -412,7 +448,10 @@ class PipelineOrchestrator:
         # that is better reserved for TRT inference and NVDEC.
         # When the WebSocket disconnects (has_clients() → False) NVJPEG resumes
         # immediately so the MJPEG fallback stays functional.
-        if self._webcodecs_server.has_clients():
+        # Skip NVJPEG when WebCodecs is active AND sync mode is not forced.
+        # In sync mode (_force_mjpeg=True) we must encode MJPEG frames even when
+        # a WebCodecs WS connection is open so the MJPEG path stays live.
+        if self._webcodecs_server.has_clients() and not self._force_mjpeg:
             return
 
         if self._video_stream is None:
@@ -568,19 +607,10 @@ class PipelineOrchestrator:
             log_warning(LogChannel.GLOBAL, "WebCodecs packet forwarder: no stream URL found on frame_source — skipping")
             return None
 
-        # Reuse the same HTTP/RTSP decoder opts used by NvdecDecoder.
-        opts: dict = {}
-        url_lower = url.lower()
-        if url_lower.startswith("http://") or url_lower.startswith("https://"):
-            opts = {
-                # 2 MB: large enough to capture a full 4K keyframe with
-                # embedded SPS/PPS so FFmpeg can reliably detect pix_fmt.
-                "probesize": "2000000",
-                "analyzeduration": "2000000",
-                "reconnect": "1",
-                "reconnect_streamed": "1",
-                "reconnect_delay_max": "2",
-            }
+        # Reuse the same HTTP/RTSP input opts used by NvdecDecoder so the raw
+        # WebCodecs demux path and the inference decode path behave identically
+        # on reconnect (notably RTSP-over-TCP for the MediaMTX bridge).
+        opts = build_stream_open_opts(url)
 
         log_info(LogChannel.GLOBAL, f"WebCodecs packet forwarder configured for {url} → ws port {ws_port}")
         return NvdecPacketForwarder(url, self._webcodecs_server, decoder_opts=opts)

@@ -151,6 +151,7 @@ For density model ONNX export and TensorRT conversion, see
 
 ```bash
 ./4_run_app.sh 'http://<windows-ip>:5002/video_feed' --app-version v2
+./4_run_app.sh 'http://127.0.0.1:5002/live' --app-version v2
 ```
 
 Then open **http://localhost:5000** in your browser.

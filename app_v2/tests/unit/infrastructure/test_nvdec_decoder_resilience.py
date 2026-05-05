@@ -66,6 +66,28 @@ def _make_valid_surface() -> MagicMock:
     return s
 
 
+class TestStreamOpenOpts:
+    def test_rtsp_opts_force_tcp(self):
+        from app_v2.infrastructure.nvdec_decoder import build_stream_open_opts
+
+        opts = build_stream_open_opts("rtsp://cam/live")
+
+        assert opts["rtsp_transport"] == "tcp"
+        assert opts["rtsp_flags"] == "prefer_tcp"
+        assert opts["probesize"] == "2000000"
+        assert opts["analyzeduration"] == "2000000"
+
+    def test_http_opts_keep_reconnect(self):
+        from app_v2.infrastructure.nvdec_decoder import build_stream_open_opts
+
+        opts = build_stream_open_opts("http://host/video_feed")
+
+        assert opts["reconnect"] == "1"
+        assert opts["reconnect_streamed"] == "1"
+        assert opts["reconnect_delay_max"] == "2"
+        assert "rtsp_transport" not in opts
+
+
 # ---------------------------------------------------------------------------
 # reset() unit tests
 # ---------------------------------------------------------------------------
