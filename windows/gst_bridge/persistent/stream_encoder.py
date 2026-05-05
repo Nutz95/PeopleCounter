@@ -32,10 +32,31 @@ class StreamEncoder:
     def start(self) -> None:
         if self.alive:
             return
-        maxrate = self._config.bitrate_kbps
-        bufsize = self._config.bitrate_kbps
-        gop_size = max(self._config.fps * 2, self._config.fps)
-        cmd = [
+        cmd = self._build_command()
+        self._stop_event.clear()
+        self._process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+        self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True, name="ffmpeg-enc-writer")
+        self._writer_thread.start()
+        self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True, name="ffmpeg-enc-log")
+        self._stderr_thread.start()
+        self._wait_thread = threading.Thread(target=self._wait_loop, daemon=True, name="ffmpeg-enc-wait")
+        self._wait_thread.start()
+
+    def _build_command(self) -> list[str]:
+        maxrate = int(self._config.bitrate_kbps * 1.5)
+        bufsize = int(self._config.bitrate_kbps * 2)
+        # 1-second GOP: still much cheaper than all-I, but halves the worst-case
+        # NVDEC resync time compared with a 2-second GOP after any reconnect or
+        # decode error.  This matches the older FFmpeg bridge behaviour that was
+        # notably more robust for PyNvCodec consumers.
+        gop_size = max(self._config.fps, 1)
+        return [
             str(self._ffmpeg_path),
             "-hide_banner",
             "-loglevel",
@@ -64,14 +85,24 @@ class StreamEncoder:
             "1",
             "-bitrate_limit",
             "1",
-            "-skip_frame",
-            "insert_dummy",
             "-bf",
             "0",
             "-async_depth",
             "1",
             "-look_ahead",
             "0",
+            # Hardware-decoder-friendly H.264 bitstream:
+            # - every GOP starts with a real IDR
+            # - PPS is repeated on IDR/keyframes
+            # - AUD helps some demux/decode stacks resynchronise cleanly
+            "-forced_idr",
+            "1",
+            "-idr_interval",
+            "1",
+            "-repeat_pps",
+            "1",
+            "-aud",
+            "1",
             "-g",
             str(gop_size),
             "-keyint_min",
@@ -92,20 +123,6 @@ class StreamEncoder:
             "flv",
             self._config.rtmp_publish_url,
         ]
-        self._stop_event.clear()
-        self._process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            bufsize=0,
-        )
-        self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True, name="ffmpeg-enc-writer")
-        self._writer_thread.start()
-        self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True, name="ffmpeg-enc-log")
-        self._stderr_thread.start()
-        self._wait_thread = threading.Thread(target=self._wait_loop, daemon=True, name="ffmpeg-enc-wait")
-        self._wait_thread.start()
 
     def submit(self, frame: bytes) -> bool:
         if not self.alive:
