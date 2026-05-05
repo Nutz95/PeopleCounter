@@ -116,6 +116,14 @@ class FlaskStreamServer(ResultPublisher):
             _, payload, status = self._runtime.request_sync_mode(str(body.get("mode", "")))
             return jsonify(payload), status
 
+        @self._app.post("/api/video_backend")
+        def api_set_video_backend() -> Any:
+            from flask import request
+
+            body = request.get_json(silent=True) or {}
+            _, payload, status = self._runtime.request_video_backend(str(body.get("backend", "")))
+            return jsonify(payload), status
+
         @self._app.post("/api/crowd/confidence")
         def api_set_crowd_confidence() -> Any:
             from flask import request
@@ -226,6 +234,12 @@ class FlaskStreamServer(ResultPublisher):
 
     def get_and_clear_pending_crowd_confidence(self) -> float | None:
         return self._runtime.get_and_clear_pending_crowd_confidence()
+
+    def get_and_clear_pending_video_backend(self) -> str | None:
+        return self._runtime.get_and_clear_pending_video_backend()
+
+    def set_active_video_backend(self, backend: str) -> None:
+        self._runtime.set_active_video_backend(backend)
 
     def set_active_mode(self, mode: str) -> None:
         self._runtime.set_active_mode(mode)

@@ -4,6 +4,13 @@
 // Depends on: state.js, overlays.js
 // ──────────────────────────────────────────────────────────────────────────
 
+// ── Video backend labels ───────────────────────────────────────
+const _videoBackendLabels = {
+  auto:   'Auto',
+  cpu:    'CPU (Pillow)',
+  nvjpeg: 'GPU (NVJPEG)',
+};
+
 // ── Mode label / overlay maps (filled from /api/config) ───────
 const _modeLabels   = {};
 const _modeOverlays = {};
@@ -84,6 +91,55 @@ function _setActiveSyncPill(mode) {
   document.querySelectorAll('#sync-mode-pills .mode-pill').forEach(btn => {
     btn.classList.toggle('mode-pill--active', btn.dataset.syncMode === mode);
   });
+}
+
+// ── Video backend pills ────────────────────────────────────────
+let _activeVideoBackend  = 'auto';
+let _videoBackendChanging = false;
+
+function _renderVideoBackendPills(options, activeBackend) {
+  const $pills = document.getElementById('video-backend-pills');
+  if (!$pills) return;
+  $pills.innerHTML = '';
+  for (const b of options) {
+    const btn = document.createElement('button');
+    btn.className = 'mode-pill' + (b === activeBackend ? ' mode-pill--active' : '');
+    btn.dataset.videoBackend = b;
+    btn.textContent = _videoBackendLabels[b] || b;
+    btn.addEventListener('click', () => _requestVideoBackendChange(b));
+    $pills.appendChild(btn);
+  }
+}
+
+function _setActiveVideoBackendPill(backend) {
+  document.querySelectorAll('#video-backend-pills .mode-pill').forEach(btn => {
+    btn.classList.toggle('mode-pill--active', btn.dataset.videoBackend === backend);
+  });
+}
+
+async function _requestVideoBackendChange(newBackend) {
+  if (newBackend === _activeVideoBackend || _videoBackendChanging) return;
+  _videoBackendChanging = true;
+  document.querySelectorAll('#video-backend-pills .mode-pill').forEach(b => b.disabled = true);
+  try {
+    const res  = await fetch('/api/video_backend', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ backend: newBackend }),
+    });
+    const json = await res.json();
+    if (json.ok) {
+      _activeVideoBackend = newBackend;
+      _setActiveVideoBackendPill(newBackend);
+    }
+  } catch (err) {
+    console.warn('Video backend change failed:', err);
+  } finally {
+    setTimeout(() => {
+      _videoBackendChanging = false;
+      document.querySelectorAll('#video-backend-pills .mode-pill').forEach(b => b.disabled = false);
+    }, 800);
+  }
 }
 
 // ── Mode change request ────────────────────────────────────────
@@ -172,6 +228,8 @@ async function _loadConfig() {
     window.__syncMode = _activeSyncMode;
     _renderModePills(cfg.available_modes   || ['passthrough'], _activeMode);
     _renderSyncModePills(cfg.sync_mode_options || ['async', 'sync'], _activeSyncMode);
+    _activeVideoBackend = cfg.video_backend || 'auto';
+    _renderVideoBackendPills(cfg.video_backend_options || ['auto', 'cpu', 'nvjpeg'], _activeVideoBackend);
     _updateOverlaySection(_activeMode);
     if (typeof window.__pcSetWebCodecsEnabled === 'function') {
       window.__pcSetWebCodecsEnabled(_activeSyncMode !== 'sync');

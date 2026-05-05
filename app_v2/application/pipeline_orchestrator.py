@@ -296,6 +296,11 @@ class PipelineOrchestrator:
                         for model in self._models:
                             if model.name in ("crowd_global", "crowd_tiles") and hasattr(model, "_decoder"):
                                 model._decoder.confidence_threshold = pending_crowd_conf
+                    pending_video_backend = self.publisher.get_and_clear_pending_video_backend()
+                    if pending_video_backend is not None:
+                        self._video_encode_backend = pending_video_backend
+                        self.publisher.set_active_video_backend(pending_video_backend)
+                        log_info(LogChannel.GLOBAL, f"MJPEG encode backend switched to '{pending_video_backend}'")
         except StopIteration:
             log_info(LogChannel.GLOBAL, "Frame source signaled completion")
         except Exception as exc:
@@ -470,6 +475,10 @@ class PipelineOrchestrator:
                     frame, target_h, target_w, stream_id=_VIDEO_BUFFER_SLOT
                 )  # [target_h, target_w, 3] uint8 CUDA
                 chw_uint8 = rgb_hwc.permute(2, 0, 1).contiguous()  # [3, th, tw] uint8
+                # IMPORTANT: give encoder a dedicated, owned tensor buffer.
+                # This avoids any accidental aliasing/lifetime ambiguity with
+                # intermediate tensors when frames are produced continuously.
+                encode_input_chw = chw_uint8.clone()
 
             # Record event so background thread waits for GPU ops before NVJPEG.
             enc_event = torch.cuda.Event()
@@ -477,7 +486,7 @@ class PipelineOrchestrator:
 
             with self._pending_frame_lock:
                 # Always store the latest frame as the next candidate.
-                self._pending_chw = chw_uint8
+                self._pending_chw = encode_input_chw
                 self._pending_enc_event = enc_event
                 if self._encode_running:
                     # Encoder busy: stash is set; _on_video_encode_done will pick
@@ -499,7 +508,7 @@ class PipelineOrchestrator:
 
             # Encoder was idle: submit the frame we just grabbed.
             self._video_future = self._submit_video_encode(
-                chw_uint8,
+                encode_input_chw,
                 enc_event,
                 push_frame,
             )
@@ -551,6 +560,9 @@ class PipelineOrchestrator:
         backend = self._video_encode_backend
         if backend == "auto":
             backend = "cpu" if self._force_mjpeg else "nvjpeg"
+        if backend not in ("cpu", "nvjpeg"):
+            log_warning(LogChannel.GLOBAL, f"Unknown video backend '{backend}', fallback to 'nvjpeg'")
+            backend = "nvjpeg"
         if backend == "cpu":
             return self._video_executor.submit(
                 PipelineOrchestrator._encode_and_push_cpujpeg,
@@ -584,14 +596,27 @@ class PipelineOrchestrator:
         try:
             enc_event.synchronize()  # CPU-side wait: data is ready in GPU memory
             import torchvision.io as tvio
-            stream_ctx = (
-                torch.cuda.stream(nvjpeg_stream)
-                if nvjpeg_stream is not None
-                else __import__("contextlib").nullcontext()
-            )
-            with stream_ctx:
-                buf = tvio.encode_jpeg(chw_uint8, quality=quality)  # NVJPEG (CUDA → CUDA)
-            push_frame(bytes(buf.cpu().numpy()))
+
+            # Encode on dedicated NVJPEG stream, then explicitly wait for stream
+            # completion before touching the output on CPU to avoid any partial
+            # read/copy race across CUDA streams.
+            if nvjpeg_stream is not None:
+                with torch.cuda.stream(nvjpeg_stream):
+                    buf = tvio.encode_jpeg(chw_uint8, quality=quality)  # NVJPEG (CUDA → CUDA)
+                nvjpeg_stream.synchronize()
+            else:
+                buf = tvio.encode_jpeg(chw_uint8, quality=quality)
+                torch.cuda.current_stream().synchronize()
+
+            jpeg_np = buf.cpu().numpy()
+            jpeg_bytes = jpeg_np.tobytes()
+
+            # Defensive check: reject obviously corrupted bitstreams.
+            # JPEG must start with SOI (FFD8) and end with EOI (FFD9).
+            if len(jpeg_bytes) < 4 or jpeg_bytes[0:2] != b"\xff\xd8" or jpeg_bytes[-2:] != b"\xff\xd9":
+                raise RuntimeError("NVJPEG produced invalid JPEG markers")
+
+            push_frame(jpeg_bytes)
         except Exception as _nvjpeg_exc:
             import sys as _sys
             print(f"[NVJPEG] encode failed: {type(_nvjpeg_exc).__name__}: {_nvjpeg_exc}",

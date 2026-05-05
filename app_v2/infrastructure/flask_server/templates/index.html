@@ -98,6 +98,17 @@
           </div>
         </div>
 
+        <!-- ── MJPEG encode backend selector ──────────────────────── -->
+        <div class="control-section">
+          <div class="control-section-label">MJPEG encode backend</div>
+          <div class="mode-pills" id="video-backend-pills">
+            <!-- Populated dynamically from /api/config -->
+          </div>
+          <div style="font-size:0.68rem;color:rgba(255,255,255,0.45);margin-top:4px">
+            Auto = CPU in sync, NVJPEG in async · CPU = Pillow (low GPU pressure) · GPU = NVJPEG (lower latency)
+          </div>
+        </div>
+
         <!-- ── Contextual overlay options (shown per mode) ────────────── -->
         <div class="control-section" id="overlay-section" style="display:none">
           <div class="control-section-label">Overlays</div>

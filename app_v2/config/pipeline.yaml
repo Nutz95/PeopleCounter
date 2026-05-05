@@ -119,9 +119,11 @@ preprocess:
 #   Reduce to 1080 / 720 to limit bandwidth on slower networks.
 #   When set, aspect ratio is preserved (even pixel width guaranteed).
 # quality: NVJPEG quality 1-100. Higher = larger JPEG, better image.
+# backend: auto | nvjpeg | cpu
+#   auto   = cpu in sync/MJPEG mode, nvjpeg otherwise
+#   nvjpeg = fastest when GPU headroom is available
+#   cpu    = safer when MJPEG disturbs decode/inference on the same GPU
 video_stream:
   max_height: 1080   # 4K → 1080p for MJPEG feed; reduces _video_stream.synchronize() cost ~10×
   quality: 95
-  encode_grace_ms: 5  # (ms) max time to wait for in-flight NVJPEG before stashing the frame
-                      # 0 = stash immediately (zero-drop, recommended)
-                      # Increase if you still see stutters on a slower GPU
+  backend: auto

@@ -14,14 +14,14 @@ class RuntimeState:
 
     def __init__(self, initial_config: dict[str, Any] | None = None) -> None:
         self._lock = threading.Lock()
-        cfg = initial_config or {}
+        config = initial_config or {}
 
-        self._active_mode: str = detect_mode_from_config(cfg)
+        self._active_mode: str = detect_mode_from_config(config)
         self._pending_mode: str | None = None
-        self._available_modes: list[str] = self.compute_available_modes(cfg)
+        self._available_modes: list[str] = self.compute_available_modes(config)
 
         self._active_sync_mode: str = self._sync_mode_from_strategy(
-            str(cfg.get("fusion_strategy", FusionStrategyType.RAW_STREAM_WITH_METADATA.value))
+            str(config.get("fusion_strategy", FusionStrategyType.RAW_STREAM_WITH_METADATA.value))
         )
         self._pending_sync_mode: str | None = None
         self._sync_mode_labels: dict[str, str] = {
@@ -29,19 +29,23 @@ class RuntimeState:
             "sync": "Sync (video + inference aligned)",
         }
 
-        dcfg = cfg.get("density") or {}
-        self._density_threshold: float = float(dcfg.get("min_peak_weight", 0.05))
+        density_config = config.get("density") or {}
+        self._density_threshold: float = float(density_config.get("min_peak_weight", 0.05))
         self._pending_density_threshold: float | None = None
 
-        model_inf = load_model_inference_config()
-        crowd_global_cfg = model_inf.get("crowd_global") or {}
-        crowd_tiles_cfg = model_inf.get("crowd_tiles") or {}
+        model_inference_config = load_model_inference_config()
+        crowd_global_config = model_inference_config.get("crowd_global") or {}
+        crowd_tiles_config = model_inference_config.get("crowd_tiles") or {}
         self._crowd_confidence_by_mode: dict[str, float] = {
-            "crowd_global": float(crowd_global_cfg.get("confidence_threshold", 0.25)),
-            "crowd_tiles": float(crowd_tiles_cfg.get("confidence_threshold", 0.5)),
+            "crowd_global": float(crowd_global_config.get("confidence_threshold", 0.25)),
+            "crowd_tiles": float(crowd_tiles_config.get("confidence_threshold", 0.5)),
         }
         self._crowd_confidence: float = self._crowd_confidence_by_mode.get(self._active_mode, 0.25)
         self._pending_crowd_confidence: float | None = None
+
+        video_stream_config = config.get("video_stream") or {}
+        self._active_video_backend: str = str(video_stream_config.get("backend", "auto")).strip().lower()
+        self._pending_video_backend: str | None = None
 
     def config_snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -57,6 +61,8 @@ class RuntimeState:
                 "pending_sync_mode": self._pending_sync_mode,
                 "sync_mode_labels": dict(self._sync_mode_labels),
                 "sync_mode_options": ["async", "sync"],
+                "video_backend": self._active_video_backend,
+                "video_backend_options": ["auto", "cpu", "nvjpeg"],
             }
 
     def request_mode(self, requested: str) -> tuple[bool, dict[str, Any], int]:
@@ -72,16 +78,16 @@ class RuntimeState:
         return True, {"ok": True, "mode": requested, "changed": True}, 200
 
     def request_sync_mode(self, requested: str) -> tuple[bool, dict[str, Any], int]:
-        req = (requested or "").strip().lower()
-        if req not in ("async", "sync"):
+        normalized_mode = (requested or "").strip().lower()
+        if normalized_mode not in ("async", "sync"):
             return False, {"ok": False, "error": "mode must be 'async' or 'sync'"}, 400
         with self._lock:
-            current = self._active_sync_mode
-        if req == current:
-            return True, {"ok": True, "mode": req, "changed": False}, 200
+            current_mode = self._active_sync_mode
+        if normalized_mode == current_mode:
+            return True, {"ok": True, "mode": normalized_mode, "changed": False}, 200
         with self._lock:
-            self._pending_sync_mode = req
-        return True, {"ok": True, "mode": req, "changed": True}, 200
+            self._pending_sync_mode = normalized_mode
+        return True, {"ok": True, "mode": normalized_mode, "changed": True}, 200
 
     def set_density_threshold(self, value: float) -> float:
         clamped = max(0.0, min(1.0, float(value)))
@@ -100,27 +106,49 @@ class RuntimeState:
 
     def get_and_clear_pending_mode(self) -> str | None:
         with self._lock:
-            m = self._pending_mode
+            pending_mode = self._pending_mode
             self._pending_mode = None
-            return m
+            return pending_mode
 
     def get_and_clear_pending_sync_mode(self) -> str | None:
         with self._lock:
-            m = self._pending_sync_mode
+            pending_sync_mode = self._pending_sync_mode
             self._pending_sync_mode = None
-            return m
+            return pending_sync_mode
 
     def get_and_clear_pending_density_threshold(self) -> float | None:
         with self._lock:
-            v = self._pending_density_threshold
+            pending_density_threshold = self._pending_density_threshold
             self._pending_density_threshold = None
-            return v
+            return pending_density_threshold
 
     def get_and_clear_pending_crowd_confidence(self) -> float | None:
         with self._lock:
-            v = self._pending_crowd_confidence
+            pending_crowd_confidence = self._pending_crowd_confidence
             self._pending_crowd_confidence = None
-            return v
+            return pending_crowd_confidence
+
+    def request_video_backend(self, requested: str) -> tuple[bool, dict[str, Any], int]:
+        normalized_backend = (requested or "").strip().lower()
+        if normalized_backend not in ("auto", "cpu", "nvjpeg"):
+            return False, {"ok": False, "error": "backend must be 'auto', 'cpu' or 'nvjpeg'"}, 400
+        with self._lock:
+            current_backend = self._active_video_backend
+        if normalized_backend == current_backend:
+            return True, {"ok": True, "backend": normalized_backend, "changed": False}, 200
+        with self._lock:
+            self._pending_video_backend = normalized_backend
+        return True, {"ok": True, "backend": normalized_backend, "changed": True}, 200
+
+    def get_and_clear_pending_video_backend(self) -> str | None:
+        with self._lock:
+            pending_video_backend = self._pending_video_backend
+            self._pending_video_backend = None
+            return pending_video_backend
+
+    def set_active_video_backend(self, backend: str) -> None:
+        with self._lock:
+            self._active_video_backend = backend
 
     def set_active_mode(self, mode: str) -> None:
         with self._lock:
@@ -138,41 +166,41 @@ class RuntimeState:
     @staticmethod
     def _sync_mode_from_strategy(strategy: str) -> str:
         try:
-            st = FusionStrategyType(strategy)
+            strategy_type = FusionStrategyType(strategy)
         except ValueError:
             return "async"
-        if st == FusionStrategyType.RAW_STREAM_WITH_METADATA:
+        if strategy_type == FusionStrategyType.RAW_STREAM_WITH_METADATA:
             return "async"
         return "sync"
 
     @staticmethod
     def compute_available_modes(config: dict[str, Any]) -> list[str]:
-        models_cfg = config.get("models", {})
+        models_config = config.get("models", {})
         project_root = Path(__file__).resolve().parents[3]
 
         def has_engine(model_name: str) -> bool:
-            engine = models_cfg.get(model_name, {}).get("engine", "")
-            if not engine:
+            engine_path = models_config.get(model_name, {}).get("engine", "")
+            if not engine_path:
                 return False
-            p = Path(engine)
-            if not p.is_absolute():
-                p = project_root / p
-            return p.exists()
+            resolved_path = Path(engine_path)
+            if not resolved_path.is_absolute():
+                resolved_path = project_root / resolved_path
+            return resolved_path.exists()
 
-        have = {
+        available_engine_by_model = {
             name: has_engine(name)
             for name in ("yolo_global", "yolo_tiles", "density", "crowd_global", "crowd_tiles")
         }
 
         available = ["passthrough"]
-        if have["density"]:
+        if available_engine_by_model["density"]:
             available.append("density")
-        if have["yolo_global"]:
+        if available_engine_by_model["yolo_global"]:
             available.append("yolo_global")
-        if have["yolo_tiles"]:
+        if available_engine_by_model["yolo_tiles"]:
             available.append("yolo_tiles")
-        if have["crowd_global"]:
+        if available_engine_by_model["crowd_global"]:
             available.append("crowd_global")
-        if have["crowd_tiles"]:
+        if available_engine_by_model["crowd_tiles"]:
             available.append("crowd_tiles")
         return available
