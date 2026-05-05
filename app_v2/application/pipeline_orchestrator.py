@@ -101,9 +101,7 @@ class PipelineOrchestrator:
         _vcfg = self.config.get("video_stream") or {}
         self._video_max_height: int | None = _vcfg.get("max_height") or None
         self._video_quality: int = int(_vcfg.get("quality", 75))
-        # Grace period before stashing: encoder may finish within this window.
-        # Configured via video_stream.encode_grace_ms in pipeline.yaml.
-        self._encode_grace_s: float = float(_vcfg.get("encode_grace_ms", 5)) / 1000.0
+        self._video_encode_backend: str = str(_vcfg.get("backend", "auto")).strip().lower()
         # Zero-drop stash: when encoder is busy the latest RGB tensor is kept
         # here; _on_video_encode_done auto-submits it when the slot is free.
         self._pending_chw: torch.Tensor | None = None
@@ -425,9 +423,6 @@ class PipelineOrchestrator:
         Zero-drop strategy: when the encoder is busy the latest RGB tensor is
         stored in ``_pending_chw``; ``_on_video_encode_done`` auto-submits it
         the moment the slot is free (no frame is ever permanently lost).
-        A short grace period (``encode_grace_ms`` in pipeline.yaml) attempts to
-        let near-done encodes finish so the current frame can be submitted
-        directly without the single-frame stash delay.
 
         Output resolution:
           - ``video_stream.max_height: null`` in pipeline.yaml → native camera
@@ -497,24 +492,16 @@ class PipelineOrchestrator:
                     self._pending_enc_event = None
 
             if was_running:
-                # Brief grace period: wait up to encode_grace_ms for in-flight
-                # encode to finish.  If it does, the callback (_on_video_encode_done)
-                # will have submitted the stash automatically — nothing more to do.
-                if self._encode_grace_s > 0 and self._video_future is not None:
-                    try:
-                        self._video_future.result(timeout=self._encode_grace_s)
-                    except Exception:
-                        pass  # still busy or error — stash remains for callback
+                # Encoder still busy: never block the main pipeline loop here.
+                # Keep only the latest frame in the stash; _on_video_encode_done
+                # will submit it as soon as the worker becomes free.
                 return
 
             # Encoder was idle: submit the frame we just grabbed.
-            self._video_future = self._video_executor.submit(
-                PipelineOrchestrator._encode_and_push_nvjpeg,
+            self._video_future = self._submit_video_encode(
                 chw_uint8,
                 enc_event,
-                self._video_quality,
                 push_frame,
-                self._nvjpeg_stream,
             )
             self._video_future.add_done_callback(self._on_video_encode_done)
         except Exception as exc:
@@ -539,14 +526,7 @@ class PipelineOrchestrator:
             self._pending_enc_event = None
 
         try:
-            new_future = self._video_executor.submit(
-                PipelineOrchestrator._encode_and_push_nvjpeg,
-                chw,
-                evt,
-                self._video_quality,
-                push_frame,
-                self._nvjpeg_stream,
-            )
+            new_future = self._submit_video_encode(chw, evt, push_frame)
             new_future.add_done_callback(self._on_video_encode_done)
             with self._pending_frame_lock:
                 self._video_future = new_future
@@ -554,6 +534,39 @@ class PipelineOrchestrator:
             log_warning(LogChannel.GLOBAL, f"Video stash re-submit failed: {exc}")
             with self._pending_frame_lock:
                 self._encode_running = False
+
+    def _submit_video_encode(
+        self,
+        chw_uint8: torch.Tensor,
+        enc_event: torch.cuda.Event,
+        push_frame: Any,
+    ) -> concurrent.futures.Future[None]:
+        """Submit one JPEG encode job to the dedicated video executor.
+
+        backend=auto:
+          - sync mode  -> CPU JPEG (reduce GPU contention with NVDEC/inference)
+          - async mode -> NVJPEG
+        backend=cpu/nvjpeg force the chosen encoder.
+        """
+        backend = self._video_encode_backend
+        if backend == "auto":
+            backend = "cpu" if self._force_mjpeg else "nvjpeg"
+        if backend == "cpu":
+            return self._video_executor.submit(
+                PipelineOrchestrator._encode_and_push_cpujpeg,
+                chw_uint8,
+                enc_event,
+                self._video_quality,
+                push_frame,
+            )
+        return self._video_executor.submit(
+            PipelineOrchestrator._encode_and_push_nvjpeg,
+            chw_uint8,
+            enc_event,
+            self._video_quality,
+            push_frame,
+            self._nvjpeg_stream,
+        )
 
     @staticmethod
     def _encode_and_push_nvjpeg(
@@ -582,6 +595,32 @@ class PipelineOrchestrator:
         except Exception as _nvjpeg_exc:
             import sys as _sys
             print(f"[NVJPEG] encode failed: {type(_nvjpeg_exc).__name__}: {_nvjpeg_exc}",
+                  file=_sys.stderr, flush=True)
+
+    @staticmethod
+    def _encode_and_push_cpujpeg(
+        chw_uint8: torch.Tensor,
+        enc_event: torch.cuda.Event,
+        quality: int,
+        push_frame: Any,
+    ) -> None:
+        """Background thread: CUDA RGB tensor → CPU JPEG bytes.
+
+        This path removes NVJPEG kernels from the shared GPU when MJPEG is used
+        as the sync display transport. We still pay one GPU→CPU copy, but the
+        main pipeline thread stays fully async and the JPEG compression work is
+        isolated on the worker thread / CPU.
+        """
+        try:
+            enc_event.synchronize()
+            import torchvision.io as tvio
+
+            cpu_tensor = chw_uint8.cpu()
+            buf = tvio.encode_jpeg(cpu_tensor, quality=quality)
+            push_frame(bytes(buf.numpy()))
+        except Exception as _cpujpeg_exc:
+            import sys as _sys
+            print(f"[CPUJPEG] encode failed: {type(_cpujpeg_exc).__name__}: {_cpujpeg_exc}",
                   file=_sys.stderr, flush=True)
 
     def _build_packet_forwarder(self, ws_port: int) -> NvdecPacketForwarder | None:

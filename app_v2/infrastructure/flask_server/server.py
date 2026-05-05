@@ -1,32 +1,27 @@
 """FlaskStreamServer — SSE + MJPEG publisher backed by a Flask application.
 
-Serves the browser UI (index.html) and exposes:
+Serves the browser UI and exposes:
   GET  /             → IHM HTML page
   GET  /health       → {"status": "ok"}
-  GET  /api/config   → current mode, available modes, labels, overlay maps
-  POST /api/mode     → request an inference mode change
-  GET  /api/last     → last published payload (for debugging)
+  GET  /api/config   → current mode + UI options
+  POST /api/mode     → request inference mode change
+  POST /api/sync_mode → request sync mode change
+  GET  /api/last     → last published payload (debug)
   GET  /api/stream   → SSE stream of inference results
-  GET  /api/video    → MJPEG stream of raw video frames
+  GET  /api/video    → MJPEG stream of latest encoded frames
 """
 from __future__ import annotations
 
 import json
-import queue
 import threading
-import time
-from collections import deque
 from pathlib import Path
 from typing import Any, Sequence
 
-from app_v2.config import load_model_inference_config
 from app_v2.core.result_publisher import ResultPublisher
-from app_v2.enums import FusionStrategyType
-from app_v2.infrastructure.flask_server.mode_registry import (
-    _MODE_LABELS,
-    _MODE_OVERLAYS,
-    detect_mode_from_config,
-)
+from app_v2.infrastructure.flask_server.gpu_monitor import GpuMonitor
+from app_v2.infrastructure.flask_server.mode_registry import _MODE_LABELS, _MODE_OVERLAYS
+from app_v2.infrastructure.flask_server.runtime_state import RuntimeState
+from app_v2.infrastructure.flask_server.streaming import MjpegFrameStore, SseHub
 
 try:
     from flask import Flask, Response, jsonify, render_template, stream_with_context
@@ -36,27 +31,6 @@ except Exception:  # pragma: no cover
     render_template = None  # type: ignore[assignment]
     Response = None  # type: ignore[assignment]
     stream_with_context = None  # type: ignore[assignment]
-
-# Minimal 1×1 black JPEG served when no frame has been pushed yet.
-_PLACEHOLDER_JPEG = (
-    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
-    b"\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t"
-    b"\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a"
-    b"\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\x1e"
-    b"C  C\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4"
-    b"\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00"
-    b"\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4"
-    b"\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00"
-    b"\x00\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A\x06\x13Qa\x07\"q\x142"
-    b"\x81\x91\xa1\x08#B\xb1\xc1\x15R\xd1\xf0$3br\x82\t\n\x16\x17\x18"
-    b"\x19\x1a%&'()*456789:CDEFGHIJSTUVWXYZcdefghijstuvwxyz\x83\x84\x85"
-    b"\x86\x87\x88\x89\x8a\x92\x93\x94\x95\x96\x97\x98\x99\x9a\xa2\xa3"
-    b"\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba"
-    b"\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xd2\xd3\xd4\xd5\xd6\xd7\xd8"
-    b"\xd9\xda\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xf1\xf2\xf3\xf4"
-    b"\xf5\xf6\xf7\xf8\xf9\xfa\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xfb"
-    b"\xd4P\x00\x00\x00\x1f\xff\xd9"
-)
 
 
 class FlaskStreamServer(ResultPublisher):
@@ -70,66 +44,19 @@ class FlaskStreamServer(ResultPublisher):
     ) -> None:
         self.host = host
         self.port = port
-        # Set by PipelineOrchestrator when WebCodecsServer is started.
-        # Passed to index.html so JS can connect to the correct WS port.
         self.webcodecs_ws_port: int = 4999
         self._thread: threading.Thread | None = None
-        self._lock = threading.Lock()
+
+        # Snapshot of last inference payload (/api/last)
+        self._last_lock = threading.Lock()
         self._last: dict[str, Any] = {"frame_id": None, "payload": None}
-        # SSE: one SimpleQueue per connected browser tab
-        self._sse_clients: list[queue.SimpleQueue[str]] = []
-        self._sse_lock = threading.Lock()
-        # MJPEG: latest JPEG frame bytes + event to wake waiting generators
-        self._last_jpeg: bytes = _PLACEHOLDER_JPEG
-        self._video_lock = threading.Lock()
-        # Set whenever a new JPEG is pushed; generators block on this instead of
-        # polling with time.sleep() so each client receives every produced frame
-        # as fast as the network allows — no fixed-rate sleep causing missed frames.
-        self._video_event: threading.Event = threading.Event()
-        # Inference mode state
-        self._mode_lock = threading.Lock()
-        _cfg = initial_config or {}
-        self._active_mode: str = detect_mode_from_config(_cfg)
-        self._pending_mode: str | None = None
-        self._available_modes: list[str] = self._compute_available_modes(_cfg)
-        # Runtime synchronization mode:
-        # - "async" => RAW_STREAM_WITH_METADATA (realtime passthrough + best effort inference)
-        # - "sync"  => STRICT_SYNC (inference/overlay synchronized, may lag)
-        self._active_sync_mode: str = self._sync_mode_from_strategy(
-            str(_cfg.get("fusion_strategy", FusionStrategyType.RAW_STREAM_WITH_METADATA.value))
-        )
-        self._pending_sync_mode: str | None = None
-        self._sync_mode_labels: dict[str, str] = {
-            "async": "Async (realtime video)",
-            "sync": "Sync (video + inference aligned)",
-        }
-        # Density threshold state — mirrors pipeline density.min_peak_weight.
-        # Protected by _mode_lock for simplicity (low contention).
-        _dcfg = _cfg.get("density") or {}
-        self._density_threshold: float = float(_dcfg.get("min_peak_weight", 0.05))
-        self._pending_density_threshold: float | None = None
-        # Crowd confidence threshold — per-mode so crowd_global (0.25) and crowd_tiles (0.5)
-        # keep independent defaults.  /api/config returns the active mode's value so the
-        # slider always shows what the decoder is currently using.
-        _model_inf_cc    = load_model_inference_config()
-        _crowd_global_cfg = _model_inf_cc.get("crowd_global") or {}
-        _crowd_tiles_cfg  = _model_inf_cc.get("crowd_tiles")  or {}
-        self._crowd_confidence_by_mode: dict[str, float] = {
-            "crowd_global": float(_crowd_global_cfg.get("confidence_threshold", 0.25)),
-            "crowd_tiles":  float(_crowd_tiles_cfg.get("confidence_threshold", 0.5)),
-        }
-        self._crowd_confidence: float = self._crowd_confidence_by_mode.get(
-            self._active_mode, 0.25)
-        self._pending_crowd_confidence: float | None = None
 
-        # GPU stats — polled every 1 s by a daemon thread; protected by _gpu_lock.
-        self._gpu_lock = threading.Lock()
-        self._gpu_available: bool = False
-        self._gpu_last: dict[str, int] = {"gpu_util": 0, "mem_used_mb": 0, "mem_total_mb": 0}
-        self._gpu_history: deque[int] = deque(maxlen=60)  # last 60 samples (1 per second)
-        self._gpu_thread: threading.Thread | None = None
+        # Dedicated state/services (SOLID split)
+        self._runtime = RuntimeState(initial_config)
+        self._sse = SseHub()
+        self._mjpeg = MjpegFrameStore()
+        self._gpu = GpuMonitor()
 
-        # Templates and static files live next to this package
         assets_root = Path(__file__).resolve().parent
         self._template_dir = assets_root / "templates"
         self._static_dir = assets_root / "static"
@@ -144,9 +71,15 @@ class FlaskStreamServer(ResultPublisher):
             static_folder=str(self._static_dir),
             static_url_path="/static",
         )
-        # Always reload templates from disk so code changes in the mounted
-        # volume take effect without rebuilding the Docker image.
         self._app.config["TEMPLATES_AUTO_RELOAD"] = True
+        self._register_routes()
+
+    # ------------------------------------------------------------------
+    # Flask routes
+    # ------------------------------------------------------------------
+
+    def _register_routes(self) -> None:
+        assert self._app is not None
 
         @self._app.get("/")
         def index() -> Any:
@@ -158,129 +91,76 @@ class FlaskStreamServer(ResultPublisher):
 
         @self._app.get("/api/ws_port")
         def api_ws_port() -> Any:
-            """Return the actual WebSocket port the WebCodecsServer is listening on.
-
-            Polled by the browser on every WS reconnect attempt so the JS always
-            uses the up-to-date port even when the server fell back to an OS-assigned
-            free port (happens when 5001 was already occupied at startup).
-            """
             return jsonify({"ws_port": self.webcodecs_ws_port})
 
         @self._app.get("/api/config")
         def api_config() -> Any:
-            with self._mode_lock:
-                mode      = self._active_mode
-                pending   = self._pending_mode
-                available = list(self._available_modes)
-                density_threshold = self._density_threshold
-                crowd_conf        = self._crowd_confidence_by_mode.get(mode, self._crowd_confidence)
-                crowd_conf_modes  = dict(self._crowd_confidence_by_mode)
-                sync_mode         = self._active_sync_mode
-                pending_sync_mode = self._pending_sync_mode
-            return jsonify({
-                "mode":              mode,
-                "pending_mode":      pending,
-                "available_modes":   available,
-                "mode_labels":       _MODE_LABELS,
-                "mode_overlays":     _MODE_OVERLAYS,
-                "density_threshold":       density_threshold,
-                "crowd_confidence":        crowd_conf,
-                "crowd_confidence_by_mode": crowd_conf_modes,
-                "sync_mode":             sync_mode,
-                "pending_sync_mode":     pending_sync_mode,
-                "sync_mode_labels":      self._sync_mode_labels,
-                "sync_mode_options":     ["async", "sync"],
-            })
+            snap = self._runtime.config_snapshot()
+            snap["mode_labels"] = _MODE_LABELS
+            snap["mode_overlays"] = _MODE_OVERLAYS
+            return jsonify(snap)
 
         @self._app.post("/api/mode")
         def api_set_mode() -> Any:
-            from flask import request  # local import to avoid circular/top-level issues
+            from flask import request
+
             body = request.get_json(silent=True) or {}
-            requested = body.get("mode", "")
-            with self._mode_lock:
-                available = list(self._available_modes)
-                current   = self._active_mode
-            if requested not in available:
-                return jsonify({"ok": False, "error": f"mode '{requested}' not available"}), 400
-            if requested == current:
-                return jsonify({"ok": True, "mode": requested, "changed": False})
-            with self._mode_lock:
-                self._pending_mode = requested
-            return jsonify({"ok": True, "mode": requested, "changed": True})
+            _, payload, status = self._runtime.request_mode(str(body.get("mode", "")))
+            return jsonify(payload), status
 
         @self._app.post("/api/sync_mode")
         def api_set_sync_mode() -> Any:
             from flask import request
 
             body = request.get_json(silent=True) or {}
-            requested = str(body.get("mode", "")).strip().lower()
-            if requested not in ("async", "sync"):
-                return jsonify({"ok": False, "error": "mode must be 'async' or 'sync'"}), 400
-            with self._mode_lock:
-                current = self._active_sync_mode
-            if requested == current:
-                return jsonify({"ok": True, "mode": requested, "changed": False})
-            with self._mode_lock:
-                self._pending_sync_mode = requested
-            return jsonify({"ok": True, "mode": requested, "changed": True})
+            _, payload, status = self._runtime.request_sync_mode(str(body.get("mode", "")))
+            return jsonify(payload), status
 
         @self._app.post("/api/crowd/confidence")
         def api_set_crowd_confidence() -> Any:
             from flask import request
+
             body = request.get_json(silent=True) or {}
             try:
                 value = float(body.get("confidence", 0.25))
             except (TypeError, ValueError):
                 return jsonify({"ok": False, "error": "confidence must be a number"}), 400
-            value = max(0.05, min(0.95, value))  # clamp to [0.05, 0.95]
-            with self._mode_lock:
-                self._crowd_confidence = value
-                self._crowd_confidence_by_mode[self._active_mode] = value
-                self._pending_crowd_confidence = value
-            return jsonify({"ok": True, "confidence": value})
+            clamped = self._runtime.set_crowd_confidence(value)
+            return jsonify({"ok": True, "confidence": clamped})
 
         @self._app.post("/api/density/threshold")
         def api_set_density_threshold() -> Any:
             from flask import request
+
             body = request.get_json(silent=True) or {}
             try:
                 value = float(body.get("threshold", 0.05))
             except (TypeError, ValueError):
                 return jsonify({"ok": False, "error": "threshold must be a number"}), 400
-            value = max(0.0, min(1.0, value))  # clamp to [0, 1]
-            with self._mode_lock:
-                self._density_threshold = value
-                self._pending_density_threshold = value
-            return jsonify({"ok": True, "threshold": value})
+            clamped = self._runtime.set_density_threshold(value)
+            return jsonify({"ok": True, "threshold": clamped})
 
         @self._app.get("/api/last")
         def api_last() -> Any:
-            with self._lock:
+            with self._last_lock:
                 snapshot = dict(self._last)
             return jsonify(snapshot)
 
         @self._app.get("/api/stream")
         def api_stream() -> Any:
-            """Server-Sent Events endpoint — pushes each published frame to the browser."""
+            """Server-Sent Events endpoint."""
 
             def generate() -> Any:
-                q: queue.SimpleQueue[str] = queue.SimpleQueue()
-                with self._sse_lock:
-                    self._sse_clients.append(q)
+                q = self._sse.add_client()
                 try:
                     while True:
                         try:
                             data = q.get(timeout=25.0)
                             yield f"data: {data}\n\n"
-                        except queue.Empty:
-                            # heartbeat to keep the connection alive
+                        except Exception:
                             yield ": heartbeat\n\n"
                 finally:
-                    with self._sse_lock:
-                        try:
-                            self._sse_clients.remove(q)
-                        except ValueError:
-                            pass
+                    self._sse.remove_client(q)
 
             return Response(
                 stream_with_context(generate()),
@@ -290,223 +170,73 @@ class FlaskStreamServer(ResultPublisher):
 
         @self._app.get("/api/video")
         def api_video() -> Any:
-            """MJPEG stream — event-driven push; no fixed-rate sleep.
-
-            Each generator waits on ``_video_event`` (set by ``push_frame``)
-            so frames are delivered as soon as they are produced.  A 1-second
-            fallback timeout re-sends the last JPEG to keep the browser alive
-            even when the pipeline is paused or running slowly.
-            """
-
-            def generate() -> Any:
-                last_sent: bytes = b""
-                while True:
-                    # Wait for a new frame (up to 1 s before re-sending old one).
-                    self._video_event.wait(timeout=1.0)
-                    self._video_event.clear()
-                    with self._video_lock:
-                        frame = self._last_jpeg
-                    # Skip duplicate frames to reduce bandwidth under slow pipelines.
-                    if frame is last_sent and frame is not _PLACEHOLDER_JPEG:
-                        continue
-                    last_sent = frame
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-
             return Response(
-                generate(),
+                self._mjpeg.stream_iter(),
                 mimetype="multipart/x-mixed-replace; boundary=frame",
                 headers={"Cache-Control": "no-cache"},
             )
 
         @self._app.get("/api/gpu/stats")
         def api_gpu_stats() -> Any:
-            """Return current GPU utilisation and VRAM usage.
-
-            The response includes a ``history_util`` array of the last ≤ 60
-            one-second GPU-compute-% samples, suitable for a sparkline chart.
-            """
-            with self._gpu_lock:
-                available = self._gpu_available
-                last      = dict(self._gpu_last)
-                history   = list(self._gpu_history)
-            if not available:
-                return jsonify({"available": False})
-            return jsonify({
-                "available":    True,
-                "gpu_util":     last.get("gpu_util", 0),
-                "mem_used_mb":  last.get("mem_used_mb", 0),
-                "mem_total_mb": last.get("mem_total_mb", 0),
-                "history_util": history,
-            })
+            return jsonify(self._gpu.snapshot())
 
     # ------------------------------------------------------------------
-    # Public API
+    # Public API (ResultPublisher + control hooks)
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Start the Flask web server in a background thread."""
+        """Start Flask web server in a background thread."""
         if self._app is None:
             raise RuntimeError("Flask is not available in this environment")
         if self._thread and self._thread.is_alive():
             return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
-        # Start GPU telemetry poller (daemon — safe to run without GPU).
-        if self._gpu_thread is None or not self._gpu_thread.is_alive():
-            self._gpu_thread = threading.Thread(
-                target=self._gpu_polling_loop, daemon=True, name="gpu-poller"
-            )
-            self._gpu_thread.start()
+        self._gpu.start()
 
     def _run(self) -> None:
         assert self._app is not None
         self._app.run(host=self.host, port=self.port, threaded=True, use_reloader=False)
 
-    def _gpu_polling_loop(self) -> None:
-        """Daemon thread: poll pynvml every 1 s, store results in _gpu_history."""
-        try:
-            import pynvml  # type: ignore[import]
-            pynvml.nvmlInit()
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            pynvml_ok = True
-        except Exception:
-            pynvml_ok = False
-
-        while True:
-            if pynvml_ok:
-                try:
-                    util  = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                    mem   = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                    sample: dict[str, int] = {
-                        "gpu_util":     int(util.gpu),
-                        "mem_used_mb":  int(mem.used  // (1024 * 1024)),
-                        "mem_total_mb": int(mem.total // (1024 * 1024)),
-                    }
-                    with self._gpu_lock:
-                        self._gpu_available = True
-                        self._gpu_last = sample
-                        self._gpu_history.append(sample["gpu_util"])
-                except Exception:
-                    pass
-            time.sleep(1.0)
-
     def publish(self, frame_id: int, payload: Sequence[dict[str, object]]) -> None:
-        """Store last payload and push to all SSE subscribers."""
         data = {"frame_id": frame_id, "payload": list(payload)}
-        with self._lock:
+        with self._last_lock:
             self._last = data
-        # Serialise once; send to all connected SSE clients
-        serialised = json.dumps(data, default=str)
-        with self._sse_lock:
-            clients = list(self._sse_clients)
-        for q in clients:
-            try:
-                q.put_nowait(serialised)
-            except Exception:
-                pass
+        self._sse.publish(json.dumps(data, default=str))
+
+    def publish_passthrough_frame(self, frame_id: int) -> None:
+        data = {"frame_id": frame_id, "payload": [], "passthrough": True}
+        self._sse.publish(json.dumps(data))
 
     def push_frame(self, jpeg_bytes: bytes) -> None:
-        """Update the MJPEG frame buffer and wake all waiting MJPEG generators."""
-        with self._video_lock:
-            self._last_jpeg = jpeg_bytes
-        self._video_event.set()  # wake all /api/video generators immediately
+        self._mjpeg.push(jpeg_bytes)
 
     # ------------------------------------------------------------------
-    # Inference mode management (called from pipeline loop thread)
+    # Runtime mode/threshold management (called from pipeline loop)
     # ------------------------------------------------------------------
 
     def get_and_clear_pending_mode(self) -> str | None:
-        """Return and consume any pending mode change requested via /api/mode."""
-        with self._mode_lock:
-            mode = self._pending_mode
-            self._pending_mode = None
-            return mode
+        return self._runtime.get_and_clear_pending_mode()
 
     def get_and_clear_pending_sync_mode(self) -> str | None:
-        """Return and consume any pending sync-mode change from POST /api/sync_mode."""
-        with self._mode_lock:
-            mode = self._pending_sync_mode
-            self._pending_sync_mode = None
-            return mode
+        return self._runtime.get_and_clear_pending_sync_mode()
 
     def get_and_clear_pending_density_threshold(self) -> float | None:
-        """Return and consume any pending density threshold from POST /api/density/threshold."""
-        with self._mode_lock:
-            value = self._pending_density_threshold
-            self._pending_density_threshold = None
-            return value
+        return self._runtime.get_and_clear_pending_density_threshold()
 
     def get_and_clear_pending_crowd_confidence(self) -> float | None:
-        """Return and consume any pending crowd confidence from POST /api/crowd/confidence."""
-        with self._mode_lock:
-            value = self._pending_crowd_confidence
-            self._pending_crowd_confidence = None
-            return value
+        return self._runtime.get_and_clear_pending_crowd_confidence()
 
     def set_active_mode(self, mode: str) -> None:
-        """Record the mode that is now active (called after mode switch completes)."""
-        with self._mode_lock:
-            self._active_mode = mode
+        self._runtime.set_active_mode(mode)
 
     def set_active_sync_mode(self, mode: str) -> None:
-        with self._mode_lock:
-            self._active_sync_mode = mode
+        self._runtime.set_active_sync_mode(mode)
 
     def update_available_modes(self, config: dict[str, Any]) -> None:
-        """Recompute available modes after a config update."""
-        modes = self._compute_available_modes(config)
-        with self._mode_lock:
-            self._available_modes = modes
-
-    def publish_passthrough_frame(self, frame_id: int) -> None:
-        """Lightweight SSE heartbeat emitted in passthrough mode (no inference payload)."""
-        data = {"frame_id": frame_id, "payload": [], "passthrough": True}
-        serialised = json.dumps(data)
-        with self._sse_lock:
-            clients = list(self._sse_clients)
-        for q in clients:
-            try:
-                q.put_nowait(serialised)
-            except Exception:
-                pass
+        self._runtime.update_available_modes(config)
 
     @staticmethod
     def _compute_available_modes(config: dict[str, Any]) -> list[str]:
-        """Return mode names whose required engines are all present on disk."""
-        models_cfg = config.get("models", {})
-        project_root = Path(__file__).resolve().parents[3]  # .../app_v2/infrastructure/flask_server → project root
-
-        def has_engine(model_name: str) -> bool:
-            engine = models_cfg.get(model_name, {}).get("engine", "")
-            if not engine:
-                return False
-            p = Path(engine)
-            if not p.is_absolute():
-                p = project_root / p
-            return p.exists()
-
-        have = {name: has_engine(name) for name in ("yolo_global", "yolo_tiles", "density", "crowd_global", "crowd_tiles")}
-
-        available = ["passthrough"]
-        if have["density"]:
-            available.append("density")
-        if have["yolo_global"]:
-            available.append("yolo_global")
-        if have["yolo_tiles"]:
-            available.append("yolo_tiles")
-        if have["crowd_global"]:
-            available.append("crowd_global")
-        if have["crowd_tiles"]:
-            available.append("crowd_tiles")
-        return available
-
-    @staticmethod
-    def _sync_mode_from_strategy(strategy: str) -> str:
-        """Map fusion strategy string to UI sync-mode value."""
-        try:
-            st = FusionStrategyType(strategy)
-        except ValueError:
-            return "async"
-        if st == FusionStrategyType.RAW_STREAM_WITH_METADATA:
-            return "async"
-        return "sync"
+        # Backward-compatible helper used by older callers/tests.
+        return RuntimeState.compute_available_modes(config)

@@ -30,17 +30,20 @@ def build_stream_open_opts(stream_url: str) -> dict[str, str]:
         return {
             "rtsp_transport": "tcp",
             "rtsp_flags": "prefer_tcp",
-            "probesize": "2000000",
-            "analyzeduration": "2000000",
+            # 8 MB / 5 s: the 4K bridge sometimes needs a larger initial probe
+            # window after reconnects, otherwise FFmpeg reports
+            # "not enough frames to estimate rate" and the decoder warms up in
+            # a less stable state.
+            "probesize": "8000000",
+            "analyzeduration": "5000000",
         }
     if url.startswith("http://") or url.startswith("https://"):
         return {
-            # 2 MB: large enough to capture a full 4K keyframe so FFmpeg
-            # can reliably detect pix_fmt from the SPS/PPS NAL units.
-            # (200 KB was too small for h264_qsv @ 20 Mbps → empty pix_fmt)
-            "probesize": "2000000",
-            # 2 s upper bound; analysis stops earlier once format is known.
-            "analyzeduration": "2000000",
+            # 8 MB: large enough to capture a full 4K keyframe and associated
+            # SPS/PPS reliably on reconnect.
+            "probesize": "8000000",
+            # 5 s upper bound; analysis stops earlier once format is known.
+            "analyzeduration": "5000000",
             "reconnect": "1",
             "reconnect_streamed": "1",
             "reconnect_delay_max": "2",
@@ -54,7 +57,9 @@ class NvdecDecodeConfig:
 
     ring_capacity: int = 8
     gpu_id: int = 0
-    surface_retry_limit: int = 5
+    # After a decoder recreate, a 4K RTSP stream may need more than a few
+    # DecodeSingleSurface() attempts before a valid surface appears.
+    surface_retry_limit: int = 20
 
 
 class NvdecDecoder:
