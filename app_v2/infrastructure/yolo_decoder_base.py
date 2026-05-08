@@ -227,11 +227,14 @@ class YoloDecoderBase(Postprocessor, ABC):
         if float(coords.max().item()) > 2.0:
             coords = coords / 640.0
         coords = coords.clamp(0.0, 1.0)
-        coords_list = coords.tolist()
-        confs_list  = rows[:, 4].tolist()
+        detections_cpu = torch.cat([coords, rows[:, 4:5]], dim=1).cpu().numpy()
         return [
-            {"bbox": [x1, y1, x2, y2], "conf": round(c, 4), "label": "person"}
-            for (x1, y1, x2, y2), c in zip(coords_list, confs_list)
+            {
+                "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                "conf": round(float(confidence), 4),
+                "label": "person",
+            }
+            for x1, y1, x2, y2, confidence in detections_cpu
         ]
 
     def _decode_tiled_global(self, tensor: Any, plan: Any) -> list[dict[str, Any]]:
@@ -370,12 +373,15 @@ class YoloDecoderBase(Postprocessor, ABC):
                 scores_flat  = scores_flat[topk.indices]
 
             # ── Single GPU→CPU transfer ───────────────────────────────────
-            boxes_cpu  = global_boxes.tolist()   # sync #2
-            scores_cpu = scores_flat.tolist()    # sync #3
+            detections_cpu = torch.cat([global_boxes, scores_flat.unsqueeze(1)], dim=1).cpu().numpy()
 
         return [
-            {"bbox": bbox, "conf": round(score, 4), "label": "person"}
-            for bbox, score in zip(boxes_cpu, scores_cpu)
+            {
+                "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                "conf": round(float(confidence), 4),
+                "label": "person",
+            }
+            for x1, y1, x2, y2, confidence in detections_cpu
         ]
 
     # Backward-compatibility alias so existing call-sites using the old name
@@ -440,12 +446,15 @@ class YoloDecoderBase(Postprocessor, ABC):
         except Exception:
             pass
 
-        boxes_cpu  = global_boxes.tolist()   # sync #3
-        scores_cpu = scores_flat.tolist()    # sync #4
+        detections_cpu = torch.cat([global_boxes, scores_flat.unsqueeze(1)], dim=1).cpu().numpy()
 
         return [
-            {"bbox": bbox, "conf": round(score, 4), "label": "person"}
-            for bbox, score in zip(boxes_cpu, scores_cpu)
+            {
+                "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                "conf": round(float(confidence), 4),
+                "label": "person",
+            }
+            for x1, y1, x2, y2, confidence in detections_cpu
         ]
 
     def _apply_global_unletterbox(

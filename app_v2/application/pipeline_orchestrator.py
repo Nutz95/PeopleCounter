@@ -60,15 +60,15 @@ class PipelineOrchestrator:
         if fusion_strategy is not None:
             self.fusion_strategy = fusion_strategy
         else:
-            _strategy_name = self.config.get("fusion_strategy", "ASYNC_OVERLAY")
+            configured_strategy_name = self.config.get("fusion_strategy", "ASYNC_OVERLAY")
             try:
-                _strategy_type = FusionStrategyType(_strategy_name)
+                configured_strategy_type = FusionStrategyType(configured_strategy_name)
             except ValueError:
-                _strategy_type = FusionStrategyType.ASYNC_OVERLAY
-            if _strategy_type == FusionStrategyType.RAW_STREAM_WITH_METADATA:
+                configured_strategy_type = FusionStrategyType.ASYNC_OVERLAY
+            if configured_strategy_type == FusionStrategyType.RAW_STREAM_WITH_METADATA:
                 self.fusion_strategy = RawStreamFusionStrategy()
             else:
-                self.fusion_strategy = SimpleFusionStrategy(strategy_type=_strategy_type)
+                self.fusion_strategy = SimpleFusionStrategy(strategy_type=configured_strategy_type)
         self.publisher = publisher or FlaskStreamServer(initial_config=self.config)
         self.aggregator = ResultAggregator(self.fusion_strategy, self.publisher)
         self.performance_tracker = PerformanceTracker()
@@ -98,10 +98,10 @@ class PipelineOrchestrator:
         )
         self._video_future: concurrent.futures.Future[None] | None = None
         # Video stream config: read from pipeline.yaml [video_stream] section.
-        _vcfg = self.config.get("video_stream") or {}
-        self._video_max_height: int | None = _vcfg.get("max_height") or None
-        self._video_quality: int = int(_vcfg.get("quality", 75))
-        self._video_encode_backend: str = str(_vcfg.get("backend", "auto")).strip().lower()
+        video_stream_config = self.config.get("video_stream") or {}
+        self._video_max_height: int | None = video_stream_config.get("max_height") or None
+        self._video_quality: int = int(video_stream_config.get("quality", 75))
+        self._video_encode_backend: str = str(video_stream_config.get("backend", "auto")).strip().lower()
         # Zero-drop stash: when encoder is busy the latest RGB tensor is kept
         # here; _on_video_encode_done auto-submits it when the slot is free.
         self._pending_chw: torch.Tensor | None = None
@@ -123,9 +123,9 @@ class PipelineOrchestrator:
         # without any server-side re-encoding.
         # Falls back to MJPEG transparently if PyNvCodec is unavailable or the
         # source codec is not H.264/H.265.
-        _ws_port = int(_vcfg.get("webcodecs_ws_port", WebCodecsServer.DEFAULT_PORT))
-        self._webcodecs_server = WebCodecsServer(port=_ws_port)
-        self._packet_forwarder: NvdecPacketForwarder | None = self._build_packet_forwarder(_ws_port)
+        webcodecs_ws_port = int(video_stream_config.get("webcodecs_ws_port", WebCodecsServer.DEFAULT_PORT))
+        self._webcodecs_server = WebCodecsServer(port=webcodecs_ws_port)
+        self._packet_forwarder: NvdecPacketForwarder | None = self._build_packet_forwarder(webcodecs_ws_port)
         # NOTE: publisher.webcodecs_ws_port is updated in run() AFTER start() so it
         # always reflects the actually-bound port (may differ from _ws_port when the
         # preferred port was already in use and the server fell back to a free port).
@@ -157,35 +157,35 @@ class PipelineOrchestrator:
         # Consecutive decode-error counter: skip bad frames up to this limit
         # before giving up (handles NVDEC "HW decoder faced error" after a corrupt
         # packet — the decoder self-heals after a few buffering-phase misses).
-        _MAX_CONSECUTIVE_DECODE_ERRORS = 10
-        _consecutive_decode_errors = 0
-        _perf_prev_done_ns: int = 0  # tracks end of previous iteration for gap measurement
+        max_consecutive_decode_errors = 10
+        consecutive_decode_errors = 0
+        previous_loop_done_ns: int = 0  # tracks end of previous iteration for gap measurement
         try:
             while self._should_continue():
                 frame_id = self.scheduler.schedule(None)
-                _t0 = time.perf_counter_ns() if _PERF_LOG else 0
+                perf_loop_start_ns = time.perf_counter_ns() if _PERF_LOG else 0
 
                 # ── NVDEC decode ────────────────────────────────────────────
                 try:
                     with self.performance_tracker.stage(frame_id, "nvdec"):
                         frame = self.frame_source.next_frame(frame_id)
                 except RuntimeError as decode_exc:
-                    _consecutive_decode_errors += 1
+                    consecutive_decode_errors += 1
                     log_warning(
                         LogChannel.GLOBAL,
                         f"Frame {frame_id} skipped — decode error "
-                        f"({_consecutive_decode_errors}/{_MAX_CONSECUTIVE_DECODE_ERRORS}): {decode_exc}",
+                        f"({consecutive_decode_errors}/{max_consecutive_decode_errors}): {decode_exc}",
                     )
                     self.scheduler.acknowledge(frame_id)
                     self.performance_tracker.clear(frame_id)
-                    if _consecutive_decode_errors >= _MAX_CONSECUTIVE_DECODE_ERRORS:
+                    if consecutive_decode_errors >= max_consecutive_decode_errors:
                         raise RuntimeError(
-                            f"Aborting after {_MAX_CONSECUTIVE_DECODE_ERRORS} "
+                            f"Aborting after {max_consecutive_decode_errors} "
                             "consecutive decode failures"
                         ) from decode_exc
                     continue
-                _consecutive_decode_errors = 0
-                _t_nvdec = time.perf_counter_ns() if _PERF_LOG else 0
+                consecutive_decode_errors = 0
+                perf_after_nvdec_ns = time.perf_counter_ns() if _PERF_LOG else 0
                 # ────────────────────────────────────────────────────────────
 
                 # ── Video encode dispatch ───────────────────────────────────
@@ -193,12 +193,12 @@ class PipelineOrchestrator:
                 # NV12→RGB→resize runs on _video_stream (GPU, async from CPU).
                 # NVJPEG encode runs in background thread, parallel with inference.
                 self._push_video_frame_async(frame)
-                _t_vid = time.perf_counter_ns() if _PERF_LOG else 0
+                perf_after_video_dispatch_ns = time.perf_counter_ns() if _PERF_LOG else 0
                 # ───────────────────────────────────────────────────────────
 
                 output = self.preprocessor.build_output(frame_id, frame)
                 self.aggregator.attach_telemetry(frame_id, output.telemetry)
-                _t_preproc = time.perf_counter_ns() if _PERF_LOG else 0
+                perf_after_preprocess_ns = time.perf_counter_ns() if _PERF_LOG else 0
 
                 if isinstance(self.fusion_strategy, RawStreamFusionStrategy):
                     # RAW_STREAM_WITH_METADATA: release the NVDEC ring-buffer slot
@@ -212,24 +212,24 @@ class PipelineOrchestrator:
                     output.release_all()
                 else:
                     self.aggregator.attach_release_hook(frame_id, output.release_all)
-                _t_vidsync = time.perf_counter_ns() if _PERF_LOG else 0
-                _t_before_infer = _t_vidsync
-                _t_after_infer = _t_vidsync
-                _t_before_collect = _t_vidsync
-                _t_after_collect = _t_vidsync
+                perf_after_video_sync_ns = time.perf_counter_ns() if _PERF_LOG else 0
+                perf_before_infer_ns = perf_after_video_sync_ns
+                perf_after_infer_ns = perf_after_video_sync_ns
+                perf_before_collect_ns = perf_after_video_sync_ns
+                perf_after_collect_ns = perf_after_video_sync_ns
                 for model in self._models:
                     processed = output.flatten_inputs(model.name)
                     tile_plan = output.plans.get(model.name)
                     with self.performance_tracker.stage(frame_id, model.name):
                         if _PERF_LOG:
-                            _t_before_infer = time.perf_counter_ns()
+                            perf_before_infer_ns = time.perf_counter_ns()
                         prediction = model.infer(
                             frame_id,
                             processed,
                             preprocess_events=list(output.cuda_events.values()),
                             tile_plan=tile_plan,
                         )
-                        _t_after_infer = time.perf_counter_ns() if _PERF_LOG else 0
+                        perf_after_infer_ns = time.perf_counter_ns() if _PERF_LOG else 0
                         if isinstance(prediction, dict):
                             prediction["_inference_done_ns"] = int(time.time_ns())
                             # DM-Count density: convert raw GPU tiles → base64 heatmap
@@ -237,31 +237,34 @@ class PipelineOrchestrator:
                                 prediction = self._density_decoder.process(frame_id, prediction)
                         self.processing_graph.register(model.name, {"frame_id": frame_id})
                         if _PERF_LOG:
-                            _t_before_collect = time.perf_counter_ns()
+                            perf_before_collect_ns = time.perf_counter_ns()
                         self.aggregator.collect(frame_id, prediction)
-                        _t_after_collect = time.perf_counter_ns() if _PERF_LOG else 0
+                        perf_after_collect_ns = time.perf_counter_ns() if _PERF_LOG else 0
 
                 if _PERF_LOG:
-                    _t_done = time.perf_counter_ns()
-                    _ms = lambda a, b: f"{(b - a) / 1e6:.1f}"  # noqa: E731
+                    perf_loop_done_ns = time.perf_counter_ns()
+                    format_duration_ms = lambda start_ns, end_ns: f"{(end_ns - start_ns) / 1e6:.1f}"  # noqa: E731
                     modes_str = ",".join(m.name for m in self._models) or "pass"
-                    _gap_ms = (_t0 - _perf_prev_done_ns) / 1e6 if _perf_prev_done_ns else 0.0
+                    frame_gap_ms = (
+                        (perf_loop_start_ns - previous_loop_done_ns) / 1e6
+                        if previous_loop_done_ns else 0.0
+                    )
                     print(
                         f"[PERF] f={frame_id} mode={modes_str}"
-                        f" gap={_gap_ms:.1f}"
-                        f" nvdec={_ms(_t0, _t_nvdec)}"
-                        f" vid_dispatch={_ms(_t_nvdec, _t_vid)}"
-                        f" preproc={_ms(_t_vid, _t_preproc)}"
-                        f" vid_sync={_ms(_t_preproc, _t_vidsync)}"
-                        f" flat={_ms(_t_vidsync, _t_before_infer)}"
-                        f" infer={_ms(_t_before_infer, _t_after_infer)}"
-                        f" pre_collect={_ms(_t_after_infer, _t_before_collect)}"
-                        f" collect={_ms(_t_before_collect, _t_after_collect)}"
-                        f" infer+collect={_ms(_t_vidsync, _t_done)}"
-                        f" total={_ms(_t0, _t_done)}ms",
+                        f" gap={frame_gap_ms:.1f}"
+                        f" nvdec={format_duration_ms(perf_loop_start_ns, perf_after_nvdec_ns)}"
+                        f" vid_dispatch={format_duration_ms(perf_after_nvdec_ns, perf_after_video_dispatch_ns)}"
+                        f" preproc={format_duration_ms(perf_after_video_dispatch_ns, perf_after_preprocess_ns)}"
+                        f" vid_sync={format_duration_ms(perf_after_preprocess_ns, perf_after_video_sync_ns)}"
+                        f" flat={format_duration_ms(perf_after_video_sync_ns, perf_before_infer_ns)}"
+                        f" infer={format_duration_ms(perf_before_infer_ns, perf_after_infer_ns)}"
+                        f" pre_collect={format_duration_ms(perf_after_infer_ns, perf_before_collect_ns)}"
+                        f" collect={format_duration_ms(perf_before_collect_ns, perf_after_collect_ns)}"
+                        f" infer+collect={format_duration_ms(perf_after_video_sync_ns, perf_loop_done_ns)}"
+                        f" total={format_duration_ms(perf_loop_start_ns, perf_loop_done_ns)}ms",
                         file=sys.stderr, flush=True,
                     )
-                    _perf_prev_done_ns = _t_done
+                    previous_loop_done_ns = perf_loop_done_ns
 
                 # Passthrough mode: no models active — ring slot never released via
                 # aggregator.collect() so we release it here immediately.
@@ -344,14 +347,14 @@ class PipelineOrchestrator:
         self._models = []
 
         # Update config in-place
-        models_cfg = self.config.setdefault("models", {})
-        branches_cfg = self.config.setdefault("preprocess_branches", {})
+        models_config = self.config.setdefault("models", {})
+        preprocess_branches_config = self.config.setdefault("preprocess_branches", {})
         for model_name, enabled in mode_state.items():
-            if model_name in models_cfg:
-                models_cfg[model_name]["enabled"] = enabled
+            if model_name in models_config:
+                models_config[model_name]["enabled"] = enabled
             branch_key = _PREPROCESS_BRANCH_MAP.get(model_name)
             if branch_key:
-                branches_cfg[branch_key] = enabled
+                preprocess_branches_config[branch_key] = enabled
 
         # Rebuild inference components
         self.inference_controller = InferenceStreamController(self.config)
@@ -458,14 +461,14 @@ class PipelineOrchestrator:
             return
 
         try:
-            h = int(getattr(frame, "height", 0))
-            w = int(getattr(frame, "width", 0))
-            if self._video_max_height is not None and h > self._video_max_height:
-                scale = self._video_max_height / h
+            frame_height = int(getattr(frame, "height", 0))
+            frame_width = int(getattr(frame, "width", 0))
+            if self._video_max_height is not None and frame_height > self._video_max_height:
+                resize_scale = self._video_max_height / frame_height
                 target_h = self._video_max_height
-                target_w = int(w * scale) & ~1  # keep even for JPEG chroma sub-sampling
+                target_w = int(frame_width * resize_scale) & ~1  # keep even for JPEG chroma sub-sampling
             else:
-                target_h, target_w = h, w
+                target_h, target_w = frame_height, frame_width
 
             with torch.cuda.stream(self._video_stream):
                 # NV12 → resize in YUV space → RGB HWC uint8 at target resolution.
@@ -524,9 +527,9 @@ class PipelineOrchestrator:
         """
         push_frame = getattr(self.publisher, "push_frame", None)
         with self._pending_frame_lock:
-            chw = self._pending_chw
-            evt = self._pending_enc_event
-            if chw is None or not callable(push_frame):
+            pending_chw = self._pending_chw
+            pending_event = self._pending_enc_event
+            if pending_chw is None or not callable(push_frame):
                 # Nothing pending or publisher gone → encoder goes idle.
                 self._encode_running = False
                 return
@@ -535,7 +538,7 @@ class PipelineOrchestrator:
             self._pending_enc_event = None
 
         try:
-            new_future = self._submit_video_encode(chw, evt, push_frame)
+            new_future = self._submit_video_encode(pending_chw, pending_event, push_frame)
             new_future.add_done_callback(self._on_video_encode_done)
             with self._pending_frame_lock:
                 self._video_future = new_future
@@ -651,30 +654,30 @@ class PipelineOrchestrator:
     def _build_packet_forwarder(self, ws_port: int) -> NvdecPacketForwarder | None:
         """Construct a NvdecPacketForwarder if the frame source exposes a stream URL."""
         # Traverse common attribute paths to find the raw stream URL.
-        url: str | None = None
+        stream_url: str | None = None
         for attr_path in (
             ("stream_url",),
             ("_decoder", "stream_url"),
             ("_source", "stream_url"),
         ):
-            obj = self.frame_source
+            current_object = self.frame_source
             try:
                 for attr in attr_path:
-                    obj = getattr(obj, attr)
-                if isinstance(obj, str) and obj:
-                    url = obj
+                    current_object = getattr(current_object, attr)
+                if isinstance(current_object, str) and current_object:
+                    stream_url = current_object
                     break
             except AttributeError:
                 continue
 
-        if not url:
+        if not stream_url:
             log_warning(LogChannel.GLOBAL, "WebCodecs packet forwarder: no stream URL found on frame_source — skipping")
             return None
 
         # Reuse the same HTTP/RTSP input opts used by NvdecDecoder so the raw
         # WebCodecs demux path and the inference decode path behave identically
         # on reconnect (notably RTSP-over-TCP for the MediaMTX bridge).
-        opts = build_stream_open_opts(url)
+        stream_open_options = build_stream_open_opts(stream_url)
 
-        log_info(LogChannel.GLOBAL, f"WebCodecs packet forwarder configured for {url} → ws port {ws_port}")
-        return NvdecPacketForwarder(url, self._webcodecs_server, decoder_opts=opts)
+        log_info(LogChannel.GLOBAL, f"WebCodecs packet forwarder configured for {stream_url} → ws port {ws_port}")
+        return NvdecPacketForwarder(stream_url, self._webcodecs_server, decoder_opts=stream_open_options)
