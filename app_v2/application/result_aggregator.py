@@ -143,6 +143,10 @@ class ResultAggregator:
         per_model: dict[str, float] = {}
         infer_values: list[float] = []
         decode_values: list[float] = []
+        decode_stage_filter_values: list[float] = []
+        decode_stage_nms_values: list[float] = []
+        decode_stage_export_values: list[float] = []
+        decode_stage_pack_values: list[float] = []
         for item in payload:
             model_name = item.get("model")
             infer_value = item.get("inference_ms")
@@ -160,11 +164,32 @@ class ResultAggregator:
                     dkey = decode_model_metric_key(model_name)
                     per_model[dkey] = max(per_model.get(dkey, 0.0), dv)
 
+            stage_filter = item.get("decode_stage_filter_ms")
+            if isinstance(stage_filter, (int, float)):
+                decode_stage_filter_values.append(float(stage_filter))
+            stage_nms = item.get("decode_stage_nms_ms")
+            if isinstance(stage_nms, (int, float)):
+                decode_stage_nms_values.append(float(stage_nms))
+            stage_export = item.get("decode_stage_export_ms")
+            if isinstance(stage_export, (int, float)):
+                decode_stage_export_values.append(float(stage_export))
+            stage_pack = item.get("decode_stage_pack_ms")
+            if isinstance(stage_pack, (int, float)):
+                decode_stage_pack_values.append(float(stage_pack))
+
         if infer_values:
             per_model[INFERENCE_MODEL_SUM_MS] = sum(infer_values)
             per_model[INFERENCE_MODEL_MAX_MS] = max(infer_values)
         if decode_values:
             per_model[DECODE_MODEL_SUM_MS] = sum(decode_values)
+        if decode_stage_filter_values:
+            per_model["decode_stage_filter_sum_ms"] = sum(decode_stage_filter_values)
+        if decode_stage_nms_values:
+            per_model["decode_stage_nms_sum_ms"] = sum(decode_stage_nms_values)
+        if decode_stage_export_values:
+            per_model["decode_stage_export_sum_ms"] = sum(decode_stage_export_values)
+        if decode_stage_pack_values:
+            per_model["decode_stage_pack_sum_ms"] = sum(decode_stage_pack_values)
         return per_model
 
     @staticmethod

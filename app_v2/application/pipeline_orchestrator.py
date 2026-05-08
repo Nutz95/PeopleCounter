@@ -114,6 +114,15 @@ class PipelineOrchestrator:
         # zero-encode WebSocket path, so MJPEG/NVJPEG encoding is unnecessary.
         # We track nothing here — the check is done live in _push_video_frame_async.
         self._pending_frame_lock: threading.Lock = threading.Lock()
+        self._video_metrics_lock: threading.Lock = threading.Lock()
+        self._video_last_encode_ms: float = 0.0
+        self._video_last_wait_event_ms: float = 0.0
+        self._video_last_backend_code: float = 0.0  # 0 none, 1 cpu, 2 nvjpeg
+        self._video_last_cpu_copy_ms: float = 0.0
+        self._video_last_push_ms: float = 0.0
+        self._video_last_jpeg_kb: float = 0.0
+        self._video_encode_jobs_count: int = 0
+        self._video_encode_errors_count: int = 0
 
         # ── WebCodecs zero-encode path ──────────────────────────────────
         # PyFFmpegDemuxer opens a second connection to the same stream URL and
@@ -198,6 +207,16 @@ class PipelineOrchestrator:
 
                 output = self.preprocessor.build_output(frame_id, frame)
                 self.aggregator.attach_telemetry(frame_id, output.telemetry)
+                if output.telemetry is not None:
+                    output.telemetry.add_metrics(self._snapshot_video_encode_metrics())
+                perf_src_wait_ms = 0.0
+                perf_src_age_ms = 0.0
+                perf_src_copy_sync_ms = 0.0
+                if output.telemetry is not None:
+                    tele_snapshot = output.telemetry.snapshot()
+                    perf_src_wait_ms = float(tele_snapshot.get("frame_source_wait_latest_ms", 0.0) or 0.0)
+                    perf_src_age_ms = float(tele_snapshot.get("frame_source_age_at_consume_ms", 0.0) or 0.0)
+                    perf_src_copy_sync_ms = float(tele_snapshot.get("frame_source_copy_sync_ms", 0.0) or 0.0)
                 perf_after_preprocess_ns = time.perf_counter_ns() if _PERF_LOG else 0
 
                 if isinstance(self.fusion_strategy, RawStreamFusionStrategy):
@@ -217,6 +236,9 @@ class PipelineOrchestrator:
                 perf_after_infer_ns = perf_after_video_sync_ns
                 perf_before_collect_ns = perf_after_video_sync_ns
                 perf_after_collect_ns = perf_after_video_sync_ns
+                perf_trt_sync_ms = 0.0
+                perf_trt_prepare_ms = 0.0
+                perf_decode_ms = 0.0
                 for model in self._models:
                     processed = output.flatten_inputs(model.name)
                     tile_plan = output.plans.get(model.name)
@@ -229,6 +251,10 @@ class PipelineOrchestrator:
                             preprocess_events=list(output.cuda_events.values()),
                             tile_plan=tile_plan,
                         )
+                        if isinstance(prediction, dict):
+                            perf_trt_sync_ms = float(prediction.get("stream_sync_ms", perf_trt_sync_ms) or perf_trt_sync_ms)
+                            perf_trt_prepare_ms = float(prediction.get("prepare_batch_ms", perf_trt_prepare_ms) or perf_trt_prepare_ms)
+                            perf_decode_ms = float(prediction.get("decode_ms", perf_decode_ms) or perf_decode_ms)
                         perf_after_infer_ns = time.perf_counter_ns() if _PERF_LOG else 0
                         if isinstance(prediction, dict):
                             prediction["_inference_done_ns"] = int(time.time_ns())
@@ -260,6 +286,12 @@ class PipelineOrchestrator:
                         f" infer={format_duration_ms(perf_before_infer_ns, perf_after_infer_ns)}"
                         f" pre_collect={format_duration_ms(perf_after_infer_ns, perf_before_collect_ns)}"
                         f" collect={format_duration_ms(perf_before_collect_ns, perf_after_collect_ns)}"
+                        f" src_wait={perf_src_wait_ms:.1f}"
+                        f" src_age={perf_src_age_ms:.1f}"
+                        f" src_copy_sync={perf_src_copy_sync_ms:.1f}"
+                        f" trt_prepare={perf_trt_prepare_ms:.1f}"
+                        f" trt_sync={perf_trt_sync_ms:.1f}"
+                        f" decode={perf_decode_ms:.1f}"
                         f" infer+collect={format_duration_ms(perf_after_video_sync_ns, perf_loop_done_ns)}"
                         f" total={format_duration_ms(perf_loop_start_ns, perf_loop_done_ns)}ms",
                         file=sys.stderr, flush=True,
@@ -556,13 +588,14 @@ class PipelineOrchestrator:
         """Submit one JPEG encode job to the dedicated video executor.
 
         backend=auto:
-          - sync mode  -> CPU JPEG (reduce GPU contention with NVDEC/inference)
-          - async mode -> NVJPEG
+                    - sync mode  -> NVJPEG when CUDA is available (lower end-to-end latency)
+                    - async mode -> NVJPEG
+                    - fallback to CPU JPEG only when CUDA is unavailable
         backend=cpu/nvjpeg force the chosen encoder.
         """
         backend = self._video_encode_backend
         if backend == "auto":
-            backend = "cpu" if self._force_mjpeg else "nvjpeg"
+                        backend = "nvjpeg" if torch.cuda.is_available() else "cpu"
         if backend not in ("cpu", "nvjpeg"):
             log_warning(LogChannel.GLOBAL, f"Unknown video backend '{backend}', fallback to 'nvjpeg'")
             backend = "nvjpeg"
@@ -573,6 +606,7 @@ class PipelineOrchestrator:
                 enc_event,
                 self._video_quality,
                 push_frame,
+                self._record_video_encode_metrics,
             )
         return self._video_executor.submit(
             PipelineOrchestrator._encode_and_push_nvjpeg,
@@ -581,6 +615,7 @@ class PipelineOrchestrator:
             self._video_quality,
             push_frame,
             self._nvjpeg_stream,
+            self._record_video_encode_metrics,
         )
 
     @staticmethod
@@ -590,6 +625,7 @@ class PipelineOrchestrator:
         quality: int,
         push_frame: Any,
         nvjpeg_stream: "torch.cuda.Stream | None",
+        metrics_callback: Any | None = None,
     ) -> None:
         """Background thread: [3×H×W uint8 CUDA] → NVJPEG bytes → MJPEG clients.
 
@@ -597,7 +633,9 @@ class PipelineOrchestrator:
         or is blocked by the NV12→RGB stream or the inference streams.
         """
         try:
+            perf_start_ns = time.perf_counter_ns()
             enc_event.synchronize()  # CPU-side wait: data is ready in GPU memory
+            perf_after_wait_ns = time.perf_counter_ns()
             import torchvision.io as tvio
 
             # Encode on dedicated NVJPEG stream, then explicitly wait for stream
@@ -611,8 +649,11 @@ class PipelineOrchestrator:
                 buf = tvio.encode_jpeg(chw_uint8, quality=quality)
                 torch.cuda.current_stream().synchronize()
 
+            perf_after_encode_ns = time.perf_counter_ns()
+
             jpeg_np = buf.cpu().numpy()
             jpeg_bytes = jpeg_np.tobytes()
+            perf_after_cpu_copy_ns = time.perf_counter_ns()
 
             # Defensive check: reject obviously corrupted bitstreams.
             # JPEG must start with SOI (FFD8) and end with EOI (FFD9).
@@ -620,10 +661,26 @@ class PipelineOrchestrator:
                 raise RuntimeError("NVJPEG produced invalid JPEG markers")
 
             push_frame(jpeg_bytes)
+            perf_after_push_ns = time.perf_counter_ns()
+            if callable(metrics_callback):
+                metrics_callback(
+                    {
+                        "video_encode_backend_code": 2.0,
+                        "video_encode_last_ms": (perf_after_push_ns - perf_start_ns) / 1_000_000.0,
+                        "video_encode_wait_event_ms": (perf_after_wait_ns - perf_start_ns) / 1_000_000.0,
+                        "video_encode_kernel_ms": (perf_after_encode_ns - perf_after_wait_ns) / 1_000_000.0,
+                        "video_encode_cpu_copy_ms": (perf_after_cpu_copy_ns - perf_after_encode_ns) / 1_000_000.0,
+                        "video_encode_push_ms": (perf_after_push_ns - perf_after_cpu_copy_ns) / 1_000_000.0,
+                        "video_jpeg_kb": len(jpeg_bytes) / 1024.0,
+                        "video_encode_error": 0.0,
+                    }
+                )
         except Exception as _nvjpeg_exc:
             import sys as _sys
             print(f"[NVJPEG] encode failed: {type(_nvjpeg_exc).__name__}: {_nvjpeg_exc}",
                   file=_sys.stderr, flush=True)
+            if callable(metrics_callback):
+                metrics_callback({"video_encode_backend_code": 2.0, "video_encode_error": 1.0})
 
     @staticmethod
     def _encode_and_push_cpujpeg(
@@ -631,6 +688,7 @@ class PipelineOrchestrator:
         enc_event: torch.cuda.Event,
         quality: int,
         push_frame: Any,
+        metrics_callback: Any | None = None,
     ) -> None:
         """Background thread: CUDA RGB tensor → CPU JPEG bytes.
 
@@ -640,16 +698,71 @@ class PipelineOrchestrator:
         isolated on the worker thread / CPU.
         """
         try:
+            perf_start_ns = time.perf_counter_ns()
             enc_event.synchronize()
+            perf_after_wait_ns = time.perf_counter_ns()
             import torchvision.io as tvio
 
             cpu_tensor = chw_uint8.cpu()
+            perf_after_cpu_copy_ns = time.perf_counter_ns()
             buf = tvio.encode_jpeg(cpu_tensor, quality=quality)
-            push_frame(bytes(buf.numpy()))
+            jpeg_bytes = bytes(buf.numpy())
+            perf_after_encode_ns = time.perf_counter_ns()
+            push_frame(jpeg_bytes)
+            perf_after_push_ns = time.perf_counter_ns()
+            if callable(metrics_callback):
+                metrics_callback(
+                    {
+                        "video_encode_backend_code": 1.0,
+                        "video_encode_last_ms": (perf_after_push_ns - perf_start_ns) / 1_000_000.0,
+                        "video_encode_wait_event_ms": (perf_after_wait_ns - perf_start_ns) / 1_000_000.0,
+                        "video_encode_kernel_ms": (perf_after_encode_ns - perf_after_cpu_copy_ns) / 1_000_000.0,
+                        "video_encode_cpu_copy_ms": (perf_after_cpu_copy_ns - perf_after_wait_ns) / 1_000_000.0,
+                        "video_encode_push_ms": (perf_after_push_ns - perf_after_encode_ns) / 1_000_000.0,
+                        "video_jpeg_kb": len(jpeg_bytes) / 1024.0,
+                        "video_encode_error": 0.0,
+                    }
+                )
         except Exception as _cpujpeg_exc:
             import sys as _sys
             print(f"[CPUJPEG] encode failed: {type(_cpujpeg_exc).__name__}: {_cpujpeg_exc}",
                   file=_sys.stderr, flush=True)
+            if callable(metrics_callback):
+                metrics_callback({"video_encode_backend_code": 1.0, "video_encode_error": 1.0})
+
+    def _record_video_encode_metrics(self, metrics: dict[str, float]) -> None:
+        with self._video_metrics_lock:
+            self._video_encode_jobs_count += 1
+            self._video_last_backend_code = float(metrics.get("video_encode_backend_code", self._video_last_backend_code))
+            if "video_encode_last_ms" in metrics:
+                self._video_last_encode_ms = float(metrics["video_encode_last_ms"])
+            if "video_encode_wait_event_ms" in metrics:
+                self._video_last_wait_event_ms = float(metrics["video_encode_wait_event_ms"])
+            if "video_encode_cpu_copy_ms" in metrics:
+                self._video_last_cpu_copy_ms = float(metrics["video_encode_cpu_copy_ms"])
+            if "video_encode_push_ms" in metrics:
+                self._video_last_push_ms = float(metrics["video_encode_push_ms"])
+            if "video_jpeg_kb" in metrics:
+                self._video_last_jpeg_kb = float(metrics["video_jpeg_kb"])
+            if float(metrics.get("video_encode_error", 0.0)) > 0.0:
+                self._video_encode_errors_count += 1
+
+    def _snapshot_video_encode_metrics(self) -> dict[str, float]:
+        with self._video_metrics_lock:
+            snapshot = {
+                "video_encode_last_ms": self._video_last_encode_ms,
+                "video_encode_wait_event_ms": self._video_last_wait_event_ms,
+                "video_encode_cpu_copy_ms": self._video_last_cpu_copy_ms,
+                "video_encode_push_ms": self._video_last_push_ms,
+                "video_jpeg_kb": self._video_last_jpeg_kb,
+                "video_encode_jobs": float(self._video_encode_jobs_count),
+                "video_encode_errors": float(self._video_encode_errors_count),
+                "video_backend_code": self._video_last_backend_code,
+            }
+        with self._pending_frame_lock:
+            snapshot["video_encode_inflight"] = 1.0 if self._encode_running else 0.0
+            snapshot["video_encode_stashed"] = 1.0 if self._pending_chw is not None else 0.0
+        return snapshot
 
     def _build_packet_forwarder(self, ws_port: int) -> NvdecPacketForwarder | None:
         """Construct a NvdecPacketForwarder if the frame source exposes a stream URL."""

@@ -16,6 +16,8 @@
 (function () {
   if (typeof VideoDecoder === 'undefined') return; // no WebCodecs support
 
+  window.__videoTransport = window.__videoTransport || 'mjpeg';
+
   let _wsPort = (window._SERVER_WS_PORT || 5001);
 
   async function _fetchWsPort() {
@@ -57,6 +59,7 @@
   function activateCanvas() {
     videoFeed.style.display   = 'none';
     videoCanvas.style.display = 'block';
+    window.__videoTransport = 'webcodecs';
     if ($displayModeChip) $displayModeChip.textContent = 'WebCodecs';
   }
 
@@ -67,6 +70,7 @@
     clearTimeout(fallbackTimer);
     try { ws && ws.close(); } catch (e) {}
     try { decoder && decoder.close(); } catch (e) {}
+    window.__videoTransport = 'mjpeg';
     decoder = null; ws = null; _lastConfig = null; _waitForKeyframe = false;
     if ($displayModeChip) $displayModeChip.textContent = 'MJPEG';
   }
@@ -78,6 +82,7 @@
     // display:none.  Simply un-hiding it leaves a stale (dead) stream.
     // Force a fresh HTTP request with a cache-busting timestamp.
     videoFeed.src = '/api/video?_t=' + Date.now();
+    window.__videoTransport = 'mjpeg';
     if ($displayModeChip) $displayModeChip.textContent = 'MJPEG';
   }
 

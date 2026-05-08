@@ -553,6 +553,21 @@ main.page-column {
   text-align: center;
 }
 
+.benchmark-report {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.03);
+  color: rgba(221,236,255,0.92);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
 .profile-controls {
   display: flex;
   flex-wrap: wrap;

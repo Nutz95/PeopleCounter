@@ -61,6 +61,7 @@ class YoloGlobalTRT(InferenceModel):
             decoded = self._decoder.process(frame_id, raw_outputs, tile_plan=tile_plan)
             decode_ms = (time.perf_counter_ns() - decode_start_ns) / 1_000_000.0
             infer_ms = (gpu_done_ns - start_ns) / 1_000_000.0  # CPU decode excluded
+            decode_profile = getattr(self._decoder, "_last_decode_profile", {})
             return {
                 "frame_id": frame_id,
                 "model": self._name,
@@ -86,6 +87,10 @@ class YoloGlobalTRT(InferenceModel):
                 "enqueue_ms": float(raw_outputs.get("enqueue_ms", 0.0)),
                 "stream_sync_ms": float(raw_outputs.get("stream_sync_ms", 0.0)),
                 "decode_ms": float(decode_ms),
+                "decode_stage_filter_ms": float(decode_profile.get("decode_stage_filter_ms", 0.0)),
+                "decode_stage_nms_ms": float(decode_profile.get("decode_stage_nms_ms", 0.0)),
+                "decode_stage_export_ms": float(decode_profile.get("decode_stage_export_ms", 0.0)),
+                "decode_stage_pack_ms": float(decode_profile.get("decode_stage_pack_ms", 0.0)),
             }
         finally:
             self._context.release_stream(stream_key)

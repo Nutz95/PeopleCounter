@@ -89,8 +89,38 @@ else
     echo "⚠️ nvidia-smi introuvable sur l’hôte"
 fi
 
+check_host_port_free() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        if ss -ltn "( sport = :${port} )" | grep -q LISTEN; then
+            echo "❌ Port ${port} déjà utilisé sur l'hôte."
+            echo "   Processus écouteurs (best effort):"
+            ss -ltnp "( sport = :${port} )" || true
+            return 1
+        fi
+    elif command -v lsof >/dev/null 2>&1; then
+        if lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+            echo "❌ Port ${port} déjà utilisé sur l'hôte."
+            echo "   Processus écouteurs (best effort):"
+            lsof -nP -iTCP:"${port}" -sTCP:LISTEN || true
+            return 1
+        fi
+    else
+        echo "⚠️ Ni 'ss' ni 'lsof' disponibles: impossible de vérifier les ports avant lancement."
+    fi
+    return 0
+}
+
+# Ports critiques de l'app v2: HTTP, WebCodecs WS, Metadata WS
+for required_port in 5000 4999 5003; do
+    check_host_port_free "$required_port" || {
+        echo "💡 Astuce: ferme l'ancien conteneur/processus puis relance $0"
+        exit 1
+    }
+done
+
 # Detection of source type
-DOCKER_ARGS=("--gpus" "all" "-p" "5000:5000" "-p" "4999:4999" "-e" "DISPLAY=$DISPLAY" "-v" "$PWD:/app" "-w" "/app/$APP_DIR" "-e" "PYTHONPATH=/app:/app/app_v1:/app/app_v2" "-e" "APP_VERSION=$SELECTED_APP_VERSION")
+DOCKER_ARGS=("--gpus" "all" "-p" "5000:5000" "-p" "4999:4999" "-p" "5003:5003" "-e" "DISPLAY=$DISPLAY" "-v" "$PWD:/app" "-w" "/app/$APP_DIR" "-e" "PYTHONPATH=/app:/app/app_v1:/app/app_v2" "-e" "APP_VERSION=$SELECTED_APP_VERSION")
 
 if [[ "$SOURCE" == http* ]] || [[ "$SOURCE" == rtsp* ]]; then
     echo "🌐 Using Network Stream mode"

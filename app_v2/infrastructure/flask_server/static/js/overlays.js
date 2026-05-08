@@ -33,6 +33,9 @@ function _computeLayout() {
 
 // ── Bounding-box overlay ──────────────────────────────────────
 function drawMask(payload) {
+  // WebGL renderer takes over mask drawing when available — skip Canvas2D.
+  if (window._webglOverlayActive) return;
+
   const layout = _computeLayout();
   if (!layout) return;
   const { W, H, dispW, dispH, dispX, dispY } = layout;
@@ -55,6 +58,96 @@ function drawMask(payload) {
       const bh = (gy2 - gy1) * dispH;
       if (bw <= 0 || bh <= 0) continue;
 
+      if (renderPoints) {
+        const cx = bx + bw * 0.5;
+        const cy = by + bh * 0.5;
+        maskCtx.fillStyle = 'rgba(42,223,165,0.9)';
+        maskCtx.beginPath();
+        maskCtx.arc(cx, cy, 2.5, 0, 2 * Math.PI);
+        maskCtx.fill();
+      } else {
+        maskCtx.strokeStyle = 'rgba(42,223,165,0.9)';
+        maskCtx.fillStyle   = 'rgba(42,223,165,0.12)';
+        maskCtx.lineWidth   = 2;
+        maskCtx.beginPath();
+        maskCtx.roundRect(bx, by, bw, bh, 4);
+        maskCtx.fill();
+        maskCtx.stroke();
+      }
+
+      if (showBboxText && det.conf != null) {
+        const label = `${(det.conf * 100).toFixed(0)}%`;
+        maskCtx.fillStyle = 'rgba(5,11,23,0.75)';
+        maskCtx.fillRect(bx, by - 18, label.length * 7 + 8, 18);
+        maskCtx.fillStyle = '#e5fffa';
+        maskCtx.font = '11px monospace';
+        maskCtx.fillText(label, bx + 4, by - 4);
+      }
+    }
+  }
+}
+
+// ── Packed detections overlay (metadata websocket) ────────────
+function drawMaskPacked(rows) {
+  // WebGL renderer takes over mask drawing when available — skip Canvas2D.
+  if (window._webglOverlayActive) return;
+
+  const layout = _computeLayout();
+  if (!layout) return;
+  const { W, H, dispW, dispH, dispX, dispY } = layout;
+  if (maskCanvas.width !== W || maskCanvas.height !== H) {
+    maskCanvas.width  = W;
+    maskCanvas.height = H;
+  } else {
+    maskCtx.clearRect(0, 0, W, H);
+  }
+  if (!rows || rows.length < 3) return;
+  const rowWidth = _packedDetectionsRowWidth || 5;
+  const centersMode = rowWidth === 3;
+  if (!(rowWidth === 3 || rowWidth === 5)) return;
+
+  for (let i = 0; i + rowWidth - 1 < rows.length; i += rowWidth) {
+    const conf = rows[i + rowWidth - 1];
+
+    if (centersMode) {
+      const cx = dispX + rows[i + 0] * dispW;
+      const cy = dispY + rows[i + 1] * dispH;
+
+      maskCtx.fillStyle = 'rgba(42,223,165,0.9)';
+      maskCtx.beginPath();
+      maskCtx.arc(cx, cy, 2.5, 0, 2 * Math.PI);
+      maskCtx.fill();
+
+      if (showBboxText) {
+        const label = `${(conf * 100).toFixed(0)}%`;
+        maskCtx.fillStyle = 'rgba(5,11,23,0.75)';
+        maskCtx.fillRect(cx - 2, cy - 18, label.length * 7 + 8, 18);
+        maskCtx.fillStyle = '#e5fffa';
+        maskCtx.font = '11px monospace';
+        maskCtx.fillText(label, cx + 2, cy - 4);
+      }
+      continue;
+    }
+
+    const gx1 = rows[i + 0];
+    const gy1 = rows[i + 1];
+    const gx2 = rows[i + 2];
+    const gy2 = rows[i + 3];
+
+    const bx = dispX + gx1 * dispW;
+    const by = dispY + gy1 * dispH;
+    const bw = (gx2 - gx1) * dispW;
+    const bh = (gy2 - gy1) * dispH;
+    if (bw <= 0 || bh <= 0) continue;
+
+    if (renderPoints) {
+      const cx = bx + bw * 0.5;
+      const cy = by + bh * 0.5;
+      maskCtx.fillStyle = 'rgba(42,223,165,0.9)';
+      maskCtx.beginPath();
+      maskCtx.arc(cx, cy, 2.5, 0, 2 * Math.PI);
+      maskCtx.fill();
+    } else {
       maskCtx.strokeStyle = 'rgba(42,223,165,0.9)';
       maskCtx.fillStyle   = 'rgba(42,223,165,0.12)';
       maskCtx.lineWidth   = 2;
@@ -62,16 +155,15 @@ function drawMask(payload) {
       maskCtx.roundRect(bx, by, bw, bh, 4);
       maskCtx.fill();
       maskCtx.stroke();
+    }
 
-      if (det.label || det.conf != null) {
-        const label = [det.label, det.conf != null ? `${(det.conf * 100).toFixed(0)}%` : '']
-          .filter(Boolean).join(' ');
-        maskCtx.fillStyle = 'rgba(5,11,23,0.75)';
-        maskCtx.fillRect(bx, by - 18, label.length * 7 + 8, 18);
-        maskCtx.fillStyle = '#e5fffa';
-        maskCtx.font = '11px monospace';
-        maskCtx.fillText(label, bx + 4, by - 4);
-      }
+    if (showBboxText) {
+      const label = `${(conf * 100).toFixed(0)}%`;
+      maskCtx.fillStyle = 'rgba(5,11,23,0.75)';
+      maskCtx.fillRect(bx, by - 18, label.length * 7 + 8, 18);
+      maskCtx.fillStyle = '#e5fffa';
+      maskCtx.font = '11px monospace';
+      maskCtx.fillText(label, bx + 4, by - 4);
     }
   }
 }

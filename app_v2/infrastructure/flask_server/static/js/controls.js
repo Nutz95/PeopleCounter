@@ -30,6 +30,8 @@ function _updateOverlaySection(mode) {
   const $section = document.getElementById('overlay-section');
   $section.style.display = overlays.length > 0 ? '' : 'none';
   document.getElementById('overlay-bbox').style.display    = overlays.includes('bbox')    ? '' : 'none';
+  document.getElementById('overlay-bbox-points').style.display = overlays.includes('bbox') ? '' : 'none';
+  document.getElementById('overlay-bbox-text').style.display = overlays.includes('bbox') ? '' : 'none';
   document.getElementById('overlay-seg').style.display     = overlays.includes('seg')     ? '' : 'none';
   document.getElementById('overlay-heatmap').style.display = overlays.includes('heatmap') ? '' : 'none';
 
@@ -262,6 +264,14 @@ document.getElementById('mask-toggle').addEventListener('change', e => {
   if (!showMask) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 });
 
+document.getElementById('point-render-toggle').addEventListener('change', e => {
+  renderPoints = e.target.checked;
+});
+
+document.getElementById('bbox-text-toggle').addEventListener('change', e => {
+  showBboxText = e.target.checked;
+});
+
 document.getElementById('seg-toggle').addEventListener('change', e => {
   showSeg = e.target.checked;
   if (!showSeg) segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
@@ -338,3 +348,17 @@ function toggleFullscreen() {
   if (!document.fullscreenElement) el.requestFullscreen?.();
   else document.exitFullscreen?.();
 }
+
+// ── Benchmark capture toggle ──────────────────────────────────
+(function () {
+  const btn = document.getElementById('benchmark-toggle');
+  if (!btn || !window.__benchmarkCapture) return;
+
+  btn.addEventListener('click', () => {
+    if (window.__benchmarkCapture.isActive()) {
+      window.__benchmarkCapture.stopAndDownload();
+      return;
+    }
+    window.__benchmarkCapture.start();
+  });
+})();

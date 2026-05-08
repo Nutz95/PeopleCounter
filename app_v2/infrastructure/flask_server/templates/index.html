@@ -35,6 +35,8 @@
         <img id="video-feed" src="/api/video" alt="Video feed" />
         <!-- Detection / mask overlay canvas -->
         <canvas id="mask-canvas" class="mask-overlay"></canvas>
+        <!-- WebGL2 instanced overlay — sits above mask-canvas; hidden until WebGL is confirmed -->
+        <canvas id="webgl-canvas" class="mask-overlay" style="display:none;"></canvas>
         <!-- Segmentation overlay — union of per-person prototype masks (YOLO-seg) -->
         <canvas id="seg-canvas"  class="mask-overlay" style="opacity:0.6;"></canvas>
         <!-- Density heatmap overlay — colourised DM-Count density map -->
@@ -46,13 +48,18 @@
         <div class="fps-chip" id="fps-chip">— fps</div>
         <div class="fps-chip" id="display-fps-chip" style="top:2.8rem;">— fps</div>
         <div class="fps-chip" id="display-mode-chip" style="top:4.6rem;font-size:0.65rem;opacity:0.7;">MJPEG</div>
+        <div id="transport-extra-chips" style="position:absolute;top:6.35rem;right:18px;display:flex;flex-direction:column;gap:6px;z-index:4;">
+          <div id="overlay-chip" style="padding:5px 12px;border-radius:999px;background:rgba(6,255,203,0.10);border:1px solid rgba(42,223,165,0.28);font-size:0.62rem;opacity:0.82;">Overlay —</div>
+          <div id="meta-chip" style="padding:5px 12px;border-radius:999px;background:rgba(6,255,203,0.10);border:1px solid rgba(42,223,165,0.28);font-size:0.62rem;opacity:0.82;">MetaWS —</div>
+        </div>
 
         <!-- Bottom-left: pipeline stage breakdown -->
         <div class="video-overlay-controls" id="stage-breakdown">
           <div style="background:rgba(5,11,23,0.72);border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:6px 12px;font-size:0.75rem;line-height:1.7;color:#d1e4ff;">
             <span id="ov-preprocess">preprocess — ms</span><br>
             <span id="ov-global">global — ms</span><br>
-            <span id="ov-tiles">tiles — ms</span>
+            <span id="ov-tiles">tiles — ms</span><br>
+            <span id="ov-other">other — ms</span>
           </div>
         </div>
 
@@ -105,7 +112,7 @@
             <!-- Populated dynamically from /api/config -->
           </div>
           <div style="font-size:0.68rem;color:rgba(255,255,255,0.45);margin-top:4px">
-            Auto = CPU in sync, NVJPEG in async · CPU = Pillow (low GPU pressure) · GPU = NVJPEG (lower latency)
+            Auto = NVJPEG when CUDA is available (sync + async) · CPU = Pillow · GPU = NVJPEG (lower latency)
           </div>
         </div>
 
@@ -116,6 +123,14 @@
             <label class="toggle" id="overlay-bbox" style="display:none">
               <input type="checkbox" id="mask-toggle" checked>
               Bounding boxes
+            </label>
+            <label class="toggle" id="overlay-bbox-points" style="display:none">
+              <input type="checkbox" id="point-render-toggle">
+              Point mode (faster)
+            </label>
+            <label class="toggle" id="overlay-bbox-text" style="display:none">
+              <input type="checkbox" id="bbox-text-toggle">
+              Show confidence text
             </label>
             <label class="toggle" id="overlay-seg" style="display:none">
               <input type="checkbox" id="seg-toggle">
@@ -166,6 +181,19 @@
             <input type="checkbox" id="preview-only-toggle">
             Preview only (disable all overlays)
           </label>
+        </div>
+
+        <!-- ── Benchmark capture (CSV) ─────────────────────────────── -->
+        <div class="control-section" id="benchmark-capture-section">
+          <div class="control-section-label">Benchmark capture</div>
+          <div class="mode-pills">
+            <button id="benchmark-toggle" class="mode-pill">Start capture</button>
+          </div>
+          <div id="benchmark-status" style="font-size:0.72rem;color:rgba(255,255,255,0.55)">Idle</div>
+          <pre id="benchmark-report" class="benchmark-report">No benchmark summary yet.</pre>
+          <div style="font-size:0.68rem;color:rgba(255,255,255,0.40)">
+            Records per-frame telemetry from SSE and downloads a CSV when stopped.
+          </div>
         </div>
 
       </div>
@@ -271,12 +299,15 @@
 
   <!-- Server config exposed to JS (Jinja2 substitution) -->
   <script>window._SERVER_WS_PORT = {{ ws_port }};</script>
+  <script>window._SERVER_META_WS_PORT = {{ meta_ws_port }};</script>
 
   <!-- Application modules (load order matters: each depends on the previous) -->
   <script src="{{ url_for('static', filename='js/state.js') }}"></script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
   <script src="{{ url_for('static', filename='js/overlays.js') }}"></script>
   <script src="{{ url_for('static', filename='js/controls.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/meta_ws.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/webgl_overlay.js') }}"></script>
   <script src="{{ url_for('static', filename='js/sse.js') }}"></script>
   <script src="{{ url_for('static', filename='js/webcodecs.js') }}"></script>
 

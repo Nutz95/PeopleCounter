@@ -19,6 +19,7 @@ Concrete implementations:
 from __future__ import annotations
 
 import base64
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Sequence
 
@@ -47,6 +48,7 @@ class YoloDecoderBase(Postprocessor, ABC):
         self.seg_mask_clip_to_bbox: bool = True
         self.person_summary_enabled: bool = False
         self.min_box_px: float = 16.0
+        self._last_decode_profile: dict[str, float] = {}
 
     # ──────────────────────────────────────────────────────────────────────────
     # Abstract interface — subclasses must implement
@@ -217,18 +219,28 @@ class YoloDecoderBase(Postprocessor, ABC):
 
     def _decode_postnms(self, rows: Any) -> list[dict[str, Any]]:
         """Decode post-NMS ``[N, 6]`` tensor."""
+        t0 = time.perf_counter_ns()
         confs   = rows[:, 4]
         classes = rows[:, 5]
         mask = (confs >= self.confidence_threshold) & (classes == float(self.person_class_id))
         rows = rows[mask]
+        t_filter = time.perf_counter_ns()
         if rows.shape[0] == 0:
+            self._last_decode_profile = {
+                "decode_stage_filter_ms": (t_filter - t0) / 1_000_000.0,
+                "decode_stage_nms_ms": 0.0,
+                "decode_stage_export_ms": 0.0,
+                "decode_stage_pack_ms": 0.0,
+            }
             return []
         coords = rows[:, :4]
         if float(coords.max().item()) > 2.0:
             coords = coords / 640.0
         coords = coords.clamp(0.0, 1.0)
+        t_nms = time.perf_counter_ns()
         detections_cpu = torch.cat([coords, rows[:, 4:5]], dim=1).cpu().numpy()
-        return [
+        t_export = time.perf_counter_ns()
+        packed = [
             {
                 "bbox": [float(x1), float(y1), float(x2), float(y2)],
                 "conf": round(float(confidence), 4),
@@ -236,6 +248,14 @@ class YoloDecoderBase(Postprocessor, ABC):
             }
             for x1, y1, x2, y2, confidence in detections_cpu
         ]
+        t_pack = time.perf_counter_ns()
+        self._last_decode_profile = {
+            "decode_stage_filter_ms": (t_filter - t0) / 1_000_000.0,
+            "decode_stage_nms_ms": (t_nms - t_filter) / 1_000_000.0,
+            "decode_stage_export_ms": (t_export - t_nms) / 1_000_000.0,
+            "decode_stage_pack_ms": (t_pack - t_export) / 1_000_000.0,
+        }
+        return packed
 
     def _decode_tiled_global(self, tensor: Any, plan: Any) -> list[dict[str, Any]]:
         """Decode batched tile tensor to global frame coordinates ``[0, 1]``.

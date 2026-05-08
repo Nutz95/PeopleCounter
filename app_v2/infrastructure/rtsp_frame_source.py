@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 import threading
 from typing import Any
 
@@ -103,6 +104,7 @@ class RTSPFrameSource(FrameSource):
                 self.decoder.ring.release(decode_slot)
             return frame
 
+        wait_start_ns = time.perf_counter_ns()
         with self._decode_cond:
             # Consumer has finished with the previously delivered slot.
             self._consumer_slot_idx = None
@@ -121,10 +123,20 @@ class RTSPFrameSource(FrameSource):
             self._delivered_seq = self._latest_seq
             self._consumer_slot_idx = slot_idx
             slot = self._stable_slots[slot_idx]
+        wait_ms = (time.perf_counter_ns() - wait_start_ns) / 1_000_000.0
 
         telemetry = slot.telemetry
         if telemetry is not None:
             telemetry.frame_id = frame_id
+            frame_age_ms = 0.0
+            if isinstance(slot.timestamp_ns, int) and slot.timestamp_ns > 0:
+                frame_age_ms = max(0.0, (time.time_ns() - slot.timestamp_ns) / 1_000_000.0)
+            telemetry.add_metrics(
+                {
+                    "frame_source_wait_latest_ms": float(wait_ms),
+                    "frame_source_age_at_consume_ms": float(frame_age_ms),
+                }
+            )
 
         return GpuFrame(
             width=slot.width,
@@ -229,6 +241,7 @@ class RTSPFrameSource(FrameSource):
         if uv_ptr <= 0 or uv_ptr == y_ptr:
             uv_ptr = y_ptr + pitch * height
 
+        copy_start_ns = time.perf_counter_ns()
         with torch.cuda.stream(self._copy_stream):
             _copy_plane_2d_async(
                 destination_ptr=int(slot.y_plane.data_ptr()),
@@ -246,7 +259,19 @@ class RTSPFrameSource(FrameSource):
                 width_bytes=width,
                 height_rows=half_h,
             )
+        copy_enqueued_ns = time.perf_counter_ns()
         self._copy_stream.synchronize()
+        copy_done_ns = time.perf_counter_ns()
+
+        telemetry = getattr(frame, "telemetry", None)
+        if telemetry is not None:
+            telemetry.add_metrics(
+                {
+                    "frame_source_copy_enqueue_ms": float((copy_enqueued_ns - copy_start_ns) / 1_000_000.0),
+                    "frame_source_copy_sync_ms": float((copy_done_ns - copy_enqueued_ns) / 1_000_000.0),
+                    "frame_source_copy_total_ms": float((copy_done_ns - copy_start_ns) / 1_000_000.0),
+                }
+            )
 
         slot.timestamp_ns = getattr(frame, "timestamp_ns", None)
-        slot.telemetry = getattr(frame, "telemetry", None)
+        slot.telemetry = telemetry
