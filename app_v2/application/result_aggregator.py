@@ -47,10 +47,12 @@ class ResultAggregator:
             payload = merged if isinstance(merged, Sequence) else [merged]
             telemetry = self._telemetry.pop(frame_id, None)
             publish_ns = time.time_ns()
+            collect_latency_ms = (publish_ns - self._collect_started_ns[frame_id]) / 1_000_000.0
             _t0 = time.perf_counter_ns() if _PERF_LOG else 0
             payload_list = [self._strip_internal_metrics(entry) for entry in list(payload)]
             _t_strip = time.perf_counter_ns() if _PERF_LOG else 0
             if telemetry:
+                telemetry.add_metrics({"aggregator_collect_latency_ms": collect_latency_ms})
                 telemetry.add_metrics(self._build_publication_metrics(frame_id, list(payload), publish_ns, telemetry))
                 _t_metrics = time.perf_counter_ns() if _PERF_LOG else 0
                 payload_list.append({"telemetry": telemetry.snapshot()})
@@ -64,6 +66,7 @@ class ResultAggregator:
                 _ms = lambda a, b: f"{(b - a) / 1e6:.2f}"  # noqa: E731
                 print(
                     f"[PERF2] f={frame_id}"
+                    f" collect_latency={collect_latency_ms:.2f}"
                     f" strip={_ms(_t0, _t_strip)}"
                     f" metrics={_ms(_t_strip, _t_metrics)}"
                     f" snapshot={_ms(_t_metrics, _t_snapshot)}"

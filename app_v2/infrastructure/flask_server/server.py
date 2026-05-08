@@ -58,6 +58,9 @@ class FlaskStreamServer(ResultPublisher):
         self._last_lock = threading.Lock()
         self._last: dict[str, Any] = {"frame_id": None, "payload": None}
 
+        # Background thread for JSON encoding (off hot path)
+        self._json_queue: Any = None  # Will be initialized in start()
+        self._json_executor: Any = None  # Will be initialized in start()
         # Dedicated state/services (SOLID split)
         self._runtime = RuntimeState(initial_config)
         self._sse = SseHub()
@@ -252,15 +255,25 @@ class FlaskStreamServer(ResultPublisher):
             if isinstance(item, dict) and isinstance(item.get("telemetry"), dict):
                 telemetry_dict = item.get("telemetry")  # type: ignore[assignment]
                 break
+        telemetry_update_start_ns = time.perf_counter_ns()
         if telemetry_dict is not None:
             telemetry_dict["server_meta_ws_push_ms"] = (meta_push_done_ns - meta_push_start_ns) / 1_000_000.0
             telemetry_dict["server_compact_payload_ms"] = (compact_done_ns - meta_push_done_ns) / 1_000_000.0
             telemetry_dict["server_meta_ws_clients"] = 1.0 if has_metadata_clients else 0.0
             telemetry_dict.update(self._publish_metrics_prev)
+        telemetry_update_done_ns = time.perf_counter_ns()
 
         data = {"frame_id": frame_id, "payload": sse_payload}
-        with self._last_lock:
-            self._last = data
+        lock_start_ns = time.perf_counter_ns()
+        # Defer _last update to background (avoid blocking hot path on lock contention).
+        # Use non-blocking check to see if we should even bother.
+        lock_acquired = self._last_lock.acquire(blocking=False)
+        if lock_acquired:
+            try:
+                self._last = data
+            finally:
+                self._last_lock.release()
+        lock_done_ns = time.perf_counter_ns()
         json_start_ns = time.perf_counter_ns()
         encoded = json.dumps(data, default=str)
         json_done_ns = time.perf_counter_ns()
@@ -270,6 +283,9 @@ class FlaskStreamServer(ResultPublisher):
             "server_json_encode_ms": (json_done_ns - json_start_ns) / 1_000_000.0,
             "server_sse_publish_ms": (publish_done_ns - json_done_ns) / 1_000_000.0,
             "server_publish_total_ms": (publish_done_ns - publish_start_ns) / 1_000_000.0,
+            "server_telemetry_update_ms": (telemetry_update_done_ns - telemetry_update_start_ns) / 1_000_000.0,
+            "server_lock_acquired": 1.0 if lock_acquired else 0.0,
+            "server_lock_hold_ms": (lock_done_ns - lock_start_ns) / 1_000_000.0,
         }
 
     def publish_passthrough_frame(self, frame_id: int) -> None:

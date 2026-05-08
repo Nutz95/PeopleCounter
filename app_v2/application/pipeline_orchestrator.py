@@ -239,8 +239,13 @@ class PipelineOrchestrator:
                 perf_trt_sync_ms = 0.0
                 perf_trt_prepare_ms = 0.0
                 perf_decode_ms = 0.0
+                perf_flatten_ms_total = 0.0
+                perf_register_ms_total = 0.0
+                perf_collect_ms_total = 0.0
                 for model in self._models:
+                    perf_flatten_start_ns = time.perf_counter_ns()
                     processed = output.flatten_inputs(model.name)
+                    perf_flatten_ms_total += (time.perf_counter_ns() - perf_flatten_start_ns) / 1_000_000.0
                     tile_plan = output.plans.get(model.name)
                     with self.performance_tracker.stage(frame_id, model.name):
                         if _PERF_LOG:
@@ -261,11 +266,24 @@ class PipelineOrchestrator:
                             # DM-Count density: convert raw GPU tiles → base64 heatmap
                             if model.name == "density":
                                 prediction = self._density_decoder.process(frame_id, prediction)
+                        perf_register_start_ns = time.perf_counter_ns()
                         self.processing_graph.register(model.name, {"frame_id": frame_id})
+                        perf_register_ms_total += (time.perf_counter_ns() - perf_register_start_ns) / 1_000_000.0
                         if _PERF_LOG:
                             perf_before_collect_ns = time.perf_counter_ns()
+                        perf_collect_start_ns = time.perf_counter_ns()
                         self.aggregator.collect(frame_id, prediction)
+                        perf_collect_ms_total += (time.perf_counter_ns() - perf_collect_start_ns) / 1_000_000.0
                         perf_after_collect_ns = time.perf_counter_ns() if _PERF_LOG else 0
+
+                if output.telemetry is not None:
+                    output.telemetry.add_metrics(
+                        {
+                            "orchestrator_flatten_ms": perf_flatten_ms_total,
+                            "orchestrator_register_ms": perf_register_ms_total,
+                            "orchestrator_collect_ms": perf_collect_ms_total,
+                        }
+                    )
 
                 if _PERF_LOG:
                     perf_loop_done_ns = time.perf_counter_ns()

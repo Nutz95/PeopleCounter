@@ -102,6 +102,14 @@ sse.addEventListener('message', e => {
   // ── Metrics from telemetry snapshot ──────────────────────────
   const e2e      = +(tel.end_to_end_ms                  ?? 0);
   const preproc  = +(tel.preprocess_ms                  ?? 0);
+  const preprocDispatch = +(tel.preprocess_dispatch_ms ?? 0);
+  const preprocSync = +(tel.preprocess_sync_ms ?? 0);
+  const preprocPlanYolo = +(tel.preprocess_plan_ms_yolo ?? 0);
+  const preprocKernelYolo = +(tel.preprocess_kernel_ms_yolo ?? 0);
+  const preprocTileCountYolo = +(tel.preprocess_tile_count_yolo ?? 0);
+  const preprocPlanCrowd = +(tel.preprocess_plan_ms_crowd ?? 0);
+  const preprocKernelCrowd = +(tel.preprocess_kernel_ms_crowd ?? 0);
+  const preprocTileCountCrowd = +(tel.preprocess_tile_count_crowd ?? 0);
     // Pick inference time across all model variants (yolo, crowd, density).
     const tiles   = +(tel.inference_model_yolo_tiles_ms   ?? tel.inference_model_crowd_tiles_ms  ?? 0);
     const global_ = +(tel.inference_model_yolo_global_ms  ?? tel.inference_model_crowd_global_ms ?? 0);
@@ -167,6 +175,26 @@ sse.addEventListener('message', e => {
   const otherMs = Math.max(0, e2e - e2eAccounted);
   const avgOther = hasTelemetry ? rollAvg(_smooth.other, otherMs) : 0;
 
+  // ── Decompose other_ms into sub-metrics ──────────────────────
+  // These are sampled from telemetry to understand where the gap goes.
+  const otherPublish = +(tel.server_publish_total_ms ?? 0);
+  const otherEncode = +(tel.video_encode_last_ms ?? 0);
+  const otherEncodeWait = +(tel.video_encode_wait_event_ms ?? 0);
+  const otherEncodeCopy = +(tel.video_encode_cpu_copy_ms ?? 0);
+  const otherEncodePush = +(tel.video_encode_push_ms ?? 0);
+  const orchestratorFlatten = +(tel.orchestrator_flatten_ms ?? 0);
+  const orchestratorRegister = +(tel.orchestrator_register_ms ?? 0);
+  const orchestratorCollect = +(tel.orchestrator_collect_ms ?? 0);
+  const aggregatorCollectLatency = +(tel.aggregator_collect_latency_ms ?? 0);
+  const serverJsonEncode = +(tel.server_json_encode_ms ?? 0);
+  const serverSsePublish = +(tel.server_sse_publish_ms ?? 0);
+  const serverCompactPayload = +(tel.server_compact_payload_ms ?? 0);
+  const serverMetaWsPush = +(tel.server_meta_ws_push_ms ?? 0);
+  const serverTelemetryUpdate = +(tel.server_telemetry_update_ms ?? 0);
+  const serverLockHold = +(tel.server_lock_hold_ms ?? 0);
+  const serverLockAcquired = +(tel.server_lock_acquired ?? 0);
+  const otherCollect = Math.max(0, otherMs - (otherPublish + otherEncode));
+
   // ── Update DOM ───────────────────────────────────────────────
   $connStatus.textContent = '⬤ Live';
   $connStatus.style.color = 'var(--accent)';
@@ -209,6 +237,14 @@ sse.addEventListener('message', e => {
       fps,
       e2e_ms: +e2e.toFixed(4),
       preproc_ms: +preproc.toFixed(4),
+      preproc_dispatch_ms: +preprocDispatch.toFixed(4),
+      preproc_sync_ms: +preprocSync.toFixed(4),
+      preproc_plan_yolo_ms: +preprocPlanYolo.toFixed(4),
+      preproc_kernel_yolo_ms: +preprocKernelYolo.toFixed(4),
+      preproc_tile_count_yolo: +preprocTileCountYolo.toFixed(0),
+      preproc_plan_crowd_ms: +preprocPlanCrowd.toFixed(4),
+      preproc_kernel_crowd_ms: +preprocKernelCrowd.toFixed(4),
+      preproc_tile_count_crowd: +preprocTileCountCrowd.toFixed(0),
       infer_tiles_ms: +tiles.toFixed(4),
       infer_global_ms: +global_.toFixed(4),
       infer_critical_ms: +inferCritical.toFixed(4),
@@ -219,6 +255,23 @@ sse.addEventListener('message', e => {
       decode_stage_export_ms: +decodeExport.toFixed(4),
       decode_stage_pack_ms: +decodePack.toFixed(4),
       other_ms: +otherMs.toFixed(4),
+      other_publish_ms: +otherPublish.toFixed(4),
+      other_encode_ms: +otherEncode.toFixed(4),
+      other_encode_wait_ms: +otherEncodeWait.toFixed(4),
+      other_encode_copy_ms: +otherEncodeCopy.toFixed(4),
+      other_encode_push_ms: +otherEncodePush.toFixed(4),
+      other_collect_ms: +otherCollect.toFixed(4),
+      orchestrator_flatten_ms: +orchestratorFlatten.toFixed(4),
+      orchestrator_register_ms: +orchestratorRegister.toFixed(4),
+      orchestrator_collect_ms: +orchestratorCollect.toFixed(4),
+      aggregator_collect_latency_ms: +aggregatorCollectLatency.toFixed(4),
+      server_json_encode_ms: +serverJsonEncode.toFixed(4),
+      server_sse_publish_ms: +serverSsePublish.toFixed(4),
+      server_compact_payload_ms: +serverCompactPayload.toFixed(4),
+      server_meta_ws_push_ms: +serverMetaWsPush.toFixed(4),
+      server_telemetry_update_ms: +serverTelemetryUpdate.toFixed(4),
+      server_lock_hold_ms: +serverLockHold.toFixed(4),
+      server_lock_acquired: +serverLockAcquired.toFixed(4),
       nvdec_ms: +nvdec.toFixed(4),
       src_wait_ms: +srcWait.toFixed(4),
       src_age_ms: +srcAge.toFixed(4),

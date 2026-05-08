@@ -89,8 +89,14 @@ class GpuPreprocessor(Preprocessor):
             stream_metrics[preprocess_stream_cuda_model_key(spec.model_name)] = float(cuda_stream_handle)
 
         t_start_ns = time.monotonic_ns()
+        
+        # Measure plan building
+        t_plan_start_ns = time.monotonic_ns()
         plan = self._planner.build_plan(frame_width, frame_height, spec)
+        plan_ms = (time.monotonic_ns() - t_plan_start_ns) / 1_000_000.0
+        
         inputs: list[GpuTensor] = []
+        t_kernel_start_ns = time.monotonic_ns()
         with self._stream_manager.stream_context(stream_id):
             if spec.mode is PreprocessMode.TILES:
                 inputs = run_tiling_kernel_fused_batch(
@@ -102,7 +108,14 @@ class GpuPreprocessor(Preprocessor):
                         frame, task, stream=stream_id, pool=self._pool, source_tensor=source_tensor
                     )
                     inputs.append(tensor)
+        kernel_ms = (time.monotonic_ns() - t_kernel_start_ns) / 1_000_000.0
+        
         elapsed_ms = (time.monotonic_ns() - t_start_ns) / 1_000_000.0
+        
+        # Export sub-timings
+        stream_metrics[f"preprocess_plan_ms_{spec.model_name}"] = plan_ms
+        stream_metrics[f"preprocess_kernel_ms_{spec.model_name}"] = kernel_ms
+        
         return spec.model_name, plan, tuple(inputs), stream_id, stream_metrics, elapsed_ms
 
     def build_output(self, frame_id: int, frame: Any) -> PreprocessOutput:
@@ -172,6 +185,10 @@ class GpuPreprocessor(Preprocessor):
             for model_name, elapsed_ms in per_model_ms.items():
                 model_stage = preprocess_model_stage_name(model_name)
                 telemetry.add_metrics({model_stage + "_ms": elapsed_ms})
+                # Export tile count for this model if tiling is enabled
+                if model_name in plans:
+                    tile_count = len(plans[model_name].tasks)
+                    telemetry.add_metrics({f"preprocess_tile_count_{model_name}": float(tile_count)})
             telemetry.add_metrics(self._pool.stats_snapshot().as_dict(), prefix="tensor_pool_")
             telemetry.add_metrics(merged_stream_metrics)
             # Sub-breakdown metrics to diagnose serial overhead sources
