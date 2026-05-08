@@ -45,6 +45,11 @@ BIN_DIR    = SCRIPT_DIR / "bin"
 OUTPUT_W   = 3840
 OUTPUT_H   = 2160
 OUTPUT_FPS = 30
+# GOP size used by the RTSP encoder.
+# Default to all-IDR (1) to minimize decoder resync jitter/latency, especially
+# for static-image sources and frequent client reconnects. Override at runtime
+# with STREAM_BRIDGE_GOP (e.g. 30) for bandwidth/quality experiments.
+ENCODER_GOP = max(1, int(os.environ.get("STREAM_BRIDGE_GOP", "1")))
 # NV12 frame size: Y plane (W×H) + interleaved UV plane (W×H/2)
 FRAME_BYTES = OUTPUT_W * OUTPUT_H * 3 // 2  # 12 441 600 bytes
 
@@ -734,7 +739,7 @@ class StreamEncoder:
         use_nvenc = self._encoder == "h264_nvenc"
         maxrate  = int(BITRATE_K * 1.5)
         bufsize  = int(BITRATE_K * 2)
-        gop_size = OUTPUT_FPS
+        gop_size = ENCODER_GOP
 
         cmd = [str(self._ffmpeg), "-hide_banner", "-loglevel", "warning", "-nostdin"]
         if use_qsv:
@@ -768,7 +773,7 @@ class StreamEncoder:
             "-fflags", "nobuffer",
             "-flags", "low_delay",
             "-b:v", f"{BITRATE_K}k", "-maxrate", f"{maxrate}k", "-bufsize", f"{bufsize}k",
-            # 1-second GOP is a much saner compromise than all-IDR at 4K30.
+            # GOP is configurable via STREAM_BRIDGE_GOP (default=1 for all-IDR).
             "-f", "rtsp", "-rtsp_transport", "tcp", RTSP_URL,
         ]
         self._proc = subprocess.Popen(

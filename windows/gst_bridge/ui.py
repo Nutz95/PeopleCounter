@@ -27,6 +27,9 @@ class GstBridgeApp:
         self._detail_labels: dict[str, tk.Label] = {}
         self._thumb_labels: dict[str, tk.Label] = {}
         self._thumbnail_images: dict[str, object] = {}
+        self._pending_thumbnail_images: dict[str, object] = {}
+        self._pending_thumbnail_lock = threading.Lock()
+        self._closing = False
         self._items_by_kind: dict[str, list[MediaItem]] = {"camera": [], "image": [], "video": []}
         self._tab_frames: dict[str, ttk.Frame] = {}
         self._tab_canvases: dict[str, tk.Canvas] = {}
@@ -170,6 +173,8 @@ class GstBridgeApp:
         self._detail_labels.clear()
         self._thumb_labels.clear()
         self._thumbnail_images.clear()
+        with self._pending_thumbnail_lock:
+            self._pending_thumbnail_images.clear()
         self._items_by_kind = {"camera": [], "image": [], "video": []}
         self._tab_counts = {"camera": 0, "image": 0, "video": 0}
         items = self._service.list_items()
@@ -257,10 +262,22 @@ class GstBridgeApp:
             canvas.yview_scroll(1, "units")
 
     def _load_thumbnail(self, source_id: str, item: MediaItem) -> None:
-        image = load_thumbnail_image(item, self._service.get_ffmpeg_path())
-        if image is None:
+        if self._closing:
             return
-        self._root.after(0, lambda img=image, item_id=source_id: self._set_thumbnail(item_id, img))
+        image = load_thumbnail_image(item, self._service.get_ffmpeg_path())
+        if image is None or self._closing:
+            return
+        with self._pending_thumbnail_lock:
+            self._pending_thumbnail_images[source_id] = image
+
+    def _flush_pending_thumbnails(self) -> None:
+        with self._pending_thumbnail_lock:
+            if not self._pending_thumbnail_images:
+                return
+            pending = dict(self._pending_thumbnail_images)
+            self._pending_thumbnail_images.clear()
+        for source_id, image in pending.items():
+            self._set_thumbnail(source_id, image)
 
     def _set_thumbnail(self, source_id: str, image) -> None:
         if ImageTk is None:
@@ -280,6 +297,7 @@ class GstBridgeApp:
         self._update_active_card()
 
     def _schedule_refresh(self) -> None:
+        self._flush_pending_thumbnails()
         self._status_var.set(self._service.get_status_text())
         self._metrics_var.set("\n".join(self._service.get_metrics_snapshot().as_lines()))
         self._refresh_metadata()
@@ -334,6 +352,7 @@ class GstBridgeApp:
             thumb.configure(highlightbackground=border, highlightthickness=2 if is_active else 1)
 
     def _on_close(self) -> None:
+        self._closing = True
         self._root.unbind_all("<MouseWheel>")
         self._root.unbind_all("<Button-4>")
         self._root.unbind_all("<Button-5>")
