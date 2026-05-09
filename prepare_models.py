@@ -175,6 +175,12 @@ try:
     for onnx in onnx_dir.glob('*.onnx'):
         if "yolo" in onnx.name.lower():
             continue
+        # P2PNet has a dedicated conversion path in 3_prepare_models.sh Step 5
+        # (batch=1, dedicated engine name). Skip generic density-style batch=8
+        # conversion here to avoid OOM/tactic failures and zero-byte artifacts.
+        if onnx.name.lower().startswith("p2pnet"):
+            print(f"[prepare_models] Skipping generic TRT conversion for {onnx.name} (handled in Step 5)")
+            continue
         engine = trt_dir / (onnx.stem + '.engine')
         if not engine.exists():
             print(f"[prepare_models] Converting {onnx.name} -> {engine.name} (Batch 8)")

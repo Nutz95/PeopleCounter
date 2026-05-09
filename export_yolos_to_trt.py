@@ -20,11 +20,18 @@ def export_yolos(models_dir="models"):
     models_dir = os.path.abspath(models_dir)
     _ensure_dir(models_dir)
     pt_files = glob.glob(os.path.join(models_dir, "*.pt")) + glob.glob(os.path.join(models_dir, "**", "*.pt"))
+    # Only process the official yolo26 checkpoints here.
+    # Custom checkpoints such as yolo-crowd.pt are exported by dedicated scripts.
+    yolo26_pt_files = [
+        p for p in pt_files
+        if os.path.basename(p).startswith("yolo26") and os.path.basename(p).endswith(".pt")
+    ]
     print(f"Found YOLO models: {pt_files}")
+    print(f"Filtered YOLO26 models: {yolo26_pt_files}")
 
     python_path = sys.executable
 
-    for pt_path in pt_files:
+    for pt_path in yolo26_pt_files:
         pt = os.path.basename(pt_path)
         print(f"\n--- Exporting {pt} to ONNX (CPU) ---")
         try:

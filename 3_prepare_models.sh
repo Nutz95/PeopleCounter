@@ -30,12 +30,16 @@ IMAGE_NAME="${IMAGE_NAME:-people-counter:gpu-final-nvdec}"
 SKIP_FP16="${SKIP_FP16:-0}"
 SKIP_FP8="${SKIP_FP8:-0}"
 SKIP_DENSITY="${SKIP_DENSITY:-0}"
+SKIP_P2PNET="${SKIP_P2PNET:-0}"
 # DENSITY_CALIB_DIR: path to UCF-QNRF Train/img folder for FP8 calibration
 # Leave unset to build FP16 only (FP8 requires UCF-QNRF_ECCV18.zip dataset)
 DENSITY_CALIB_DIR="${DENSITY_CALIB_DIR:-}"
 SEG_MODELS="${SEG_MODELS:-yolo26n-seg yolo26s-seg yolo26m-seg yolo26l-seg yolo26x-seg}"
 # Bbox-only models to build FP8-QDQ engines for (used by yolo_tiles, no seg head)
 BBOX_MODELS="${BBOX_MODELS:-yolo26n}"
+MODEL_REPO="${MODEL_REPO:-https://github.com/Nutz95/CrowdCounterModels}"
+MODEL_RAW_BASE="${MODEL_RAW_BASE:-https://github.com/Nutz95/CrowdCounterModels/raw/refs/heads/main}"
+P2PNET_SRC_DIR="${P2PNET_SRC_DIR:-models/p2pnet-src}"
 
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     echo "⚠️  Docker image $IMAGE_NAME not found."
@@ -150,6 +154,21 @@ else
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     $DOCKER_RUN bash -c "set -e
+        # Download YOLO-CROWD checkpoint from model repository
+        if [ ! -f 'models/pt/yolo-crowd.pt' ]; then
+            echo '     Downloading yolo-crowd.pt from $MODEL_REPO...'
+            python3 - <<'PY'
+import urllib.request
+from pathlib import Path
+url = '$MODEL_RAW_BASE/yolo-crowd.pt'
+dst = Path('models/pt/yolo-crowd.pt')
+dst.parent.mkdir(parents=True, exist_ok=True)
+urllib.request.urlretrieve(url, dst)
+print(f'[download] saved: {dst}')
+PY
+        else
+            echo '     [skip] checkpoint already exists: models/pt/yolo-crowd.pt'
+        fi
         # Clone YOLO-CROWD source if not present (needed for C3RFEM/MultiSEAM layers)
         if [ ! -f '$YOLO_CROWD_SRC_DIR/models/yolo.py' ]; then
             echo '     Cloning YOLO-CROWD source into $YOLO_CROWD_SRC_DIR...'
@@ -204,6 +223,67 @@ else
             echo '     [skip] density 1920×1088 engine already exists'
         else
             python3 prepare_density_models.py $DENSITY_ARGS --tile-size 1920x1088
+        fi"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5 — P2PNet point-based crowd counting model
+# ---------------------------------------------------------------------------
+if [[ "$SKIP_P2PNET" == "1" ]]; then
+    echo ""
+    echo "Step 5/5 — P2PNet model skipped (SKIP_P2PNET=1)"
+else
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Step 5/5 — P2PNet point-based crowd counting (FP16)"
+    echo "           Source: CrowdCounting-P2PNet (ICCV2021)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    $DOCKER_RUN bash -c "set -e
+        # Download P2PNet checkpoint from model repository
+        if [ ! -f 'models/pt/SHTechA.pth' ]; then
+            echo '     Downloading SHTechA.pth from $MODEL_REPO...'
+            python3 - <<'PY'
+import urllib.request
+from pathlib import Path
+url = '$MODEL_RAW_BASE/SHTechA.pth'
+dst = Path('models/pt/SHTechA.pth')
+dst.parent.mkdir(parents=True, exist_ok=True)
+urllib.request.urlretrieve(url, dst)
+print(f'[download] saved: {dst}')
+PY
+        else
+            echo '     [skip] checkpoint already exists: models/pt/SHTechA.pth'
+        fi
+
+        # Clone P2PNet source if not present
+        if [ ! -f '$P2PNET_SRC_DIR/models/p2pnet.py' ]; then
+            echo '     Cloning CrowdCounting-P2PNet source into $P2PNET_SRC_DIR...'
+            git clone --depth 1 https://github.com/TencentYoutuResearch/CrowdCounting-P2PNet $P2PNET_SRC_DIR
+        else
+            echo '     [skip] P2PNet source already at $P2PNET_SRC_DIR'
+        fi
+
+        # ONNX export (1920×1088 global input)
+        if [ -f 'models/onnx/p2pnet_1920x1088.onnx' ]; then
+            echo '     [skip] ONNX already exists: models/onnx/p2pnet_1920x1088.onnx'
+        else
+            echo '     Exporting P2PNet to ONNX...'
+            python3 export_p2pnet_to_onnx.py \
+                --model_path models/pt/SHTechA.pth \
+                --p2pnet-src $P2PNET_SRC_DIR \
+                --output_path models/onnx/p2pnet_1920x1088.onnx \
+                --height 1088 --width 1920
+        fi
+        # TRT FP16 engine
+        if [ -f 'models/tensorrt/p2pnet_1920x1088_fp16.engine' ]; then
+            echo '     [skip] engine already exists: models/tensorrt/p2pnet_1920x1088_fp16.engine'
+        else
+            echo '     Converting ONNX → TensorRT FP16...'
+            python3 convert_onnx_to_trt.py \
+                models/onnx/p2pnet_1920x1088.onnx \
+                models/tensorrt/p2pnet_1920x1088_fp16.engine \
+                1
         fi"
 fi
 

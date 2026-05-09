@@ -6,6 +6,7 @@ from app_v2.application.inference_stream_controller import InferenceStreamContro
 from app_v2.config import load_model_inference_config
 from app_v2.core.inference_model import InferenceModel
 from app_v2.infrastructure.density_trt import DensityTRT
+from app_v2.infrastructure.p2pnet_trt import P2PNetTRT
 from app_v2.infrastructure.tensorrt_engine_loader import TensorRTEngineLoader
 from app_v2.infrastructure.tensorrt_execution_context import TensorRTExecutionContext
 from app_v2.infrastructure.yolo_global_trt import YoloGlobalTRT
@@ -20,6 +21,7 @@ _MODEL_REGISTRY: dict[str, tuple[type[InferenceModel], str]] = {
     "yolo_global":  (YoloGlobalTRT,  "yolo"),
     "yolo_tiles":   (YoloTilingTRT,  "yolo"),
     "density":      (DensityTRT,     "density"),
+    "p2pnet":       (P2PNetTRT,      "p2pnet"),
     "crowd_global": (YoloGlobalTRT,  "yolo"),
     "crowd_tiles":  (YoloTilingTRT,  "yolo"),
 }
@@ -82,7 +84,7 @@ class ModelBuilder:
             else:
                 loader = TensorRTEngineLoader(engine_path, profiles={})
                 context = TensorRTExecutionContext(loader, self._stream_pool, options=trt_options)
-                if model_name.startswith("yolo") or model_name.startswith("crowd"):
+                if model_name.startswith("yolo") or model_name.startswith("crowd") or model_name == "p2pnet":
                     params = self._resolve_model_inference_params(model_name)
                     models.append(model_cls(context, stream_id, inference_params=params, model_name=model_name))
                 else:

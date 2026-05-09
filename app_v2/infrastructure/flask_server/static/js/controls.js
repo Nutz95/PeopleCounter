@@ -19,6 +19,44 @@ const _syncModeLabels = {
   sync:  'Sync (video + inference aligned)',
 };
 
+function _isServerSideHeatmapMode() {
+  return _activeSyncMode === 'sync' && (showHeatmap || showMask || showSeg);
+}
+
+function _applyServerSideHeatmapFrontendState() {
+  const asyncNoOverlayMode = _activeSyncMode !== 'sync';
+  const active = _isServerSideHeatmapMode();
+  window.__serverSideHeatmapActive = active;
+  window.__serverSideOverlayActive = active;
+  if (typeof window.__pcSetMetaWsEnabled === 'function') {
+    // In async mode and in server-side sync mode we disable metadata WS.
+    window.__pcSetMetaWsEnabled(!asyncNoOverlayMode && !active);
+  }
+  if (active || asyncNoOverlayMode) {
+    // Browser overlays must stay off; points are burned into MJPEG frames.
+    maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
+    heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
+  }
+}
+
+function _syncOverlayOptionsToServer() {
+  const asyncNoOverlayMode = _activeSyncMode !== 'sync';
+  const serverSideActive = _isServerSideHeatmapMode();
+  _applyServerSideHeatmapFrontendState();
+  fetch('/api/overlay_options', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      heatmap_enabled: showHeatmap,
+      mask_enabled: showMask,
+      server_side_heatmap_enabled: serverSideActive,
+      server_side_points_enabled: serverSideActive,
+      count_only_ui_enabled: asyncNoOverlayMode || serverSideActive,
+    }),
+  }).catch(err => console.warn('overlay_options sync failed:', err));
+}
+
 // ── Threshold state ────────────────────────────────────────────
 let _densityThreshold = 0.05;
 const _crowdConfidenceByMode = {};
@@ -50,6 +88,7 @@ function _updateOverlaySection(mode) {
   showHeatmap = overlays.includes('heatmap');
   document.getElementById('heatmap-toggle').checked = showHeatmap;
   if (!showHeatmap) heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
+  _syncOverlayOptionsToServer();
 
   const $previewRow = document.getElementById('preview-only-row');
   if ($previewRow) $previewRow.style.display = overlays.length > 0 ? '' : 'none';
@@ -205,6 +244,7 @@ async function _requestSyncModeChange(newSyncMode) {
       if (typeof window.__pcSetWebCodecsEnabled === 'function') {
         window.__pcSetWebCodecsEnabled(newSyncMode !== 'sync');
       }
+      _syncOverlayOptionsToServer();
     }
   } catch (err) {
     console.warn('Sync mode change failed:', err);
@@ -262,6 +302,7 @@ _loadConfig();
 document.getElementById('mask-toggle').addEventListener('change', e => {
   showMask = e.target.checked;
   if (!showMask) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  _syncOverlayOptionsToServer();
 });
 
 document.getElementById('point-render-toggle').addEventListener('change', e => {
@@ -280,6 +321,7 @@ document.getElementById('seg-toggle').addEventListener('change', e => {
 document.getElementById('heatmap-toggle').addEventListener('change', e => {
   showHeatmap = e.target.checked;
   if (!showHeatmap) heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
+  _syncOverlayOptionsToServer();
 });
 
 document.getElementById('preview-only-toggle').addEventListener('change', e => {

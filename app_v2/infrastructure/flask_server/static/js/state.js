@@ -23,6 +23,11 @@ let showHeatmap  = true;
 let previewOnly  = false;
 let showBboxText = false;
 let renderPoints = false;
+let _overlayPointRadiusMaskPx = 2.5;
+let _overlayPointRadiusHeatPx = 1.25;
+let _heatmapRenderMaxPoints = 12000;
+window.__serverSideHeatmapActive = false;
+window.__serverSideOverlayActive = false;
 
 // ── Inference / sync mode state ───────────────────────────────
 let _activeMode       = 'passthrough';

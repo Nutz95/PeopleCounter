@@ -189,12 +189,14 @@ class RuntimeState:
 
         available_engine_by_model = {
             name: has_engine(name)
-            for name in ("yolo_global", "yolo_tiles", "density", "crowd_global", "crowd_tiles")
+            for name in ("yolo_global", "yolo_tiles", "density", "p2pnet", "crowd_global", "crowd_tiles")
         }
 
         available = ["passthrough"]
         if available_engine_by_model["density"]:
             available.append("density")
+        if available_engine_by_model["p2pnet"]:
+            available.append("p2pnet")
         if available_engine_by_model["yolo_global"]:
             available.append("yolo_global")
         if available_engine_by_model["yolo_tiles"]:

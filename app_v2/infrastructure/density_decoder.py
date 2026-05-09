@@ -59,9 +59,11 @@ class DensityDecoder(Postprocessor):
         self,
         min_peak_weight: float = _DEFAULT_MIN_PEAK_WEIGHT,
         nms_kernel: int = _DEFAULT_NMS_KERNEL,
+        export_hotspots_for_ui: bool = True,
     ) -> None:
         self.min_peak_weight: float = float(min_peak_weight)
         self.nms_kernel: int = max(1, int(nms_kernel))
+        self.export_hotspots_for_ui: bool = bool(export_hotspots_for_ui)
 
     def process(self, frame_id: int, outputs: dict[str, Any]) -> dict[str, Any]:
         density_tiles = outputs.get("density_tiles", [])
@@ -69,19 +71,29 @@ class DensityDecoder(Postprocessor):
         tile_plan     = outputs.get("tile_plan")
 
         hotspots: list[dict[str, float]] = []
+        hotspots_gpu_tensor: Any | None = None
         if density_tiles and tile_plan is not None:
-            hotspots = _extract_hotspots(
+            hotspots, hotspots_gpu_tensor = _extract_hotspots(
                 density_tiles, tile_plan,
                 min_peak_weight=self.min_peak_weight,
                 nms_kernel=self.nms_kernel,
+                export_hotspots_for_ui=self.export_hotspots_for_ui,
             )
+
+        hotspot_count = len(hotspots)
+        if hotspot_count == 0 and hotspots_gpu_tensor is not None:
+            try:
+                hotspot_count = int(hotspots_gpu_tensor.shape[0])
+            except Exception:
+                hotspot_count = 0
 
         return {
             "frame_id": frame_id,
             "model": "density",
             "density_count": total_count,   # raw model integral (invariant to threshold)
-            "hotspot_count": len(hotspots),  # peaks passing min_peak_weight filter = circles on screen
+            "hotspot_count": hotspot_count,
             "hotspots": hotspots,
+            "_hotspots_gpu_tensor": hotspots_gpu_tensor,
         }
 
 
@@ -90,24 +102,25 @@ def _extract_hotspots(
     tile_plan: Any,
     min_peak_weight: float = _DEFAULT_MIN_PEAK_WEIGHT,
     nms_kernel: int = _DEFAULT_NMS_KERNEL,
-) -> list[dict[str, float]]:
+    export_hotspots_for_ui: bool = True,
+) -> tuple[list[dict[str, float]], Any | None]:
     """GPU-resident hotspot extraction.  All tensor work stays on the GPU device
     of the input tiles; only the final coordinate list is transferred to host
     via a single .tolist() call.
 
-    Returns an empty list on any error so the pipeline never crashes.
+    Returns (hotspots_list, hotspots_gpu_tensor).
     """
     try:
         import torch
         import torch.nn.functional as F
     except ModuleNotFoundError:
-        return []
+        return [], None
 
     fw     = getattr(tile_plan, "frame_width",  0)
     fh     = getattr(tile_plan, "frame_height", 0)
     tasks  = getattr(tile_plan, "tasks",        ())
     if fw <= 0 or fh <= 0 or not tasks:
-        return []
+        return [], None
 
     # Resolve GPU device from first available CUDA tile; fall back to CPU.
     device: torch.device = torch.device("cpu")
@@ -155,7 +168,7 @@ def _extract_hotspots(
 
     global_max = float(canvas.max().item())   # single scalar — negligible sync cost
     if global_max <= 0:
-        return []
+        return [], None
 
     # GPU-side non-maximum suppression.
     # max_pool2d marks each cell with the maximum in its neighbourhood;
@@ -172,7 +185,7 @@ def _extract_hotspots(
     peaks_mask   = (canvas >= pooled - 1e-8) & (canvas > abs_threshold)
     peak_indices = peaks_mask.nonzero(as_tuple=False)   # [N, 2]: (row, col) on GPU
     if peak_indices.numel() == 0:
-        return []
+        return [], None
 
     peak_vals  = canvas[peak_indices[:, 0], peak_indices[:, 1]]
 
@@ -182,10 +195,18 @@ def _extract_hotspots(
     peak_vals    = peak_vals[sorted_idx]
 
     # Single host transfer: normalised x/y coords and relative weights.
-    xs = ((peak_indices[:, 1].float() + 0.5) / canvas_w).tolist()
-    ys = ((peak_indices[:, 0].float() + 0.5) / canvas_h).tolist()
-    ws = (peak_vals / global_max).tolist()
+    hotspot_tensor = torch.stack(
+        (
+            (peak_indices[:, 1].float() + 0.5) / canvas_w,
+            (peak_indices[:, 0].float() + 0.5) / canvas_h,
+            peak_vals / global_max,
+        ),
+        dim=1,
+    )
+    if not export_hotspots_for_ui:
+        return [], hotspot_tensor
 
-    return [{"x": x, "y": y, "w": w} for x, y, w in zip(xs, ys, ws)]
+    packed = hotspot_tensor.detach().cpu().tolist()
+    return [{"x": x, "y": y, "w": w} for x, y, w in packed], hotspot_tensor
 
 

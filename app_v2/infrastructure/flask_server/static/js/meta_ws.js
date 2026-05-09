@@ -8,6 +8,7 @@
   let _metaWsPort = (window._SERVER_META_WS_PORT || 5003);
   let _ws = null;
   let _stopped = false;
+  let _enabled = true;
   const _packetTs = [];
 
   window.__metaWsConnected = false;
@@ -58,7 +59,7 @@
   }
 
   async function _connect() {
-    if (_stopped) return;
+    if (_stopped || !_enabled) return;
     await _fetchMetaWsPort();
 
     const url = `ws://${window.location.hostname}:${_metaWsPort}`;
@@ -83,7 +84,7 @@
     _ws.onclose = () => {
       window.__metaWsConnected = false;
       window.__metaWsPacketRate = 0;
-      if (!_stopped) setTimeout(_connect, 1000);
+      if (!_stopped && _enabled) setTimeout(_connect, 1000);
     };
 
     _ws.onerror = () => {
@@ -91,6 +92,28 @@
       try { _ws && _ws.close(); } catch (_) {}
     };
   }
+
+  function _disconnectNow() {
+    window.__metaWsConnected = false;
+    window.__metaWsPacketRate = 0;
+    _packedDetectionsFrameId = -1;
+    _packedDetections = null;
+    _packedDetectionsRowWidth = 5;
+    try { _ws && _ws.close(); } catch (_) {}
+    _ws = null;
+  }
+
+  window.__pcSetMetaWsEnabled = function (enabled) {
+    const next = !!enabled;
+    if (_enabled === next) return;
+    _enabled = next;
+    if (_enabled) {
+      _stopped = false;
+      _connect();
+      return;
+    }
+    _disconnectNow();
+  };
 
   _connect();
 })();

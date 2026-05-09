@@ -251,17 +251,52 @@ function drawHeatmap(payload) {
     heatCtx.clearRect(0, 0, W, H);
   }
 
-  heatCtx.fillStyle = 'rgba(220, 30, 30, 0.85)';
+  heatCtx.fillStyle = 'rgba(220, 30, 30, 0.72)';
   for (const p of payload) {
     if (!p || !Array.isArray(p.hotspots) || p.hotspots.length === 0) continue;
-    for (const hs of p.hotspots) {
+    const hotspots = p.hotspots;
+    const maxDraw = Math.max(1, _heatmapRenderMaxPoints | 0);
+    const stride = Math.max(1, Math.ceil(hotspots.length / maxDraw));
+    for (let i = 0; i < hotspots.length; i += stride) {
+      const hs = hotspots[i];
       const cx = dispX + hs.x * dispW;
       const cy = dispY + hs.y * dispH;
-      const r  = Math.max(3, Math.round(hs.w * 12));
+      const r  = Math.max(1.5, Math.min(2.0, (hs.w || 0.08) * 5.0));
       heatCtx.beginPath();
       heatCtx.arc(cx, cy, r, 0, 2 * Math.PI);
       heatCtx.fill();
     }
     break;  // only one density payload expected per frame
+  }
+}
+
+// Packed-centers fallback for heatmap mode when SSE payload is compacted.
+function drawHeatmapPacked(rows) {
+  const layout = _computeLayout();
+  if (!layout) return;
+  const { W, H, dispX, dispY, dispW, dispH } = layout;
+  if (heatCanvas.width !== W || heatCanvas.height !== H) {
+    heatCanvas.width  = W;
+    heatCanvas.height = H;
+  } else {
+    heatCtx.clearRect(0, 0, W, H);
+  }
+
+  if (!rows || rows.length < 3) return;
+  const rowWidth = _packedDetectionsRowWidth || 3;
+  if (rowWidth !== 3) return;
+
+  heatCtx.fillStyle = 'rgba(220, 30, 30, 0.72)';
+  const count = Math.floor(rows.length / rowWidth);
+  const maxDraw = Math.max(1, _heatmapRenderMaxPoints | 0);
+  const stride = Math.max(1, Math.ceil(count / maxDraw));
+  for (let i = 0; i + 2 < rows.length; i += rowWidth * stride) {
+    const cx = dispX + rows[i + 0] * dispW;
+    const cy = dispY + rows[i + 1] * dispH;
+    const w = rows[i + 2];
+    const r = Math.max(1.5, Math.min(2.0, (w || 0.08) * 5.0));
+    heatCtx.beginPath();
+    heatCtx.arc(cx, cy, r, 0, 2 * Math.PI);
+    heatCtx.fill();
   }
 }

@@ -32,7 +32,7 @@ crowd_global:
   person_class_id: 0
   confidence_threshold: 0.25
   nms_iou_threshold: 0.45
-  max_detections: 300
+  max_detections: 2000
   class_whitelist:
     - 0
   decoder_format: yolov5   # YOLOv5 Detect output: [B, 100800, nc+5] pre-decoded (strides 4/8/16)
@@ -43,7 +43,17 @@ crowd_tiles:
   nms_iou_threshold: 0.45        # per-tile NMS
   cross_nms_iou_threshold: 0.20  # cross-tile NMS dedup at tile boundaries
   min_box_px: 8.0                # minimum box side in 640-px tile space; 8 px removes sub-pixel noise while keeping small heads
-  max_detections: 300
+  max_detections: 20000
   class_whitelist:
     - 0
   decoder_format: yolov5   # YOLOv5 Detect output: [B, 100800, nc+5] pre-decoded (strides 4/8/16)
+
+# ── P2PNet (point-based crowd counting) ────────────────────────────────────
+# `confidence_threshold`: probability threshold on class-1 logits after softmax.
+# `max_points`: hard cap on selected points after thresholding (count safety cap).
+# `display_max_points`: cap only for serialized/displayed points (count keeps `max_points`).
+p2pnet:
+  confidence_threshold: 0.25
+  max_points: 50000
+  display_max_points: 50000
+  export_hotspots_for_ui: false

@@ -73,6 +73,14 @@ sse.addEventListener('message', e => {
 
   const payload = Array.isArray(msg.payload) ? msg.payload : [];
   const tel     = (payload.find(p => p && p.telemetry) || {}).telemetry || {};
+  if (typeof tel.server_side_overlay_active === 'number') {
+    window.__serverSideOverlayActive = tel.server_side_overlay_active > 0.5;
+  }
+  if (typeof tel.server_side_heatmap_active === 'number') {
+    window.__serverSideHeatmapActive = tel.server_side_heatmap_active > 0.5;
+  }
+  const asyncNoOverlayMode = _activeSyncMode !== 'sync';
+  const serverSideHeatmapActive = asyncNoOverlayMode || !!window.__serverSideHeatmapActive || !!window.__serverSideOverlayActive;
 
   // Update cached video source dimensions whenever the server reports them.
   if (tel.frame_width  > 0) _videoSrcW = tel.frame_width;
@@ -86,6 +94,7 @@ sse.addEventListener('message', e => {
     && _packedDetectionsRowWidth >= 3
     && _packedDetections.length >= _packedDetectionsRowWidth
   );
+  const hasPackedCentersForFrame = hasPackedForFrame && _packedDetectionsRowWidth === 3;
   if (hasPackedForFrame) {
     count = Math.max(count, Math.floor(_packedDetections.length / _packedDetectionsRowWidth));
   }
@@ -95,7 +104,7 @@ sse.addEventListener('message', e => {
     if (typeof p.detection_count === 'number') count = Math.max(count, p.detection_count);
     if (typeof p.count === 'number')          count = Math.max(count, p.count);
     if (typeof p.hotspot_count === 'number')  count = Math.max(count, p.hotspot_count);
-    else if (typeof p.density_count === 'number')
+    if (typeof p.density_count === 'number')
       count = Math.max(count, Math.round(p.density_count));
   }
 
@@ -288,7 +297,7 @@ sse.addEventListener('message', e => {
   }
 
   // ── Overlays ─────────────────────────────────────────────────
-  if (!previewOnly) {
+  if (!previewOnly && !serverSideHeatmapActive) {
     if (showMask) {
       if (hasPackedForFrame) drawMaskPacked(_packedDetections);
       else drawMask(payload);
@@ -297,8 +306,21 @@ sse.addEventListener('message', e => {
     if (showSeg)  drawSegMask(payload);
     else segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
   }
-  if (!previewOnly && showHeatmap) drawHeatmap(payload);
-  else heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
+  if (!previewOnly && showHeatmap && !serverSideHeatmapActive) {
+    if (hasPackedCentersForFrame) {
+      // Dense P2PNet path: prefer packed centers transport over JSON hotspots.
+      if (!window._webglOverlayActive) drawHeatmapPacked(_packedDetections);
+      else heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
+    } else {
+      drawHeatmap(payload);
+    }
+  } else {
+    heatCtx.clearRect(0, 0, heatCanvas.width, heatCanvas.height);
+    if (serverSideHeatmapActive) {
+      maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+      segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
+    }
+  }
 
   // ── History & latency chart ───────────────────────────────────
   if (hasTelemetry) {

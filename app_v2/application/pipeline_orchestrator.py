@@ -77,6 +77,7 @@ class PipelineOrchestrator:
         self._density_decoder = DensityDecoder(
             min_peak_weight=float(self.config.get("density", {}).get("min_peak_weight", 0.05)),
             nms_kernel=int(self.config.get("density", {}).get("nms_kernel", 3)),
+            export_hotspots_for_ui=bool(self.config.get("density", {}).get("export_hotspots_for_ui", True)),
         )
         self._frame_counter = 0
         self._running = False
@@ -634,6 +635,7 @@ class PipelineOrchestrator:
             push_frame,
             self._nvjpeg_stream,
             self._record_video_encode_metrics,
+            self.publisher,  # Pass publisher for GPU hotspot rendering
         )
 
     @staticmethod
@@ -644,9 +646,13 @@ class PipelineOrchestrator:
         push_frame: Any,
         nvjpeg_stream: "torch.cuda.Stream | None",
         metrics_callback: Any | None = None,
+        publisher: Any | None = None,
     ) -> None:
-        """Background thread: [3×H×W uint8 CUDA] → NVJPEG bytes → MJPEG clients.
+        """Background thread: [3×H×W uint8 CUDA] → (GPU hotspot render) → NVJPEG bytes → MJPEG clients.
 
+        Hotspots are rendered onto the frame on GPU before JPEG encoding for
+        ultra-fast dense-scene annotation (no CPU/GPU sync, pure parallel work).
+        
         NVJPEG runs on a dedicated stream (``nvjpeg_stream``) so it never blocks
         or is blocked by the NV12→RGB stream or the inference streams.
         """
@@ -654,6 +660,29 @@ class PipelineOrchestrator:
             perf_start_ns = time.perf_counter_ns()
             enc_event.synchronize()  # CPU-side wait: data is ready in GPU memory
             perf_after_wait_ns = time.perf_counter_ns()
+
+            # GPU hotspot rendering (if enabled and hotspots available)
+            if publisher is not None:
+                try:
+                    renderer = publisher.get_gpu_hotspot_renderer()
+                    # Get cached hotspots (frame_id is tracked in publisher)
+                    hotspots = publisher.get_hotspots_for_frame(-1)  # -1 = latest
+                    has_hotspots = False
+                    if isinstance(hotspots, torch.Tensor):
+                        has_hotspots = hotspots.numel() > 0
+                    elif isinstance(hotspots, list):
+                        has_hotspots = len(hotspots) > 0
+                    if has_hotspots:
+                        chw_uint8 = renderer.draw_hotspots_on_frame(
+                            chw_uint8,
+                            hotspots,
+                            metrics_callback=metrics_callback,
+                        )
+                except Exception as exc:
+                    import sys as _sys
+                    print(f"[GPU Hotspot Render] failed (non-fatal): {exc}", file=_sys.stderr, flush=True)
+
+            perf_after_render_ns = time.perf_counter_ns()
             import torchvision.io as tvio
 
             # Encode on dedicated NVJPEG stream, then explicitly wait for stream
@@ -686,7 +715,8 @@ class PipelineOrchestrator:
                         "video_encode_backend_code": 2.0,
                         "video_encode_last_ms": (perf_after_push_ns - perf_start_ns) / 1_000_000.0,
                         "video_encode_wait_event_ms": (perf_after_wait_ns - perf_start_ns) / 1_000_000.0,
-                        "video_encode_kernel_ms": (perf_after_encode_ns - perf_after_wait_ns) / 1_000_000.0,
+                        "video_encode_gpu_hotspot_render_ms": (perf_after_render_ns - perf_after_wait_ns) / 1_000_000.0,
+                        "video_encode_kernel_ms": (perf_after_encode_ns - perf_after_render_ns) / 1_000_000.0,
                         "video_encode_cpu_copy_ms": (perf_after_cpu_copy_ns - perf_after_encode_ns) / 1_000_000.0,
                         "video_encode_push_ms": (perf_after_push_ns - perf_after_cpu_copy_ns) / 1_000_000.0,
                         "video_jpeg_kb": len(jpeg_bytes) / 1024.0,

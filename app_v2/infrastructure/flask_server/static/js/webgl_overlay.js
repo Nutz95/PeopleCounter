@@ -262,14 +262,15 @@ void main(){
       _uploadVBO();
     }
 
-    if (!showMask || previewOnly || _instanceCount === 0) return;
+    const overlayVisible = (_activeSyncMode === 'sync') && (showMask || showHeatmap) && !window.__serverSideHeatmapActive && !window.__serverSideOverlayActive;
+    if (!overlayVisible || previewOnly || _instanceCount === 0) return;
 
     const layout = _computeLayout();
     if (!layout) return;
 
     const { dispX, dispY, dispW, dispH } = layout;
     const centersMode = (_uploadedWidth === 3);
-    const usePoints   = centersMode || renderPoints;
+    const usePoints = showHeatmap || centersMode || renderPoints;
 
     gl.enable(gl.BLEND);
     gl.blendFuncSeparate(
@@ -285,7 +286,8 @@ void main(){
       gl.uniform2f(u.u_off, dispX, dispY);
       gl.uniform2f(u.u_sz,  dispW, dispH);
       gl.uniform2f(u.u_cvs, W, H);
-      gl.uniform1f(u.u_r,   3.5);
+      const radiusPx = showHeatmap ? _overlayPointRadiusHeatPx : _overlayPointRadiusMaskPx;
+      gl.uniform1f(u.u_r, radiusPx);
       gl.bindVertexArray(vao);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, _instanceCount);
     } else {

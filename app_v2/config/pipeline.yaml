@@ -15,6 +15,14 @@ models:
     #   engine: models/tensorrt/dm_count_qnrf_1920x1088.engine
     #   preprocess.density.mode: tiles
     strategy: sequential
+  # ── P2PNet (Point-to-Point crowd counting, ICCV2021) ──────────────────────
+  # Spatial point-based counting on VGG16 backbone. Similar input/output to
+  # density model but with different architecture (point regression vs heatmap).
+  # Build engine with: python3 export_p2pnet_to_onnx.py && python3 convert_onnx_to_trt.py
+  p2pnet:
+    enabled: false
+    engine: models/tensorrt/p2pnet_1920x1088_fp16.engine  # P2PNet FP16 — global 1920×1088
+    strategy: sequential
   # ── YOLO-CROWD (YOLOv5-based, nc=1, detection only) ──────────────────────
   # Build engines with: docker run ... python3 export_yolocrowd_to_onnx.py
   #                 and  python3 prepare_yolo_crowd_trt.py
@@ -36,6 +44,7 @@ yolo_tiles_parallel:
 inference_streams:
   yolo: false
   density: false
+  p2pnet: false
 
 density:
   tiling: 1
@@ -47,6 +56,9 @@ density:
   min_peak_weight: 0.30
   # NMS kernel size: larger → fewer peaks (merges close-together hotspots).
   nms_kernel: 3
+  # Disable JSON hotspot export for UI to avoid GPU->CPU transfer on dense scenes.
+  # Server-side heatmap renderer uses GPU tensor path instead.
+  export_hotspots_for_ui: false
 
 streams:
   transfer: 0
@@ -55,11 +67,14 @@ streams:
   yolo_tiles_preprocess: 4
   density: 2
   density_preprocess: 5
+  p2pnet: 2
+  p2pnet_preprocess: 6
 
 preprocess_branches:
   yolo_global_preprocess: false  # disabled with yolo_global
   yolo_tiles_preprocess: false
   density_preprocess: false
+  p2pnet_preprocess: false
   crowd_global_preprocess: false  # disabled with crowd_global
   crowd_tiles_preprocess: false
 
@@ -113,6 +128,14 @@ preprocess:
     target_height: 1088     # 68×16, nearest multiple of 16 ≥ 1080
     mode: global
     overlap: 0.0
+  p2pnet:
+    # P2PNet also uses VGG16 backbone → same input dims as density (1920×1088).
+    # Point-based counting: outputs anchor points + confidence scores instead of density heatmap.
+    # Identical preprocessing chain to density (letterbox + normalization).
+    target_width: 1920
+    target_height: 1088     # 68×16, nearest multiple of 16 (VGG stride)
+    mode: global
+    overlap: 0.0
 
 # ── MJPEG video feed (Flask /api/video) ─────────────────────────────────────
 # max_height: int or null (null = native camera resolution, e.g. 4K).
@@ -127,3 +150,9 @@ video_stream:
   max_height: 1080   # 4K → 1080p for MJPEG feed; reduces _video_stream.synchronize() cost ~10×
   quality: 95
   backend: auto
+  hotspot_render:
+    radius_px: 3          # filled-circle radius for server-side hotspot burn-in
+    color_rgb: [220, 30, 30]
+    hold_empty_frames: 8  # anti-flicker: keep last hotspots for N empty frames
+    enable_yolo_points: false  # keep false by default; YOLO client overlay is often faster on low counts
+    yolo_min_detections: 100   # if enabled, activate server-side points only above this density
