@@ -99,10 +99,19 @@ class GpuHotspotRenderer:
             center_x = (hotspot_tensor_gpu[:, 0] * frame_w).round().to(torch.int64)
             center_y = (hotspot_tensor_gpu[:, 1] * frame_h).round().to(torch.int64)
 
-            cache_key = (self.circle_radius_px, str(device))
+            hotspot_count = int(hotspot_tensor_gpu.shape[0])
+            effective_radius = self.circle_radius_px
+            # Dense scenes: shrink circles to stabilize NVJPEG+render latency.
+            # (radius is in pixels, so 1 => ~2 px diameter points)
+            if hotspot_count >= 8000:
+                effective_radius = 1
+            elif hotspot_count >= 3000:
+                effective_radius = min(effective_radius, 2)
+
+            cache_key = (effective_radius, str(device))
             disk_offsets = self._disk_offsets_cache.get(cache_key)
             if disk_offsets is None:
-                radius = self.circle_radius_px
+                radius = effective_radius
                 offset_range = torch.arange(-radius, radius + 1, device=device, dtype=torch.int64)
                 grid_y, grid_x = torch.meshgrid(offset_range, offset_range, indexing="ij")
                 disk_mask = (grid_x * grid_x + grid_y * grid_y) <= (radius * radius)
@@ -119,13 +128,16 @@ class GpuHotspotRenderer:
             if valid_x.numel() == 0:
                 return frame_chw_uint8
 
-            linear_indices = (valid_y * frame_w + valid_x).unique()
+            # Keep duplicates: assigning the same color multiple times is harmless
+            # and avoids an expensive global unique() that causes latency spikes
+            # on very dense scenes.
+            linear_indices = (valid_y * frame_w + valid_x)
             flat_red = frame_chw_uint8[0].view(-1)
             flat_green = frame_chw_uint8[1].view(-1)
             flat_blue = frame_chw_uint8[2].view(-1)
-            flat_red.index_fill_(0, linear_indices, self.color_red)
-            flat_green.index_fill_(0, linear_indices, self.color_green)
-            flat_blue.index_fill_(0, linear_indices, self.color_blue)
+            flat_red[linear_indices] = self.color_red
+            flat_green[linear_indices] = self.color_green
+            flat_blue[linear_indices] = self.color_blue
 
         except Exception as exc:
             import sys

@@ -143,8 +143,14 @@ function _updateTransportStatusChips() {
 
   if ($overlayChip) {
     const webglActive = !!window._webglOverlayActive;
-    $overlayChip.textContent = webglActive ? 'Overlay WebGL2 ✓' : 'Overlay Canvas2D';
-    $overlayChip.style.borderColor = webglActive ? 'rgba(42,223,165,0.65)' : 'rgba(255,255,255,0.22)';
+    const serverSideActive = !!window.__serverSideHeatmapActive || !!window.__serverSideOverlayActive;
+    if (serverSideActive) {
+      $overlayChip.textContent = 'Overlay Server-side GPU ✓';
+      $overlayChip.style.borderColor = 'rgba(42,223,165,0.65)';
+    } else {
+      $overlayChip.textContent = webglActive ? 'Overlay WebGL2 ✓' : 'Overlay Canvas2D';
+      $overlayChip.style.borderColor = webglActive ? 'rgba(42,223,165,0.65)' : 'rgba(255,255,255,0.22)';
+    }
   }
 
   if ($metaChip) {
@@ -212,6 +218,11 @@ const _benchmarkMetricCols = [
   'trt_prepare_ms',
   'trt_sync_ms',
   'decode_ms',
+  'video_hotspot_lookup_ms',
+  'video_hotspot_lookup_mode_code',
+  'video_hotspot_lookup_exact',
+  'video_hotspot_lookup_fallback',
+  'video_hotspot_lookup_miss',
   'publish_total_ms',
 ];
 
@@ -227,6 +238,7 @@ const _benchmarkSpikeComponents = [
   'other_collect_ms',
   'other_publish_ms',
   'other_encode_ms',
+  'video_hotspot_lookup_ms',
   'orchestrator_collect_ms',
   'aggregator_collect_latency_ms',
   'server_json_encode_ms',
@@ -405,6 +417,7 @@ function benchmarkCaptureStopAndDownload() {
     'nvdec_ms', 'src_wait_ms', 'src_age_ms', 'src_copy_sync_ms',
     'trt_prepare_ms', 'trt_sync_ms', 'decode_ms',
     'video_encode_ms', 'video_encode_wait_ms', 'video_encode_copy_ms', 'video_encode_push_ms',
+    'video_hotspot_lookup_ms', 'video_hotspot_lookup_mode_code', 'video_hotspot_lookup_exact', 'video_hotspot_lookup_fallback', 'video_hotspot_lookup_miss',
     'publish_total_ms'
   ];
 

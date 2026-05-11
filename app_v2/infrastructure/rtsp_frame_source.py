@@ -28,6 +28,7 @@ class _StableNv12Slot:
     pitch: int = 0
     timestamp_ns: int | None = None
     telemetry: Any | None = None
+    copy_ready_event: Any | None = None
 
 
 class RTSPFrameSource(FrameSource):
@@ -123,6 +124,12 @@ class RTSPFrameSource(FrameSource):
             self._delivered_seq = self._latest_seq
             self._consumer_slot_idx = slot_idx
             slot = self._stable_slots[slot_idx]
+
+        copy_wait_ms = 0.0
+        if slot.copy_ready_event is not None:
+            copy_wait_start_ns = time.perf_counter_ns()
+            slot.copy_ready_event.synchronize()
+            copy_wait_ms = (time.perf_counter_ns() - copy_wait_start_ns) / 1_000_000.0
         wait_ms = (time.perf_counter_ns() - wait_start_ns) / 1_000_000.0
 
         telemetry = slot.telemetry
@@ -135,6 +142,10 @@ class RTSPFrameSource(FrameSource):
                 {
                     "frame_source_wait_latest_ms": float(wait_ms),
                     "frame_source_age_at_consume_ms": float(frame_age_ms),
+                    # Consumer-side wait for stable-slot copy completion.
+                    # Reuses the existing copy_sync metric key so downstream
+                    # dashboards remain compatible.
+                    "frame_source_copy_sync_ms": float(copy_wait_ms),
                 }
             )
 
@@ -260,7 +271,9 @@ class RTSPFrameSource(FrameSource):
                 height_rows=half_h,
             )
         copy_enqueued_ns = time.perf_counter_ns()
-        self._copy_stream.synchronize()
+        if slot.copy_ready_event is None:
+            slot.copy_ready_event = torch.cuda.Event()
+        slot.copy_ready_event.record(self._copy_stream)
         copy_done_ns = time.perf_counter_ns()
 
         telemetry = getattr(frame, "telemetry", None)
@@ -268,7 +281,9 @@ class RTSPFrameSource(FrameSource):
             telemetry.add_metrics(
                 {
                     "frame_source_copy_enqueue_ms": float((copy_enqueued_ns - copy_start_ns) / 1_000_000.0),
-                    "frame_source_copy_sync_ms": float((copy_done_ns - copy_enqueued_ns) / 1_000_000.0),
+                    # Producer-side copy stream no longer performs a global
+                    # synchronize; sync cost is measured at consumer side.
+                    "frame_source_copy_sync_ms_producer": float((copy_done_ns - copy_enqueued_ns) / 1_000_000.0),
                     "frame_source_copy_total_ms": float((copy_done_ns - copy_start_ns) / 1_000_000.0),
                 }
             )

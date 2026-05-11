@@ -176,3 +176,57 @@ class YoloV5Decoder(YoloDecoderBase):
             {"bbox": [bx1, by1, bx2, by2], "conf": round(c, 4), "label": "person"}
             for (bx1, by1, bx2, by2), c in zip(coords_list, confs_list)
         ]
+
+    def _decode_person_detections_gpu(self, tensors: Any) -> dict[str, Any]:
+        """GPU count-only summary for YOLOv5/YOLO-CROWD outputs.
+
+        Supports both:
+          - post-NMS [N,6+] rows: [x1,y1,x2,y2,conf,class_id]
+          - raw detect rows:       [cx,cy,w,h,obj_conf,cls0_conf,...]
+        """
+        if torch is None:
+            return {"available": False, "reason": "torch unavailable"}
+        if not tensors:
+            return {"available": False, "reason": "no output tensors"}
+        first = tensors[0]
+        if not isinstance(first, torch.Tensor):
+            return {"available": False, "reason": "first output is not a tensor"}
+
+        with torch.no_grad():
+            rows = self._to_rows(first.detach())
+            if rows.numel() == 0:
+                return {"available": True, "person_candidates": 0, "device": rows.device.type}
+
+            ncols = int(rows.shape[-1])
+            if ncols < 5:
+                return {"available": True, "person_candidates": 0, "device": rows.device.type}
+
+            person_scores = None
+            if ncols == 6:
+                # Distinguish post-NMS class-id (integer-like col5) from raw
+                # YOLOv5 nc=1 where col5 is class confidence.
+                class_col = rows[:, 5]
+                class_is_integer_like = bool(torch.all((class_col - class_col.round()).abs() <= 1e-3).item())
+                if class_is_integer_like:
+                    conf_col = rows[:, 4]
+                    person_mask = (conf_col >= self.confidence_threshold) & (class_col.round().long() == int(self.person_class_id))
+                    candidates = int(person_mask.sum().item())
+                    return {
+                        "available": True,
+                        "person_candidates": candidates,
+                        "device": rows.device.type,
+                    }
+                # Raw YOLOv5 nc=1: score = obj_conf * cls_conf
+                person_scores = rows[:, 4] * rows[:, 5]
+            else:
+                class_idx = 5 + int(self.person_class_id)
+                if class_idx >= ncols:
+                    return {"available": True, "person_candidates": 0, "device": rows.device.type}
+                person_scores = rows[:, 4] * rows[:, class_idx]
+
+            person_mask = person_scores >= self.confidence_threshold
+            return {
+                "available": True,
+                "person_candidates": int(person_mask.sum().item()),
+                "device": rows.device.type,
+            }

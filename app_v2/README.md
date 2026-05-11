@@ -20,6 +20,10 @@ PeopleCounter v2 is a GPU-first rewrite that targets TensorRT-only inference wit
 - Architecture overview and progress diagrams: `app_v2/docs/README_ARCHI.md`
 - Detailed preprocess pipeline and metrics: `app_v2/docs/README_PREPROCESS.md`
 - Performance analysis (FPS, delay, overlay lag): `app_v2/docs/README_PERFORMANCE_ANALYSIS.md`
+- Frame flow, buffers, sync points, NVJPEG path: `app_v2/docs/README_FRAME_FLOW.md`
+- NVJPEG benchmark reference (Docker, reproducible commands + results): `app_v2/docs/README_NVJPEG_BENCH.md`
+- NVDEC jitter/frame-wait benchmark reference (decode-only vs decode+inference): `app_v2/docs/README_NVDEC_BENCH.md`
+- Synchronization points audit (blocking/sync inventory): `app_v2/docs/README_SYNC_POINTS_AUDIT.md`
 
 ## Getting started
 

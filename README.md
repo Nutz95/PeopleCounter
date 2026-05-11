@@ -317,6 +317,9 @@ See [app_v2/docs/README_PERFORMANCE_ANALYSIS.md](app_v2/docs/README_PERFORMANCE_
 
 - [README_DOCKER.md](README_DOCKER.md) — Docker build steps, prerequisites, and GPU validation.
 - [app_v2/docs/README_ARCHI.md](app_v2/docs/README_ARCHI.md) — Full v2 architecture: data flow, video streams, inference modes, CUDA stream assignment, API surface.
+- [app_v2/docs/README_FRAME_FLOW.md](app_v2/docs/README_FRAME_FLOW.md) — Detailed frame path (NVDEC→buffers→inference→hotspots→NVJPEG), synchronization points, and buffering behavior.
+- [app_v2/docs/README_NVJPEG_BENCH.md](app_v2/docs/README_NVJPEG_BENCH.md) — Reproducible NVJPEG benchmarks (including long-run + inference contention) and recorded results.
+- [app_v2/docs/README_NVDEC_BENCH.md](app_v2/docs/README_NVDEC_BENCH.md) — Reproducible NVDEC benchmark with jitter/inter-frame/wait analysis and charts.
 - [app_v2/docs/README_PERFORMANCE_ANALYSIS.md](app_v2/docs/README_PERFORMANCE_ANALYSIS.md) — Benchmark numbers, latency budget, metric key reference.
 - [app_v2/docs/README_PREPROCESS.md](app_v2/docs/README_PREPROCESS.md) — GPU preprocessing pipeline, GpuTensorPool, kernel routing.
 - [app_v2/docs/MAKER_FAIRE.md](app_v2/docs/MAKER_FAIRE.md) — Exhibition panels explaining the system at macro/micro level.

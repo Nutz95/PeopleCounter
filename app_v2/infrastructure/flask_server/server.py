@@ -74,8 +74,10 @@ class FlaskStreamServer(ResultPublisher):
         if not isinstance(color_rgb, (list, tuple)) or len(color_rgb) < 3:
             color_rgb = [220, 30, 30]
         hold_empty_frames = int(hotspot_render_cfg.get("hold_empty_frames", 2)) if isinstance(hotspot_render_cfg, dict) else 2
+        max_render_points = int(hotspot_render_cfg.get("max_points", 0)) if isinstance(hotspot_render_cfg, dict) else 0
         self._server_side_points_for_yolo = bool(hotspot_render_cfg.get("enable_yolo_points", False)) if isinstance(hotspot_render_cfg, dict) else False
         self._server_side_points_yolo_min_detections = int(hotspot_render_cfg.get("yolo_min_detections", 800)) if isinstance(hotspot_render_cfg, dict) else 800
+        self._server_side_max_render_points = max(0, max_render_points)
         self._hotspots_hold_empty_frames = max(0, hold_empty_frames)
         self._hotspots_empty_streak = 0
 
@@ -91,6 +93,8 @@ class FlaskStreamServer(ResultPublisher):
         self._hotspots_cache: list[tuple[float, float, float]] = []
         self._hotspots_cache_gpu_tensor: Any | None = None
         self._hotspots_frame_id = -1
+        self._hotspots_history_limit = 8
+        self._hotspots_history: dict[int, tuple[list[tuple[float, float, float]], Any | None]] = {}
 
         # Background thread for JSON encoding (off hot path)
         self._json_queue: Any = None  # Will be initialized in start()
@@ -325,11 +329,20 @@ class FlaskStreamServer(ResultPublisher):
                 has_hotspot_model_payload = True
 
         server_side_points_active = False
-        if (not async_passthrough_mode) and self._server_side_points_enabled and self._mask_requested:
+        if (not async_passthrough_mode) and self._server_side_points_enabled:
+            # Hotspot-native models (density/p2pnet): in sync mode, server-side
+            # points must remain active independently from the bbox/mask toggle.
+            # This avoids accidental on/off flicker when UI overlay controls
+            # manipulate `mask_enabled` for non-bbox modes.
             if has_hotspot_model_payload:
                 server_side_points_active = True
-            elif self._server_side_points_for_yolo and yolo_detection_count >= self._server_side_points_yolo_min_detections:
-                server_side_points_active = True
+            elif self._mask_requested and yolo_detection_count > 0:
+                # Sync mode policy: YOLO/CROWD points should render even at low
+                # counts by default. The legacy config gate remains optional.
+                if self._server_side_points_for_yolo:
+                    server_side_points_active = yolo_detection_count >= self._server_side_points_yolo_min_detections
+                else:
+                    server_side_points_active = True
         server_side_overlay_active = server_side_heatmap_active or server_side_points_active
         has_metadata_clients = self._metadata_ws.has_clients()
         metadata_transport_active = (not async_passthrough_mode) and has_metadata_clients and not server_side_overlay_active
@@ -420,12 +433,20 @@ class FlaskStreamServer(ResultPublisher):
                     import torch  # local optional import
 
                     if isinstance(candidate_gpu, torch.Tensor):
-                        safe_gpu = candidate_gpu.detach().clone()
-                        if safe_gpu.dim() == 2 and safe_gpu.shape[1] >= 2:
-                            finite_mask = torch.isfinite(safe_gpu[:, 0]) & torch.isfinite(safe_gpu[:, 1])
-                            safe_gpu = safe_gpu[finite_mask]
+                        safe_gpu = candidate_gpu.detach()
+                        if (
+                            self._server_side_max_render_points > 0
+                            and safe_gpu.dim() == 2
+                            and int(safe_gpu.shape[0]) > self._server_side_max_render_points
+                        ):
+                            total = int(safe_gpu.shape[0])
+                            target = int(self._server_side_max_render_points)
+                            sample_pos = torch.linspace(0, total - 1, steps=target, device=safe_gpu.device)
+                            sample_idx = sample_pos.round().long().clamp(0, total - 1)
+                            safe_gpu = safe_gpu[sample_idx]
                         if safe_gpu.numel() > 0:
-                            hotspots_gpu_tensor = safe_gpu
+                            # Own a stable tensor independent from decoder buffers.
+                            hotspots_gpu_tensor = safe_gpu.clone()
                 except Exception:
                     hotspots_gpu_tensor = None
 
@@ -457,6 +478,13 @@ class FlaskStreamServer(ResultPublisher):
                             pass
 
         has_hotspots = len(hotspots) > 0
+        if self._server_side_max_render_points > 0 and len(hotspots) > self._server_side_max_render_points:
+            total = len(hotspots)
+            target = self._server_side_max_render_points
+            if target > 0:
+                step = max(1, total // target)
+                hotspots = hotspots[::step][:target]
+                has_hotspots = len(hotspots) > 0
         if not has_hotspots and hotspots_gpu_tensor is not None:
             try:
                 has_hotspots = int(hotspots_gpu_tensor.shape[0]) > 0
@@ -468,6 +496,13 @@ class FlaskStreamServer(ResultPublisher):
                 self._hotspots_cache = hotspots
                 self._hotspots_cache_gpu_tensor = hotspots_gpu_tensor
                 self._hotspots_frame_id = frame_id
+                self._hotspots_history[int(frame_id)] = (list(hotspots), hotspots_gpu_tensor)
+                if len(self._hotspots_history) > self._hotspots_history_limit:
+                    keep_keys = sorted(self._hotspots_history.keys())[-self._hotspots_history_limit:]
+                    keep_set = set(keep_keys)
+                    self._hotspots_history = {
+                        key: value for key, value in self._hotspots_history.items() if key in keep_set
+                    }
                 self._hotspots_empty_streak = 0
                 return
 
@@ -483,6 +518,7 @@ class FlaskStreamServer(ResultPublisher):
             self._hotspots_cache = []
             self._hotspots_cache_gpu_tensor = None
             self._hotspots_frame_id = frame_id
+            self._hotspots_history = {}
             self._hotspots_empty_streak = 0
 
     def get_hotspots_for_frame(self, frame_id: int) -> Any:
@@ -496,6 +532,12 @@ class FlaskStreamServer(ResultPublisher):
                 if self._hotspots_cache_gpu_tensor is not None:
                     return self._hotspots_cache_gpu_tensor
                 return list(self._hotspots_cache)
+            history_entry = self._hotspots_history.get(int(frame_id))
+            if history_entry is not None:
+                history_hotspots, history_gpu_tensor = history_entry
+                if history_gpu_tensor is not None:
+                    return history_gpu_tensor
+                return list(history_hotspots)
         return []
 
     def get_gpu_hotspot_renderer(self) -> GpuHotspotRenderer:
@@ -579,13 +621,21 @@ class FlaskStreamServer(ResultPublisher):
                     item.pop(key, None)
             detections = item.get("detections")
             if isinstance(detections, list):
-                item["detection_count"] = len(detections)
+                existing_detection_count = item.get("detection_count")
+                if isinstance(existing_detection_count, (int, float)):
+                    item["detection_count"] = max(int(existing_detection_count), len(detections))
+                else:
+                    item["detection_count"] = len(detections)
                 if drop_detections:
                     item.pop("detections", None)
 
             hotspots = item.get("hotspots")
             if isinstance(hotspots, list):
-                item["hotspot_count"] = len(hotspots)
+                existing_hotspot_count = item.get("hotspot_count")
+                if isinstance(existing_hotspot_count, (int, float)):
+                    item["hotspot_count"] = max(int(existing_hotspot_count), len(hotspots))
+                else:
+                    item["hotspot_count"] = len(hotspots)
                 if drop_hotspots:
                     item.pop("hotspots", None)
             compacted.append(item)

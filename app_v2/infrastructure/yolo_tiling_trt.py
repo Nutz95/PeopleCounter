@@ -26,6 +26,12 @@ class YoloTilingTRT(InferenceModel):
         self._decoder.nms_iou_threshold = float(self._inference_params.get("nms_iou_threshold", 0.45))
         self._decoder.cross_nms_iou_threshold = float(self._inference_params.get("cross_nms_iou_threshold", 0.20))
         self._decoder.min_box_px = float(self._inference_params.get("min_box_px", 16.0))
+        self._decoder.person_summary_enabled = bool(
+            self._inference_params.get("person_summary_enabled", False)
+        )
+        self._decoder.count_only_mode = bool(
+            self._inference_params.get("count_only_mode", False)
+        )
 
     @property
     def name(self) -> str:
@@ -103,6 +109,7 @@ class YoloTilingTRT(InferenceModel):
                 } if isinstance(raw_outputs, dict) else {},
                 "segmentation": raw_outputs.get("segmentation") if isinstance(raw_outputs, dict) else None,
                 "detections": decoded.get("detections", []),
+                "detection_count": int(decoded.get("detection_count", len(decoded.get("detections", [])) or 0)),
                 "seg_mask_raw": None,
                 "seg_mask_w": 0,
                 "seg_mask_h": 0,
@@ -123,6 +130,7 @@ class YoloTilingTRT(InferenceModel):
         """Split tiles into sub-batches of max_batch and merge detections."""
         import math
         all_detections: list[Any] = []
+        total_detection_count = 0
         total_infer_ms = total_prepare_ms = total_enqueue_ms = total_sync_ms = total_decode_ms = 0.0
         n_chunks = math.ceil(len(tiles) / max_batch)
         for chunk_idx in range(n_chunks):
@@ -146,7 +154,15 @@ class YoloTilingTRT(InferenceModel):
             result = self._infer_batch(frame_id, chunk_tiles,
                                        preprocess_events=preprocess_events,
                                        tile_plan=chunk_plan)
-            all_detections.extend(result.get("detections", []))
+            chunk_detections = result.get("detections", [])
+            if isinstance(chunk_detections, list):
+                all_detections.extend(chunk_detections)
+                total_detection_count += len(chunk_detections)
+            chunk_detection_count = result.get("detection_count")
+            if isinstance(chunk_detection_count, (int, float)):
+                total_detection_count += max(0, int(chunk_detection_count)) - (
+                    len(chunk_detections) if isinstance(chunk_detections, list) else 0
+                )
             total_infer_ms += result.get("inference_ms", 0.0)
             total_prepare_ms += result.get("prepare_batch_ms", 0.0)
             total_enqueue_ms += result.get("enqueue_ms", 0.0)
@@ -158,6 +174,7 @@ class YoloTilingTRT(InferenceModel):
             "prediction": {"status": "ok"},
             "segmentation": None,
             "detections": all_detections,
+            "detection_count": max(total_detection_count, len(all_detections)),
             "seg_mask_raw": None,
             "seg_mask_w": 0,
             "seg_mask_h": 0,

@@ -35,6 +35,12 @@ class YoloTilingParallelTRT(InferenceModel):
         self._decoder.nms_iou_threshold = float(self._inference_params.get("nms_iou_threshold", 0.45))
         self._decoder.cross_nms_iou_threshold = float(self._inference_params.get("cross_nms_iou_threshold", 0.20))
         self._decoder.min_box_px = float(self._inference_params.get("min_box_px", 16.0))
+        self._decoder.person_summary_enabled = bool(
+            self._inference_params.get("person_summary_enabled", False)
+        )
+        self._decoder.count_only_mode = bool(
+            self._inference_params.get("count_only_mode", False)
+        )
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=groups, thread_name_prefix="yolo_tiles_group")
 
     @property
@@ -108,6 +114,7 @@ class YoloTilingParallelTRT(InferenceModel):
         
         # Merge detections from all groups
         all_detections: list[Any] = []
+        total_detection_count = 0
         total_prepare_batch_ms = 0.0
         total_enqueue_ms = 0.0
         total_stream_sync_ms = 0.0
@@ -116,7 +123,15 @@ class YoloTilingParallelTRT(InferenceModel):
         
         for group_idx in sorted(group_results.keys()):
             result = group_results[group_idx]
-            all_detections.extend(result.get("detections", []))
+            group_detections = result.get("detections", [])
+            if isinstance(group_detections, list):
+                all_detections.extend(group_detections)
+                total_detection_count += len(group_detections)
+            group_detection_count = result.get("detection_count")
+            if isinstance(group_detection_count, (int, float)):
+                total_detection_count += max(0, int(group_detection_count)) - (
+                    len(group_detections) if isinstance(group_detections, list) else 0
+                )
             total_prepare_batch_ms += result.get("prepare_batch_ms", 0.0)
             total_enqueue_ms += result.get("enqueue_ms", 0.0)
             total_stream_sync_ms += result.get("stream_sync_ms", 0.0)
@@ -133,6 +148,7 @@ class YoloTilingParallelTRT(InferenceModel):
             "prediction": {"status": "ok"},
             "segmentation": None,
             "detections": all_detections,
+            "detection_count": max(total_detection_count, len(all_detections)),
             "seg_mask_raw": None,
             "seg_mask_w": 0,
             "seg_mask_h": 0,
@@ -182,15 +198,26 @@ class YoloTilingParallelTRT(InferenceModel):
             gpu_done_ns = time.perf_counter_ns()   # ← GPU inference ends here
             decode_start_ns = gpu_done_ns
             output_tensors = raw_outputs.get("output_tensors", [])
-            # Decode only detections here — seg mask is computed once in
-            # infer() for all groups combined to avoid running the expensive
-            # torch/numpy seg decode inside parallel threads (GIL-bound).
-            detections = self._decoder._decode_detections(output_tensors, tile_plan=tile_plan)
+            if getattr(self._decoder, "count_only_mode", False):
+                summary = self._decoder._decode_person_detections_gpu(output_tensors)
+                detection_count = 0
+                if isinstance(summary, dict):
+                    candidates = summary.get("person_candidates")
+                    if isinstance(candidates, (int, float)):
+                        detection_count = max(0, int(candidates))
+                detections: list[Any] = []
+            else:
+                # Decode only detections here — seg mask is computed once in
+                # infer() for all groups combined to avoid running the expensive
+                # torch/numpy seg decode inside parallel threads (GIL-bound).
+                detections = self._decoder._decode_detections(output_tensors, tile_plan=tile_plan)
+                detection_count = len(detections)
             decode_ms = (time.perf_counter_ns() - decode_start_ns) / 1_000_000.0
             group_ms = (gpu_done_ns - group_start_ns) / 1_000_000.0  # CPU decode excluded
 
             return {
                 "detections": detections,
+                "detection_count": detection_count,
                 "prepare_batch_ms": float(raw_outputs.get("prepare_batch_ms", 0.0)),
                 "enqueue_ms": float(raw_outputs.get("enqueue_ms", 0.0)),
                 "stream_sync_ms": float(raw_outputs.get("stream_sync_ms", 0.0)),

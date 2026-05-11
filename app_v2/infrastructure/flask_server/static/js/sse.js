@@ -133,6 +133,11 @@ sse.addEventListener('message', e => {
   const videoEncodeWait = +(tel.video_encode_wait_event_ms ?? 0);
   const videoEncodeCopy = +(tel.video_encode_cpu_copy_ms ?? 0);
   const videoEncodePush = +(tel.video_encode_push_ms ?? 0);
+  const hotspotLookupMs = +(tel.video_hotspot_lookup_ms ?? 0);
+  const hotspotLookupMode = +(tel.video_hotspot_lookup_mode_code ?? 0);
+  const hotspotLookupExact = +(tel.video_hotspot_lookup_exact ?? 0);
+  const hotspotLookupFallback = +(tel.video_hotspot_lookup_fallback ?? 0);
+  const hotspotLookupMiss = +(tel.video_hotspot_lookup_miss ?? 0);
   const videoInflight = +(tel.video_encode_inflight ?? 0);
   const videoStashed = +(tel.video_encode_stashed ?? 0);
   const publishTotal = +(tel.server_publish_total_ms ?? 0);
@@ -233,7 +238,8 @@ sse.addEventListener('message', e => {
   $ovTiles.textContent      = `tiles   ${avgTiles.toFixed(1)} ms  postdecode ${avgPostDecode.toFixed(1)} ms [f ${avgDecodeFilter.toFixed(1)} / nms ${avgDecodeNms.toFixed(1)} / xfer ${avgDecodeExport.toFixed(1)} / pack ${avgDecodePack.toFixed(1)}]  nvdec(upstream) ${avgNvdec.toFixed(1)} ms`;
   if ($ovOther) {
     const queueState = videoInflight > 0 ? (videoStashed > 0 ? 'enc:busy+stash' : 'enc:busy') : 'enc:idle';
-    $ovOther.textContent = `other(e2e gap) ${avgOther.toFixed(1)} ms  fusion ${avgFusion.toFixed(2)} ms  pub ${avgPublish.toFixed(2)} ms  enc ${avgEncode.toFixed(1)} ms (${queueState}, wait ${videoEncodeWait.toFixed(1)} / copy ${videoEncodeCopy.toFixed(1)} / push ${videoEncodePush.toFixed(1)} ms)`;
+    const lookupLabel = hotspotLookupMode === 1 ? 'exact' : (hotspotLookupMode === 2 ? 'fallback' : (hotspotLookupMode === 3 ? 'miss' : 'none'));
+    $ovOther.textContent = `other(e2e gap) ${avgOther.toFixed(1)} ms  fusion ${avgFusion.toFixed(2)} ms  pub ${avgPublish.toFixed(2)} ms  enc ${avgEncode.toFixed(1)} ms (${queueState}, wait ${videoEncodeWait.toFixed(1)} / copy ${videoEncodeCopy.toFixed(1)} / push ${videoEncodePush.toFixed(1)} ms, hs_lookup ${hotspotLookupMs.toFixed(2)} ms ${lookupLabel} e${hotspotLookupExact.toFixed(0)} f${hotspotLookupFallback.toFixed(0)} m${hotspotLookupMiss.toFixed(0)})`;
   }
 
   if (window.__benchmarkCapture && window.__benchmarkCapture.isActive()) {
@@ -292,6 +298,11 @@ sse.addEventListener('message', e => {
       video_encode_wait_ms: +videoEncodeWait.toFixed(4),
       video_encode_copy_ms: +videoEncodeCopy.toFixed(4),
       video_encode_push_ms: +videoEncodePush.toFixed(4),
+      video_hotspot_lookup_ms: +hotspotLookupMs.toFixed(4),
+      video_hotspot_lookup_mode_code: +hotspotLookupMode.toFixed(4),
+      video_hotspot_lookup_exact: +hotspotLookupExact.toFixed(4),
+      video_hotspot_lookup_fallback: +hotspotLookupFallback.toFixed(4),
+      video_hotspot_lookup_miss: +hotspotLookupMiss.toFixed(4),
       publish_total_ms: +publishTotal.toFixed(4),
     });
   }

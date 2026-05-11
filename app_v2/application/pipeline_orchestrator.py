@@ -74,6 +74,8 @@ class PipelineOrchestrator:
         self.performance_tracker = PerformanceTracker()
         self.max_frames = max_frames
         self._models = self.model_builder.build_models()
+        self._active_sync_mode = "async" if isinstance(self.fusion_strategy, RawStreamFusionStrategy) else "sync"
+        self._apply_decoder_runtime_policy(self._active_sync_mode)
         self._density_decoder = DensityDecoder(
             min_peak_weight=float(self.config.get("density", {}).get("min_peak_weight", 0.05)),
             nms_kernel=int(self.config.get("density", {}).get("nms_kernel", 3)),
@@ -107,6 +109,10 @@ class PipelineOrchestrator:
         # here; _on_video_encode_done auto-submits it when the slot is free.
         self._pending_chw: torch.Tensor | None = None
         self._pending_enc_event: torch.cuda.Event | None = None
+        self._pending_frame_id: int | None = None
+        # Guard to ensure a stashed frame is never encoded before inference
+        # has published hotspots for that same frame.
+        self._pending_ready_to_encode: bool = False
         self._encode_running: bool = False
         # When sync mode is active the browser displays MJPEG instead of WebCodecs,
         # so NVJPEG must run even when a WebCodecs WS client is still connected.
@@ -122,6 +128,11 @@ class PipelineOrchestrator:
         self._video_last_cpu_copy_ms: float = 0.0
         self._video_last_push_ms: float = 0.0
         self._video_last_jpeg_kb: float = 0.0
+        self._video_last_hotspot_lookup_ms: float = 0.0
+        self._video_last_hotspot_lookup_mode_code: float = 0.0  # 0 none, 1 exact, 2 fallback, 3 miss
+        self._video_hotspot_lookup_exact_count: int = 0
+        self._video_hotspot_lookup_fallback_count: int = 0
+        self._video_hotspot_lookup_miss_count: int = 0
         self._video_encode_jobs_count: int = 0
         self._video_encode_errors_count: int = 0
 
@@ -198,13 +209,13 @@ class PipelineOrchestrator:
                 perf_after_nvdec_ns = time.perf_counter_ns() if _PERF_LOG else 0
                 # ────────────────────────────────────────────────────────────
 
-                # ── Video encode dispatch ───────────────────────────────────
-                # Submitted immediately after NVDEC decode, BEFORE inference.
-                # NV12→RGB→resize runs on _video_stream (GPU, async from CPU).
-                # NVJPEG encode runs in background thread, parallel with inference.
-                self._push_video_frame_async(frame)
+                # ── Video: NV12→RGB conversion (before inference, async GPU) ──────
+                # NV12→RGB runs on _video_stream NOW so it overlaps with inference.
+                # The JPEG encode+push is dispatched AFTER inference so that
+                # hotspots are available and passed directly — no cache lookup race.
+                self._prepare_video_frame(frame, frame_id)
                 perf_after_video_dispatch_ns = time.perf_counter_ns() if _PERF_LOG else 0
-                # ───────────────────────────────────────────────────────────
+                # ──────────────────────────────────────────────────────────────────
 
                 output = self.preprocessor.build_output(frame_id, frame)
                 self.aggregator.attach_telemetry(frame_id, output.telemetry)
@@ -277,6 +288,12 @@ class PipelineOrchestrator:
                         perf_collect_ms_total += (time.perf_counter_ns() - perf_collect_start_ns) / 1_000_000.0
                         perf_after_collect_ns = time.perf_counter_ns() if _PERF_LOG else 0
 
+                # ── Video encode dispatch (after inference, with fresh hotspots) ──
+                # hotspots come directly from publisher cache that was just populated
+                # by aggregator.collect() → publisher.publish() above.
+                self._flush_video_encode(frame_id)
+                # ──────────────────────────────────────────────────────────────────
+
                 if output.telemetry is not None:
                     output.telemetry.add_metrics(
                         {
@@ -326,6 +343,8 @@ class PipelineOrchestrator:
                         if self._video_stream is not None:
                             self._video_stream.synchronize()
                         self.aggregator.discard_frame(frame_id)
+                    # Flush the JPEG encode for frames with no inference (no hotspots).
+                    self._flush_video_encode(frame_id)
                     # Emit a lightweight SSE heartbeat so the browser can count FPS
                     if isinstance(self.publisher, FlaskStreamServer):
                         self.publisher.publish_passthrough_frame(frame_id)
@@ -414,6 +433,7 @@ class PipelineOrchestrator:
 
         # Reconfigure preprocessor for the new branches
         self.preprocessor.configure(self.config)
+        self._apply_decoder_runtime_policy(self._active_sync_mode)
 
         # Update fusion strategy expected model count
         if isinstance(self.fusion_strategy, SimpleFusionStrategy):
@@ -449,6 +469,8 @@ class PipelineOrchestrator:
 
         # Keep aggregator aligned with the newly active strategy.
         self.aggregator.fusion_strategy = self.fusion_strategy
+        self._active_sync_mode = mode
+        self._apply_decoder_runtime_policy(mode)
 
         if isinstance(self.publisher, FlaskStreamServer):
             self.publisher.set_active_sync_mode(mode)
@@ -457,6 +479,38 @@ class PipelineOrchestrator:
             LogChannel.GLOBAL,
             f"Synchronization mode switched to '{mode}' (fusion={self.fusion_strategy.strategy_type.value})",
         )
+
+    def _apply_decoder_runtime_policy(self, sync_mode: str) -> None:
+        """Apply low-latency decode policy according to active sync mode.
+
+        async: YOLO/CROWD count-only (GPU candidate count), no bbox/seg decode.
+        sync : restore configured decoder behaviour from model inference params.
+        """
+        is_async = str(sync_mode).strip().lower() != "sync"
+        for model in self._models:
+            decoder = getattr(model, "_decoder", None)
+            if decoder is None:
+                continue
+
+            model_name = str(getattr(model, "name", "")).lower()
+            is_yolo_family = model_name.startswith("yolo") or model_name.startswith("crowd")
+            if not is_yolo_family:
+                continue
+
+            inference_params = getattr(model, "_inference_params", {})
+            if not isinstance(inference_params, dict):
+                inference_params = {}
+
+            if hasattr(decoder, "count_only_mode"):
+                decoder.count_only_mode = bool(is_async)
+            if hasattr(decoder, "person_summary_enabled"):
+                decoder.person_summary_enabled = bool(is_async) or bool(
+                    inference_params.get("person_summary_enabled", False)
+                )
+            if hasattr(decoder, "seg_mask_enabled"):
+                decoder.seg_mask_enabled = (
+                    False if is_async else bool(inference_params.get("seg_mask_enabled", False))
+                )
 
     def _shutdown(self) -> None:
         self._video_executor.shutdown(wait=False)
@@ -469,106 +523,84 @@ class PipelineOrchestrator:
             except Exception as exc:
                 log_warning(LogChannel.GLOBAL, f"Model {model.name} closed with error: {exc}")
 
-    def _push_video_frame_async(self, frame: Any) -> None:
-        """Encode the raw NV12 GpuFrame as JPEG and push it to the MJPEG feed.
+    def _prepare_video_frame(self, frame: Any, frame_id: int | None = None) -> None:
+        """Step 1 of 2: NV12→RGB conversion on _video_stream (async, before inference).
 
-        Called immediately after NVDEC decode — BEFORE inference.  All GPU work
-        runs on ``_video_stream``, fully parallel with the YOLO inference pipeline.
-
-        Conversion order: NV12 → bilinear resize in YUV space → RGB HWC uint8.
-        This avoids allocating the full-resolution RGB intermediate (~25 MB for
-        4K) — see :func:`nv12_to_rgb_hwc_resized_cuda` for details.
-
-        Zero-drop strategy: when the encoder is busy the latest RGB tensor is
-        stored in ``_pending_chw``; ``_on_video_encode_done`` auto-submits it
-        the moment the slot is free (no frame is ever permanently lost).
-
-        Output resolution:
-          - ``video_stream.max_height: null`` in pipeline.yaml → native camera
-            resolution (e.g. 4K for a 4K source).
-          - ``video_stream.max_height: N`` → height capped at N pixels, width
-            scaled proportionally and rounded to an even number.
-
-        Encoding: NVJPEG via ``torchvision.io.encode_jpeg`` (CUDA tensor input).
-        Quality controlled by ``video_stream.quality`` in pipeline.yaml.
+        Records the CUDA event and stashes the CHW tensor.  Does NOT submit the
+        JPEG encode job — that happens in _flush_video_encode() AFTER inference
+        so that hotspots are available and passed directly without any cache race.
         """
+        if self._webcodecs_server.has_clients() and not self._force_mjpeg:
+            self._set_video_encode_metrics_idle()
+            return
+        if self._video_stream is None:
+            self._set_video_encode_metrics_idle()
+            return
         push_frame = getattr(self.publisher, "push_frame", None)
         if not callable(push_frame):
             return
-
-        # Skip NVJPEG entirely when a WebCodecs client is connected.
-        # The browser renders via the zero-encode WebSocket path; MJPEG output
-        # is unused and the NV12→RGB + JPEG encode wastes ~8–12 % GPU headroom
-        # that is better reserved for TRT inference and NVDEC.
-        # When the WebSocket disconnects (has_clients() → False) NVJPEG resumes
-        # immediately so the MJPEG fallback stays functional.
-        # Skip NVJPEG when WebCodecs is active AND sync mode is not forced.
-        # In sync mode (_force_mjpeg=True) we must encode MJPEG frames even when
-        # a WebCodecs WS connection is open so the MJPEG path stays live.
-        if self._webcodecs_server.has_clients() and not self._force_mjpeg:
-            return
-
-        if self._video_stream is None:
-            return
-
         try:
             frame_height = int(getattr(frame, "height", 0))
             frame_width = int(getattr(frame, "width", 0))
             if self._video_max_height is not None and frame_height > self._video_max_height:
                 resize_scale = self._video_max_height / frame_height
                 target_h = self._video_max_height
-                target_w = int(frame_width * resize_scale) & ~1  # keep even for JPEG chroma sub-sampling
+                target_w = int(frame_width * resize_scale) & ~1
             else:
                 target_h, target_w = frame_height, frame_width
-
             with torch.cuda.stream(self._video_stream):
-                # NV12 → resize in YUV space → RGB HWC uint8 at target resolution.
-                # nv12_to_rgb_hwc_resized_cuda uses stream_id=_VIDEO_BUFFER_SLOT to
-                # keep its plane-buffer cache separate from all preprocess streams.
                 rgb_hwc = nv12_to_rgb_hwc_resized_cuda(
                     frame, target_h, target_w, stream_id=_VIDEO_BUFFER_SLOT
-                )  # [target_h, target_w, 3] uint8 CUDA
-                chw_uint8 = rgb_hwc.permute(2, 0, 1).contiguous()  # [3, th, tw] uint8
-                # IMPORTANT: give encoder a dedicated, owned tensor buffer.
-                # This avoids any accidental aliasing/lifetime ambiguity with
-                # intermediate tensors when frames are produced continuously.
+                )
+                chw_uint8 = rgb_hwc.permute(2, 0, 1).contiguous()
                 encode_input_chw = chw_uint8.clone()
-
-            # Record event so background thread waits for GPU ops before NVJPEG.
             enc_event = torch.cuda.Event()
             enc_event.record(self._video_stream)
-
             with self._pending_frame_lock:
-                # Always store the latest frame as the next candidate.
                 self._pending_chw = encode_input_chw
                 self._pending_enc_event = enc_event
-                if self._encode_running:
-                    # Encoder busy: stash is set; _on_video_encode_done will pick
-                    # it up.  Optionally wait a short grace period so a nearly-done
-                    # encode can finish and we submit directly this iteration.
-                    was_running = True
-                else:
-                    # Encoder idle: grab the frame immediately for direct submit.
-                    was_running = False
-                    self._encode_running = True
-                    self._pending_chw = None
-                    self._pending_enc_event = None
-
-            if was_running:
-                # Encoder still busy: never block the main pipeline loop here.
-                # Keep only the latest frame in the stash; _on_video_encode_done
-                # will submit it as soon as the worker becomes free.
-                return
-
-            # Encoder was idle: submit the frame we just grabbed.
-            self._video_future = self._submit_video_encode(
-                encode_input_chw,
-                enc_event,
-                push_frame,
-            )
-            self._video_future.add_done_callback(self._on_video_encode_done)
+                self._pending_frame_id = int(frame_id) if isinstance(frame_id, int) else None
+                self._pending_ready_to_encode = False
         except Exception as exc:
-            log_warning(LogChannel.GLOBAL, f"Video frame submit failed: {exc}")
+            log_warning(LogChannel.GLOBAL, f"Video frame NV12→RGB failed: {exc}")
+
+    def _flush_video_encode(self, frame_id: int | None = None) -> None:
+        """Step 2 of 2: submit JPEG encode+push AFTER inference.
+
+        At this point publisher.publish() has already populated the hotspot cache
+        for this frame_id, so get_hotspots_for_frame() returns the correct data.
+        """
+        push_frame = getattr(self.publisher, "push_frame", None)
+        if not callable(push_frame):
+            return
+        with self._pending_frame_lock:
+            encode_input_chw = self._pending_chw
+            enc_event = self._pending_enc_event
+            encode_frame_id = self._pending_frame_id
+            if encode_input_chw is None or enc_event is None:
+                # NV12→RGB was skipped (WebCodecs path or stream idle)
+                return
+            if frame_id is not None and encode_frame_id is not None and int(frame_id) != int(encode_frame_id):
+                # Stash was replaced by a newer frame; wait for its own flush.
+                return
+            # Mark current stashed frame as publish-complete (hotspots ready).
+            self._pending_ready_to_encode = True
+            if self._encode_running:
+                # Previous encode still running: keep the stash as-is,
+                # _on_video_encode_done will pick it up when free.
+                return
+            self._encode_running = True
+            self._pending_chw = None
+            self._pending_enc_event = None
+            self._pending_frame_id = None
+            self._pending_ready_to_encode = False
+        self._video_future = self._submit_video_encode(
+            encode_input_chw,
+            enc_event,
+            push_frame,
+            encode_frame_id,
+        )
+        self._video_future.add_done_callback(self._on_video_encode_done)
 
     def _on_video_encode_done(self, _future: concurrent.futures.Future) -> None:  # type: ignore[type-arg]
         """Callback: fired by the executor thread when an NVJPEG encode finishes.
@@ -580,16 +612,28 @@ class PipelineOrchestrator:
         with self._pending_frame_lock:
             pending_chw = self._pending_chw
             pending_event = self._pending_enc_event
+            pending_frame_id = self._pending_frame_id
+            pending_ready = self._pending_ready_to_encode
             if pending_chw is None or not callable(push_frame):
                 # Nothing pending or publisher gone → encoder goes idle.
+                self._encode_running = False
+                self._pending_enc_event = None
+                self._pending_frame_id = None
+                self._pending_ready_to_encode = False
+                return
+            if not pending_ready:
+                # Critical ordering guard: a frame prepared before inference
+                # must never be encoded until _flush_video_encode marks it ready.
                 self._encode_running = False
                 return
             # Pop the stash and keep _encode_running = True.
             self._pending_chw = None
             self._pending_enc_event = None
+            self._pending_frame_id = None
+            self._pending_ready_to_encode = False
 
         try:
-            new_future = self._submit_video_encode(pending_chw, pending_event, push_frame)
+            new_future = self._submit_video_encode(pending_chw, pending_event, push_frame, pending_frame_id)
             new_future.add_done_callback(self._on_video_encode_done)
             with self._pending_frame_lock:
                 self._video_future = new_future
@@ -603,6 +647,7 @@ class PipelineOrchestrator:
         chw_uint8: torch.Tensor,
         enc_event: torch.cuda.Event,
         push_frame: Any,
+        frame_id: int | None,
     ) -> concurrent.futures.Future[None]:
         """Submit one JPEG encode job to the dedicated video executor.
 
@@ -636,6 +681,7 @@ class PipelineOrchestrator:
             self._nvjpeg_stream,
             self._record_video_encode_metrics,
             self.publisher,  # Pass publisher for GPU hotspot rendering
+            frame_id,
         )
 
     @staticmethod
@@ -647,6 +693,7 @@ class PipelineOrchestrator:
         nvjpeg_stream: "torch.cuda.Stream | None",
         metrics_callback: Any | None = None,
         publisher: Any | None = None,
+        frame_id: int | None = None,
     ) -> None:
         """Background thread: [3×H×W uint8 CUDA] → (GPU hotspot render) → NVJPEG bytes → MJPEG clients.
 
@@ -662,16 +709,38 @@ class PipelineOrchestrator:
             perf_after_wait_ns = time.perf_counter_ns()
 
             # GPU hotspot rendering (if enabled and hotspots available)
+            hotspot_lookup_mode_code = 0.0
+            hotspot_lookup_start_ns = time.perf_counter_ns()
             if publisher is not None:
                 try:
                     renderer = publisher.get_gpu_hotspot_renderer()
-                    # Get cached hotspots (frame_id is tracked in publisher)
-                    hotspots = publisher.get_hotspots_for_frame(-1)  # -1 = latest
+                    # Prefer frame-aligned hotspots; fallback to latest if that
+                    # specific frame is not cached yet.
+                    lookup_frame_id = int(frame_id) if isinstance(frame_id, int) else -1
+                    hotspots = publisher.get_hotspots_for_frame(lookup_frame_id)
+                    has_exact = False
+                    is_empty_exact = False
+                    if isinstance(hotspots, torch.Tensor):
+                        is_empty_exact = hotspots.numel() == 0
+                    elif isinstance(hotspots, list):
+                        is_empty_exact = len(hotspots) == 0
+                    else:
+                        is_empty_exact = True
+                    if is_empty_exact:
+                        hotspots = publisher.get_hotspots_for_frame(-1)
+                        hotspot_lookup_mode_code = 2.0
+                    else:
+                        has_exact = True
+                        hotspot_lookup_mode_code = 1.0
                     has_hotspots = False
                     if isinstance(hotspots, torch.Tensor):
                         has_hotspots = hotspots.numel() > 0
                     elif isinstance(hotspots, list):
                         has_hotspots = len(hotspots) > 0
+                    if hotspot_lookup_mode_code == 2.0 and not has_hotspots:
+                        hotspot_lookup_mode_code = 3.0
+                    if has_exact and not has_hotspots:
+                        hotspot_lookup_mode_code = 3.0
                     if has_hotspots:
                         chw_uint8 = renderer.draw_hotspots_on_frame(
                             chw_uint8,
@@ -681,6 +750,7 @@ class PipelineOrchestrator:
                 except Exception as exc:
                     import sys as _sys
                     print(f"[GPU Hotspot Render] failed (non-fatal): {exc}", file=_sys.stderr, flush=True)
+            hotspot_lookup_done_ns = time.perf_counter_ns()
 
             perf_after_render_ns = time.perf_counter_ns()
             import torchvision.io as tvio
@@ -715,6 +785,8 @@ class PipelineOrchestrator:
                         "video_encode_backend_code": 2.0,
                         "video_encode_last_ms": (perf_after_push_ns - perf_start_ns) / 1_000_000.0,
                         "video_encode_wait_event_ms": (perf_after_wait_ns - perf_start_ns) / 1_000_000.0,
+                        "video_hotspot_lookup_ms": (hotspot_lookup_done_ns - hotspot_lookup_start_ns) / 1_000_000.0,
+                        "video_hotspot_lookup_mode_code": hotspot_lookup_mode_code,
                         "video_encode_gpu_hotspot_render_ms": (perf_after_render_ns - perf_after_wait_ns) / 1_000_000.0,
                         "video_encode_kernel_ms": (perf_after_encode_ns - perf_after_render_ns) / 1_000_000.0,
                         "video_encode_cpu_copy_ms": (perf_after_cpu_copy_ns - perf_after_encode_ns) / 1_000_000.0,
@@ -792,8 +864,30 @@ class PipelineOrchestrator:
                 self._video_last_push_ms = float(metrics["video_encode_push_ms"])
             if "video_jpeg_kb" in metrics:
                 self._video_last_jpeg_kb = float(metrics["video_jpeg_kb"])
+            if "video_hotspot_lookup_ms" in metrics:
+                self._video_last_hotspot_lookup_ms = float(metrics["video_hotspot_lookup_ms"])
+            if "video_hotspot_lookup_mode_code" in metrics:
+                self._video_last_hotspot_lookup_mode_code = float(metrics["video_hotspot_lookup_mode_code"])
+                if self._video_last_hotspot_lookup_mode_code == 1.0:
+                    self._video_hotspot_lookup_exact_count += 1
+                elif self._video_last_hotspot_lookup_mode_code == 2.0:
+                    self._video_hotspot_lookup_fallback_count += 1
+                elif self._video_last_hotspot_lookup_mode_code == 3.0:
+                    self._video_hotspot_lookup_miss_count += 1
             if float(metrics.get("video_encode_error", 0.0)) > 0.0:
                 self._video_encode_errors_count += 1
+
+    def _set_video_encode_metrics_idle(self) -> None:
+        """Mark encode metrics as idle when no JPEG encode path is executed."""
+        with self._video_metrics_lock:
+            self._video_last_backend_code = 0.0
+            self._video_last_encode_ms = 0.0
+            self._video_last_wait_event_ms = 0.0
+            self._video_last_cpu_copy_ms = 0.0
+            self._video_last_push_ms = 0.0
+            self._video_last_jpeg_kb = 0.0
+            self._video_last_hotspot_lookup_ms = 0.0
+            self._video_last_hotspot_lookup_mode_code = 0.0
 
     def _snapshot_video_encode_metrics(self) -> dict[str, float]:
         with self._video_metrics_lock:
@@ -803,6 +897,11 @@ class PipelineOrchestrator:
                 "video_encode_cpu_copy_ms": self._video_last_cpu_copy_ms,
                 "video_encode_push_ms": self._video_last_push_ms,
                 "video_jpeg_kb": self._video_last_jpeg_kb,
+                "video_hotspot_lookup_ms": self._video_last_hotspot_lookup_ms,
+                "video_hotspot_lookup_mode_code": self._video_last_hotspot_lookup_mode_code,
+                "video_hotspot_lookup_exact": float(self._video_hotspot_lookup_exact_count),
+                "video_hotspot_lookup_fallback": float(self._video_hotspot_lookup_fallback_count),
+                "video_hotspot_lookup_miss": float(self._video_hotspot_lookup_miss_count),
                 "video_encode_jobs": float(self._video_encode_jobs_count),
                 "video_encode_errors": float(self._video_encode_errors_count),
                 "video_backend_code": self._video_last_backend_code,

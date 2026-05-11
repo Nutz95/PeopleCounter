@@ -28,6 +28,12 @@ class YoloGlobalTRT(InferenceModel):
         self._decoder.seg_mask_clip_to_bbox = bool(
             self._inference_params.get("seg_mask_clip_to_bbox", True)
         )
+        self._decoder.person_summary_enabled = bool(
+            self._inference_params.get("person_summary_enabled", False)
+        )
+        self._decoder.count_only_mode = bool(
+            self._inference_params.get("count_only_mode", False)
+        )
 
     @property
     def name(self) -> str:
@@ -74,6 +80,7 @@ class YoloGlobalTRT(InferenceModel):
                 } if isinstance(raw_outputs, dict) else {},
                 "segmentation": raw_outputs.get("segmentation") if isinstance(raw_outputs, dict) else None,
                 "detections": decoded.get("detections", []),
+                "detection_count": int(decoded.get("detection_count", len(decoded.get("detections", [])) or 0)),
                 "seg_mask_raw": decoded.get("seg_mask_raw"),
                 "seg_mask_w": decoded.get("seg_mask_w", 0),
                 "seg_mask_h": decoded.get("seg_mask_h", 0),

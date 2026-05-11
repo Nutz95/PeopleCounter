@@ -167,7 +167,7 @@ class P2PNetTRT(InferenceModel):
 
         mask = scores >= self._confidence_threshold
         if not torch.any(mask):
-            return [], 0
+            return [], 0, None
 
         sel_pts = pts[mask]
         sel_scores = scores[mask]

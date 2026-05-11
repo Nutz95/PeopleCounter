@@ -47,6 +47,7 @@ class YoloDecoderBase(Postprocessor, ABC):
         self.seg_mask_enabled: bool = False
         self.seg_mask_clip_to_bbox: bool = True
         self.person_summary_enabled: bool = False
+        self.count_only_mode: bool = False
         self.min_box_px: float = 16.0
         self._last_decode_profile: dict[str, float] = {}
 
@@ -108,12 +109,37 @@ class YoloDecoderBase(Postprocessor, ABC):
     def process(self, frame_id: int, outputs: dict[str, Any], *, tile_plan: Any = None) -> dict[str, Any]:
         """Return normalized bounding boxes plus metadata for the aggregator."""
         tensors = outputs.get("output_tensors", []) if isinstance(outputs, dict) else []
-        detections = self._decode_detections(tensors, tile_plan=tile_plan)
         person_summary = (
             self._decode_person_detections_gpu(tensors)
-            if self.person_summary_enabled
+            if (self.person_summary_enabled or self.count_only_mode)
             else {"available": False, "reason": "disabled"}
         )
+
+        if self.count_only_mode:
+            detection_count = 0
+            if isinstance(person_summary, dict):
+                candidates = person_summary.get("person_candidates")
+                if isinstance(candidates, (int, float)):
+                    detection_count = max(0, int(candidates))
+            self._last_decode_profile = {
+                "decode_stage_filter_ms": 0.0,
+                "decode_stage_nms_ms": 0.0,
+                "decode_stage_export_ms": 0.0,
+                "decode_stage_pack_ms": 0.0,
+            }
+            return {
+                "frame_id": frame_id,
+                "detections": [],
+                "detection_count": detection_count,
+                "detections_gpu": person_summary,
+                "person_class_id": self.person_class_id,
+                "output_count": len(tensors),
+                "seg_mask_raw": None,
+                "seg_mask_w": 0,
+                "seg_mask_h": 0,
+            }
+
+        detections = self._decode_detections(tensors, tile_plan=tile_plan)
 
         seg_mask_raw: str | None = None
         seg_mask_w: int = 0
@@ -162,6 +188,7 @@ class YoloDecoderBase(Postprocessor, ABC):
         return {
             "frame_id": frame_id,
             "detections": detections,
+            "detection_count": len(detections),
             "detections_gpu": person_summary,
             "person_class_id": self.person_class_id,
             "output_count": len(tensors),
@@ -721,7 +748,10 @@ class YoloDecoderBase(Postprocessor, ABC):
                 return {"available": True, "person_candidates": 0, "device": rows.device.type}
             ncols = rows.shape[-1]
             if ncols == 6:
-                person_mask = rows[:, 5] == float(self.person_class_id)
+                person_mask = (
+                    (rows[:, 4] >= self.confidence_threshold)
+                    & (rows[:, 5] == float(self.person_class_id))
+                )
             elif ncols > 4:
                 if 4 + self.person_class_id >= ncols:
                     return {"available": True, "person_candidates": 0, "device": rows.device.type}

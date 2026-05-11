@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="760" viewBox="0 0 1600 760">
+  <defs>
+    <style>
+      .title{font:700 28px Arial, sans-serif; fill:#0f172a}
+      .lbl{font:600 14px Arial, sans-serif; fill:#0f172a}
+      .sub{font:500 12px Arial, sans-serif; fill:#334155}
+      .gpu{fill:#d1fae5;stroke:#10b981;stroke-width:2}
+      .cpu{fill:#dbeafe;stroke:#3b82f6;stroke-width:2}
+      .sync{fill:#fee2e2;stroke:#ef4444;stroke-width:2}
+      .arrow{stroke:#1f2937;stroke-width:2;fill:none;marker-end:url(#a)}
+      .dashed{stroke-dasharray:7 6}
+    </style>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L9,3 L0,6 z" fill="#1f2937"/>
+    </marker>
+  </defs>
+
+  <text x="30" y="44" class="title">PeopleCounter v2 — Frame flow (sync mode)</text>
+
+  <rect x="30" y="90" width="170" height="70" rx="10" class="gpu"/>
+  <text x="45" y="118" class="lbl">RTSP camera</text>
+  <text x="45" y="138" class="sub">H.264 / GOP stream</text>
+
+  <rect x="240" y="90" width="210" height="70" rx="10" class="gpu"/>
+  <text x="255" y="118" class="lbl">NVDEC decode</text>
+  <text x="255" y="138" class="sub">GPU NV12 surfaces</text>
+
+  <rect x="490" y="90" width="220" height="70" rx="10" class="gpu"/>
+  <text x="505" y="118" class="lbl">RTSP stable slots</text>
+  <text x="505" y="138" class="sub">4x NV12 buffers (GPU)</text>
+
+  <rect x="750" y="90" width="240" height="70" rx="10" class="sync"/>
+  <text x="765" y="118" class="lbl">next_frame(frame_id)</text>
+  <text x="765" y="138" class="sub">Condition wait / latest frame</text>
+
+  <rect x="1030" y="90" width="250" height="70" rx="10" class="gpu"/>
+  <text x="1045" y="118" class="lbl">CudaPreprocessor</text>
+  <text x="1045" y="138" class="sub">NV12 -&gt; RGB/NCHW for TRT</text>
+
+  <rect x="1320" y="90" width="240" height="70" rx="10" class="gpu"/>
+  <text x="1335" y="118" class="lbl">TensorRT inference</text>
+  <text x="1335" y="138" class="sub">YOLO / P2P / Density</text>
+
+  <rect x="1180" y="230" width="290" height="75" rx="10" class="cpu"/>
+  <text x="1195" y="258" class="lbl">FlaskStreamServer.publish</text>
+  <text x="1195" y="278" class="sub">cache hotspots by frame_id</text>
+
+  <rect x="1030" y="380" width="290" height="80" rx="10" class="gpu"/>
+  <text x="1045" y="410" class="lbl">_push_video_frame_async</text>
+  <text x="1045" y="430" class="sub">NV12 -&gt; RGB + resize (video path)</text>
+
+  <rect x="1360" y="380" width="220" height="80" rx="10" class="sync"/>
+  <text x="1375" y="410" class="lbl">NVJPEG worker</text>
+  <text x="1375" y="430" class="sub">enc_event.synchronize()</text>
+
+  <rect x="1030" y="520" width="260" height="80" rx="10" class="gpu"/>
+  <text x="1045" y="550" class="lbl">GPU hotspot renderer</text>
+  <text x="1045" y="570" class="sub">lookup exact/fallback/miss</text>
+
+  <rect x="1330" y="520" width="250" height="80" rx="10" class="gpu"/>
+  <text x="1345" y="550" class="lbl">NVJPEG encode</text>
+  <text x="1345" y="570" class="sub">stream sync + CPU copy</text>
+
+  <rect x="1320" y="650" width="240" height="70" rx="10" class="cpu"/>
+  <text x="1335" y="678" class="lbl">/api/video MJPEG</text>
+  <text x="1335" y="698" class="sub">browser display</text>
+
+  <rect x="910" y="650" width="270" height="70" rx="10" class="cpu"/>
+  <text x="925" y="678" class="lbl">/api/stream SSE</text>
+  <text x="925" y="698" class="sub">counts + telemetry</text>
+
+  <line x1="200" y1="125" x2="240" y2="125" class="arrow"/>
+  <line x1="450" y1="125" x2="490" y2="125" class="arrow"/>
+  <line x1="710" y1="125" x2="750" y2="125" class="arrow"/>
+  <line x1="990" y1="125" x2="1030" y2="125" class="arrow"/>
+  <line x1="1280" y1="125" x2="1320" y2="125" class="arrow"/>
+
+  <line x1="1440" y1="160" x2="1325" y2="230" class="arrow"/>
+  <line x1="870" y1="160" x2="1120" y2="380" class="arrow dashed"/>
+  <line x1="1320" y1="270" x2="1170" y2="650" class="arrow dashed"/>
+
+  <line x1="1320" y1="420" x2="1360" y2="420" class="arrow"/>
+  <line x1="1360" y1="460" x2="1240" y2="520" class="arrow"/>
+  <line x1="1290" y1="560" x2="1330" y2="560" class="arrow"/>
+  <line x1="1455" y1="600" x2="1455" y2="650" class="arrow"/>
+
+  <text x="30" y="742" class="sub">Legend: green=GPU path, blue=CPU path, red=synchronization points that can stall under contention.</text>
+</svg>

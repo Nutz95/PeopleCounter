@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560" viewBox="0 0 1400 560">
+  <defs>
+    <style>
+      .title{font:700 26px Arial,sans-serif;fill:#0f172a}
+      .h{font:700 15px Arial,sans-serif;fill:#0f172a}
+      .t{font:500 13px Arial,sans-serif;fill:#1e293b}
+      .sub{font:500 12px Arial,sans-serif;fill:#475569}
+      .ok{fill:#dcfce7;stroke:#22c55e;stroke-width:2}
+      .warn{fill:#ffedd5;stroke:#f97316;stroke-width:2}
+      .info{fill:#dbeafe;stroke:#3b82f6;stroke-width:2}
+    </style>
+  </defs>
+
+  <text x="24" y="42" class="title">NVJPEG benchmark summary (RTX 5060 Ti, Docker NVIDIA)</text>
+
+  <rect x="24" y="76" width="430" height="180" rx="12" class="ok"/>
+  <text x="42" y="106" class="h">Baseline NVJPEG @1080p (q85)</text>
+  <text x="42" y="134" class="t">total median: 2.218 ms</text>
+  <text x="42" y="158" class="t">effective fps: 450.78</text>
+  <text x="42" y="182" class="t">copy median: 1.390 ms</text>
+  <text x="42" y="206" class="sub">Conclusion: encode path alone is far above 30 fps needs.</text>
+
+  <rect x="484" y="76" width="430" height="180" rx="12" class="info"/>
+  <text x="502" y="106" class="h">With hotspots (3000) @ q85</text>
+  <text x="502" y="134" class="t">total median: 4.890 ms</text>
+  <text x="502" y="158" class="t">effective fps: 204.49</text>
+  <text x="502" y="182" class="t">draw+encode remains &lt; 5 ms median</text>
+  <text x="502" y="206" class="sub">Still largely above real-time constraints.</text>
+
+  <rect x="944" y="76" width="430" height="180" rx="12" class="info"/>
+  <text x="962" y="106" class="h">Live-like (image + p2p-like inference)</text>
+  <text x="962" y="134" class="t">12K/27K scenes, hotspots 3k..27k</text>
+  <text x="962" y="158" class="t">total median: 2.1 .. 2.5 ms</text>
+  <text x="962" y="182" class="t">effective fps: 400 .. 474</text>
+  <text x="962" y="206" class="sub">Inference contention does not collapse NVJPEG throughput.</text>
+
+  <rect x="24" y="286" width="640" height="240" rx="12" class="warn"/>
+  <text x="42" y="316" class="h">What this proves</text>
+  <text x="42" y="344" class="t">• NVJPEG is not the primary bottleneck for missing points.</text>
+  <text x="42" y="370" class="t">• Draw cost exists (~1.2-1.4 ms) but remains moderate.</text>
+  <text x="42" y="396" class="t">• Radius tuning helps a bit (+~3.5% on 27k hotspots).</text>
+  <text x="42" y="422" class="t">• Priority should be frame/hotspot sync and scheduling telemetry.</text>
+
+  <rect x="694" y="286" width="680" height="240" rx="12" class="ok"/>
+  <text x="712" y="316" class="h">Referenced artifacts</text>
+  <text x="712" y="344" class="t">• diagnostics/bench_nvjpeg_1080p.py</text>
+  <text x="712" y="370" class="t">• app_v2/docs/README_NVJPEG_BENCH.md</text>
+  <text x="712" y="396" class="t">• app_v2/tests/integration/pipeline/artifacts/12kpeoples.jpg</text>
+  <text x="712" y="422" class="t">• app_v2/tests/integration/pipeline/artifacts/27Kpeoples.jpg</text>
+  <text x="712" y="454" class="sub">Use these references to avoid re-opening the “NVJPEG is slow” debate.</text>
+</svg>
