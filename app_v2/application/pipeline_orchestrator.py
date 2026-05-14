@@ -25,6 +25,7 @@ from app_v2.enums import FusionStrategyType
 from app_v2.infrastructure.cuda_preprocessor import CudaPreprocessor
 from app_v2.infrastructure.density_decoder import DensityDecoder
 from app_v2.infrastructure.flask_server.server import FlaskStreamServer
+from app_v2.application.async_push_worker import AsyncPushWorker
 from app_v2.infrastructure.nvdec_decoder import build_stream_open_opts
 from app_v2.infrastructure.nvdec_packet_forwarder import NvdecPacketForwarder
 from app_v2.infrastructure.stream_pool import SimpleStreamPool
@@ -36,6 +37,9 @@ from logger.filtered_logger import LogChannel, info as log_info, warning as log_
 # nv12_to_rgb_hwc_resized_cuda.  Must not overlap with any preprocess stream
 # ID defined in pipeline.yaml (currently 0–5).
 _VIDEO_BUFFER_SLOT = 99
+
+# Singleton pour le push asynchrone JPEG (thread dédié)
+_async_push_worker = AsyncPushWorker()
 
 
 class PipelineOrchestrator:
@@ -819,7 +823,8 @@ class PipelineOrchestrator:
             if len(jpeg_bytes) < 4 or jpeg_bytes[0:2] != b"\xff\xd8" or jpeg_bytes[-2:] != b"\xff\xd9":
                 raise RuntimeError("NVJPEG produced invalid JPEG markers")
 
-            push_frame(jpeg_bytes)
+            # Push asynchrone via thread dédié
+            _async_push_worker.push(jpeg_bytes, push_frame)
             perf_after_push_ns = time.perf_counter_ns()
             if callable(metrics_callback):
                 metrics_callback(
