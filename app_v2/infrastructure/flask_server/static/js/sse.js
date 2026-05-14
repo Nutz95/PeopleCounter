@@ -70,6 +70,12 @@ sse.addEventListener('message', e => {
         video_encode_wait_ms: null,
         video_encode_copy_ms: null,
         video_encode_push_ms: null,
+        video_encode_gpu_draw_event_ms: null,
+        video_encode_gpu_jpeg_event_ms: null,
+        video_encode_gpu_input_to_draw_start_ms: null,
+        video_encode_host_wait_input_event_ms: null,
+        video_encode_host_wait_nvjpeg_sync_ms: null,
+        video_encode_host_wait_cpu_copy_sync_ms: null,
         publish_total_ms: null,
       });
     }
@@ -138,6 +144,14 @@ sse.addEventListener('message', e => {
   const videoEncodeWait = +(tel.video_encode_wait_event_ms ?? 0);
   const videoEncodeCopy = +(tel.video_encode_cpu_copy_ms ?? 0);
   const videoEncodePush = +(tel.video_encode_push_ms ?? 0);
+  const videoEncodeHotspotRender = +(tel.video_encode_gpu_hotspot_render_ms ?? 0);
+  const videoEncodeKernel = +(tel.video_encode_kernel_ms ?? 0);
+  const videoEncodeGpuDrawEvent = +(tel.video_encode_gpu_draw_event_ms ?? 0);
+  const videoEncodeGpuJpegEvent = +(tel.video_encode_gpu_jpeg_event_ms ?? 0);
+  const videoEncodeGpuInputToDrawStart = +(tel.video_encode_gpu_input_to_draw_start_ms ?? 0);
+  const videoEncodeHostWaitInputEvent = +(tel.video_encode_host_wait_input_event_ms ?? 0);
+  const videoEncodeHostWaitNvjpegSync = +(tel.video_encode_host_wait_nvjpeg_sync_ms ?? 0);
+  const videoEncodeHostWaitCpuCopySync = +(tel.video_encode_host_wait_cpu_copy_sync_ms ?? 0);
   const hotspotLookupMs = +(tel.video_hotspot_lookup_ms ?? 0);
   const hotspotLookupMode = +(tel.video_hotspot_lookup_mode_code ?? 0);
   const hotspotLookupExact = +(tel.video_hotspot_lookup_exact ?? 0);
@@ -249,7 +263,7 @@ sse.addEventListener('message', e => {
   if ($ovOther) {
     const queueState = videoInflight > 0 ? (videoStashed > 0 ? 'enc:busy+stash' : 'enc:busy') : 'enc:idle';
     const lookupLabel = hotspotLookupMode === 1 ? 'exact' : (hotspotLookupMode === 2 ? 'fallback' : (hotspotLookupMode === 3 ? 'miss' : 'none'));
-    $ovOther.textContent = `other(e2e gap) ${avgOther.toFixed(1)} ms  fusion ${avgFusion.toFixed(2)} ms  pub ${avgPublish.toFixed(2)} ms  enc ${avgEncode.toFixed(1)} ms (${queueState}, wait ${videoEncodeWait.toFixed(1)} / copy ${videoEncodeCopy.toFixed(1)} / push ${videoEncodePush.toFixed(1)} ms, hs_lookup ${hotspotLookupMs.toFixed(2)} ms ${lookupLabel} e${hotspotLookupExact.toFixed(0)} f${hotspotLookupFallback.toFixed(0)} m${hotspotLookupMiss.toFixed(0)})`;
+    $ovOther.textContent = `other(e2e gap) ${avgOther.toFixed(1)} ms  fusion ${avgFusion.toFixed(2)} ms  pub ${avgPublish.toFixed(2)} ms  enc ${avgEncode.toFixed(1)} ms (${queueState}, draw ${videoEncodeHotspotRender.toFixed(1)} / jpeg ${videoEncodeKernel.toFixed(1)} / wait ${videoEncodeWait.toFixed(1)} / copy ${videoEncodeCopy.toFixed(1)} / push ${videoEncodePush.toFixed(1)} ms, gpu(draw ${videoEncodeGpuDrawEvent.toFixed(1)} / jpeg ${videoEncodeGpuJpegEvent.toFixed(1)} / dep ${videoEncodeGpuInputToDrawStart.toFixed(1)}), host(input ${videoEncodeHostWaitInputEvent.toFixed(1)} / sync ${videoEncodeHostWaitNvjpegSync.toFixed(1)} / copy_sync ${videoEncodeHostWaitCpuCopySync.toFixed(1)}), hs_lookup ${hotspotLookupMs.toFixed(2)} ms ${lookupLabel} e${hotspotLookupExact.toFixed(0)} f${hotspotLookupFallback.toFixed(0)} m${hotspotLookupMiss.toFixed(0)})`;
   }
 
   if (window.__benchmarkCapture && window.__benchmarkCapture.isActive()) {
@@ -309,6 +323,14 @@ sse.addEventListener('message', e => {
       trt_sync_ms: +trtSync.toFixed(4),
       decode_ms: +decodeMs.toFixed(4),
       video_encode_ms: +videoEncode.toFixed(4),
+      video_encode_hotspot_render_ms: +videoEncodeHotspotRender.toFixed(4),
+      video_encode_kernel_ms: +videoEncodeKernel.toFixed(4),
+      video_encode_gpu_draw_event_ms: +videoEncodeGpuDrawEvent.toFixed(4),
+      video_encode_gpu_jpeg_event_ms: +videoEncodeGpuJpegEvent.toFixed(4),
+      video_encode_gpu_input_to_draw_start_ms: +videoEncodeGpuInputToDrawStart.toFixed(4),
+      video_encode_host_wait_input_event_ms: +videoEncodeHostWaitInputEvent.toFixed(4),
+      video_encode_host_wait_nvjpeg_sync_ms: +videoEncodeHostWaitNvjpegSync.toFixed(4),
+      video_encode_host_wait_cpu_copy_sync_ms: +videoEncodeHostWaitCpuCopySync.toFixed(4),
       video_encode_wait_ms: +videoEncodeWait.toFixed(4),
       video_encode_copy_ms: +videoEncodeCopy.toFixed(4),
       video_encode_push_ms: +videoEncodePush.toFixed(4),

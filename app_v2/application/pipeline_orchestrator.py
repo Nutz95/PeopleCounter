@@ -127,6 +127,14 @@ class PipelineOrchestrator:
         self._video_last_backend_code: float = 0.0  # 0 none, 1 cpu, 2 nvjpeg
         self._video_last_cpu_copy_ms: float = 0.0
         self._video_last_push_ms: float = 0.0
+        self._video_last_gpu_hotspot_render_ms: float = 0.0
+        self._video_last_encode_kernel_ms: float = 0.0
+        self._video_last_gpu_draw_event_ms: float = 0.0
+        self._video_last_gpu_jpeg_event_ms: float = 0.0
+        self._video_last_gpu_input_to_draw_start_ms: float = 0.0
+        self._video_last_host_wait_input_event_ms: float = 0.0
+        self._video_last_host_wait_nvjpeg_sync_ms: float = 0.0
+        self._video_last_host_wait_cpu_copy_sync_ms: float = 0.0
         self._video_last_jpeg_kb: float = 0.0
         self._video_last_hotspot_lookup_ms: float = 0.0
         self._video_last_hotspot_lookup_mode_code: float = 0.0  # 0 none, 1 exact, 2 fallback, 3 miss
@@ -550,7 +558,7 @@ class PipelineOrchestrator:
                 )
                 chw_uint8 = rgb_hwc.permute(2, 0, 1).contiguous()
                 encode_input_chw = chw_uint8.clone()
-            enc_event = torch.cuda.Event()
+            enc_event = torch.cuda.Event(enable_timing=True)
             enc_event.record(self._video_stream)
             with self._pending_frame_lock:
                 self._pending_chw = encode_input_chw
@@ -701,70 +709,108 @@ class PipelineOrchestrator:
         """
         try:
             perf_start_ns = time.perf_counter_ns()
-            enc_event.synchronize()  # CPU-side wait: data is ready in GPU memory
+            host_wait_input_event_ms = 0.0
+            host_wait_nvjpeg_sync_ms = 0.0
+            host_wait_cpu_copy_sync_ms = 0.0
+            gpu_draw_event_ms = 0.0
+            gpu_jpeg_event_ms = 0.0
+            gpu_input_to_draw_start_ms = 0.0
+
+            exec_stream: torch.cuda.Stream | None = nvjpeg_stream
+            if exec_stream is None:
+                exec_stream = torch.cuda.current_stream()
+
             perf_after_wait_ns = time.perf_counter_ns()
+
+            draw_start_event = torch.cuda.Event(enable_timing=True)
+            draw_end_event = torch.cuda.Event(enable_timing=True)
+            encode_end_event = torch.cuda.Event(enable_timing=True)
 
             # GPU hotspot rendering (if enabled and hotspots available)
             hotspot_lookup_mode_code = 0.0
             hotspot_lookup_start_ns = time.perf_counter_ns()
-            if publisher is not None:
-                try:
-                    renderer = publisher.get_gpu_hotspot_renderer()
-                    # Prefer frame-aligned hotspots; fallback to latest if that
-                    # specific frame is not cached yet.
-                    lookup_frame_id = int(frame_id) if isinstance(frame_id, int) else -1
-                    hotspots = publisher.get_hotspots_for_frame(lookup_frame_id)
-                    has_exact = False
-                    is_empty_exact = False
-                    if isinstance(hotspots, torch.Tensor):
-                        is_empty_exact = hotspots.numel() == 0
-                    elif isinstance(hotspots, list):
-                        is_empty_exact = len(hotspots) == 0
-                    else:
-                        is_empty_exact = True
-                    if is_empty_exact:
-                        hotspots = publisher.get_hotspots_for_frame(-1)
-                        hotspot_lookup_mode_code = 2.0
-                    else:
-                        has_exact = True
-                        hotspot_lookup_mode_code = 1.0
-                    has_hotspots = False
-                    if isinstance(hotspots, torch.Tensor):
-                        has_hotspots = hotspots.numel() > 0
-                    elif isinstance(hotspots, list):
-                        has_hotspots = len(hotspots) > 0
-                    if hotspot_lookup_mode_code == 2.0 and not has_hotspots:
-                        hotspot_lookup_mode_code = 3.0
-                    if has_exact and not has_hotspots:
-                        hotspot_lookup_mode_code = 3.0
-                    if has_hotspots:
-                        chw_uint8 = renderer.draw_hotspots_on_frame(
-                            chw_uint8,
-                            hotspots,
-                            metrics_callback=metrics_callback,
-                        )
-                except Exception as exc:
-                    import sys as _sys
-                    print(f"[GPU Hotspot Render] failed (non-fatal): {exc}", file=_sys.stderr, flush=True)
+            with torch.cuda.stream(exec_stream):
+                # GPU-side dependency: wait for NV12->RGB producer event without
+                # blocking this worker thread on CPU.
+                if hasattr(exec_stream, "wait_event"):
+                    exec_stream.wait_event(enc_event)
+
+                if publisher is not None:
+                    try:
+                        renderer = publisher.get_gpu_hotspot_renderer()
+                        # Prefer frame-aligned hotspots; fallback to latest if that
+                        # specific frame is not cached yet.
+                        lookup_frame_id = int(frame_id) if isinstance(frame_id, int) else -1
+                        hotspots = publisher.get_hotspots_for_frame(lookup_frame_id)
+                        has_exact = False
+                        is_empty_exact = False
+                        if isinstance(hotspots, torch.Tensor):
+                            is_empty_exact = hotspots.numel() == 0
+                        elif isinstance(hotspots, list):
+                            is_empty_exact = len(hotspots) == 0
+                        else:
+                            is_empty_exact = True
+                        if is_empty_exact:
+                            hotspots = publisher.get_hotspots_for_frame(-1)
+                            hotspot_lookup_mode_code = 2.0
+                        else:
+                            has_exact = True
+                            hotspot_lookup_mode_code = 1.0
+                        has_hotspots = False
+                        if isinstance(hotspots, torch.Tensor):
+                            has_hotspots = hotspots.numel() > 0
+                        elif isinstance(hotspots, list):
+                            has_hotspots = len(hotspots) > 0
+                        if hotspot_lookup_mode_code == 2.0 and not has_hotspots:
+                            hotspot_lookup_mode_code = 3.0
+                        if has_exact and not has_hotspots:
+                            hotspot_lookup_mode_code = 3.0
+
+                        draw_start_event.record(exec_stream)
+                        if has_hotspots:
+                            chw_uint8 = renderer.draw_hotspots_on_frame(
+                                chw_uint8,
+                                hotspots,
+                                metrics_callback=metrics_callback,
+                            )
+                        draw_end_event.record(exec_stream)
+                    except Exception as exc:
+                        import sys as _sys
+                        print(f"[GPU Hotspot Render] failed (non-fatal): {exc}", file=_sys.stderr, flush=True)
+                        draw_start_event.record(exec_stream)
+                        draw_end_event.record(exec_stream)
+                else:
+                    draw_start_event.record(exec_stream)
+                    draw_end_event.record(exec_stream)
+
+                import torchvision.io as tvio
+                buf = tvio.encode_jpeg(chw_uint8, quality=quality)  # NVJPEG (CUDA → CUDA)
+                encode_end_event.record(exec_stream)
+
             hotspot_lookup_done_ns = time.perf_counter_ns()
 
             perf_after_render_ns = time.perf_counter_ns()
-            import torchvision.io as tvio
 
-            # Encode on dedicated NVJPEG stream, then explicitly wait for stream
-            # completion before touching the output on CPU to avoid any partial
-            # read/copy race across CUDA streams.
-            if nvjpeg_stream is not None:
-                with torch.cuda.stream(nvjpeg_stream):
-                    buf = tvio.encode_jpeg(chw_uint8, quality=quality)  # NVJPEG (CUDA → CUDA)
-                nvjpeg_stream.synchronize()
-            else:
-                buf = tvio.encode_jpeg(chw_uint8, quality=quality)
-                torch.cuda.current_stream().synchronize()
+            # Explicit sync remains required before CPU access, but we now expose
+            # it as a separate host-wait metric.
+            host_wait_sync_start_ns = time.perf_counter_ns()
+            exec_stream.synchronize()
+            host_wait_nvjpeg_sync_ms = (time.perf_counter_ns() - host_wait_sync_start_ns) / 1_000_000.0
+
+            try:
+                gpu_draw_event_ms = float(draw_start_event.elapsed_time(draw_end_event))
+                gpu_jpeg_event_ms = float(draw_end_event.elapsed_time(encode_end_event))
+                gpu_input_to_draw_start_ms = float(enc_event.elapsed_time(draw_start_event))
+            except Exception:
+                gpu_draw_event_ms = 0.0
+                gpu_jpeg_event_ms = 0.0
+                gpu_input_to_draw_start_ms = 0.0
 
             perf_after_encode_ns = time.perf_counter_ns()
 
+            cpu_copy_sync_start_ns = time.perf_counter_ns()
             jpeg_np = buf.cpu().numpy()
+            host_wait_cpu_copy_sync_ms = (time.perf_counter_ns() - cpu_copy_sync_start_ns) / 1_000_000.0
             jpeg_bytes = jpeg_np.tobytes()
             perf_after_cpu_copy_ns = time.perf_counter_ns()
 
@@ -780,7 +826,14 @@ class PipelineOrchestrator:
                     {
                         "video_encode_backend_code": 2.0,
                         "video_encode_last_ms": (perf_after_push_ns - perf_start_ns) / 1_000_000.0,
-                        "video_encode_wait_event_ms": (perf_after_wait_ns - perf_start_ns) / 1_000_000.0,
+                        "video_encode_wait_event_ms": host_wait_input_event_ms,
+                        "video_encode_host_wait_input_event_ms": host_wait_input_event_ms,
+                        "video_encode_host_wait_nvjpeg_sync_ms": host_wait_nvjpeg_sync_ms,
+                        "video_encode_host_wait_cpu_copy_sync_ms": host_wait_cpu_copy_sync_ms,
+                        "video_encode_gpu_dependency_mode_code": 1.0,
+                        "video_encode_gpu_input_to_draw_start_ms": gpu_input_to_draw_start_ms,
+                        "video_encode_gpu_draw_event_ms": gpu_draw_event_ms,
+                        "video_encode_gpu_jpeg_event_ms": gpu_jpeg_event_ms,
                         "video_hotspot_lookup_ms": (hotspot_lookup_done_ns - hotspot_lookup_start_ns) / 1_000_000.0,
                         "video_hotspot_lookup_mode_code": hotspot_lookup_mode_code,
                         "video_encode_gpu_hotspot_render_ms": (perf_after_render_ns - perf_after_wait_ns) / 1_000_000.0,
@@ -832,6 +885,13 @@ class PipelineOrchestrator:
                         "video_encode_backend_code": 1.0,
                         "video_encode_last_ms": (perf_after_push_ns - perf_start_ns) / 1_000_000.0,
                         "video_encode_wait_event_ms": (perf_after_wait_ns - perf_start_ns) / 1_000_000.0,
+                        "video_encode_host_wait_input_event_ms": (perf_after_wait_ns - perf_start_ns) / 1_000_000.0,
+                        "video_encode_host_wait_nvjpeg_sync_ms": 0.0,
+                        "video_encode_host_wait_cpu_copy_sync_ms": 0.0,
+                        "video_encode_gpu_dependency_mode_code": 0.0,
+                        "video_encode_gpu_input_to_draw_start_ms": 0.0,
+                        "video_encode_gpu_draw_event_ms": 0.0,
+                        "video_encode_gpu_jpeg_event_ms": 0.0,
                         "video_encode_kernel_ms": (perf_after_encode_ns - perf_after_cpu_copy_ns) / 1_000_000.0,
                         "video_encode_cpu_copy_ms": (perf_after_cpu_copy_ns - perf_after_wait_ns) / 1_000_000.0,
                         "video_encode_push_ms": (perf_after_push_ns - perf_after_encode_ns) / 1_000_000.0,
@@ -858,6 +918,22 @@ class PipelineOrchestrator:
                 self._video_last_cpu_copy_ms = float(metrics["video_encode_cpu_copy_ms"])
             if "video_encode_push_ms" in metrics:
                 self._video_last_push_ms = float(metrics["video_encode_push_ms"])
+            if "video_encode_gpu_hotspot_render_ms" in metrics:
+                self._video_last_gpu_hotspot_render_ms = float(metrics["video_encode_gpu_hotspot_render_ms"])
+            if "video_encode_kernel_ms" in metrics:
+                self._video_last_encode_kernel_ms = float(metrics["video_encode_kernel_ms"])
+                if "video_encode_gpu_draw_event_ms" in metrics:
+                    self._video_last_gpu_draw_event_ms = float(metrics["video_encode_gpu_draw_event_ms"])
+                if "video_encode_gpu_jpeg_event_ms" in metrics:
+                    self._video_last_gpu_jpeg_event_ms = float(metrics["video_encode_gpu_jpeg_event_ms"])
+                if "video_encode_gpu_input_to_draw_start_ms" in metrics:
+                    self._video_last_gpu_input_to_draw_start_ms = float(metrics["video_encode_gpu_input_to_draw_start_ms"])
+                if "video_encode_host_wait_input_event_ms" in metrics:
+                    self._video_last_host_wait_input_event_ms = float(metrics["video_encode_host_wait_input_event_ms"])
+                if "video_encode_host_wait_nvjpeg_sync_ms" in metrics:
+                    self._video_last_host_wait_nvjpeg_sync_ms = float(metrics["video_encode_host_wait_nvjpeg_sync_ms"])
+                if "video_encode_host_wait_cpu_copy_sync_ms" in metrics:
+                    self._video_last_host_wait_cpu_copy_sync_ms = float(metrics["video_encode_host_wait_cpu_copy_sync_ms"])
             if "video_jpeg_kb" in metrics:
                 self._video_last_jpeg_kb = float(metrics["video_jpeg_kb"])
             if "video_hotspot_lookup_ms" in metrics:
@@ -881,6 +957,14 @@ class PipelineOrchestrator:
             self._video_last_wait_event_ms = 0.0
             self._video_last_cpu_copy_ms = 0.0
             self._video_last_push_ms = 0.0
+            self._video_last_gpu_hotspot_render_ms = 0.0
+            self._video_last_encode_kernel_ms = 0.0
+            self._video_last_gpu_draw_event_ms = 0.0
+            self._video_last_gpu_jpeg_event_ms = 0.0
+            self._video_last_gpu_input_to_draw_start_ms = 0.0
+            self._video_last_host_wait_input_event_ms = 0.0
+            self._video_last_host_wait_nvjpeg_sync_ms = 0.0
+            self._video_last_host_wait_cpu_copy_sync_ms = 0.0
             self._video_last_jpeg_kb = 0.0
             self._video_last_hotspot_lookup_ms = 0.0
             self._video_last_hotspot_lookup_mode_code = 0.0
@@ -892,6 +976,14 @@ class PipelineOrchestrator:
                 "video_encode_wait_event_ms": self._video_last_wait_event_ms,
                 "video_encode_cpu_copy_ms": self._video_last_cpu_copy_ms,
                 "video_encode_push_ms": self._video_last_push_ms,
+                "video_encode_gpu_hotspot_render_ms": self._video_last_gpu_hotspot_render_ms,
+                "video_encode_kernel_ms": self._video_last_encode_kernel_ms,
+                "video_encode_gpu_draw_event_ms": self._video_last_gpu_draw_event_ms,
+                "video_encode_gpu_jpeg_event_ms": self._video_last_gpu_jpeg_event_ms,
+                "video_encode_gpu_input_to_draw_start_ms": self._video_last_gpu_input_to_draw_start_ms,
+                "video_encode_host_wait_input_event_ms": self._video_last_host_wait_input_event_ms,
+                "video_encode_host_wait_nvjpeg_sync_ms": self._video_last_host_wait_nvjpeg_sync_ms,
+                "video_encode_host_wait_cpu_copy_sync_ms": self._video_last_host_wait_cpu_copy_sync_ms,
                 "video_jpeg_kb": self._video_last_jpeg_kb,
                 "video_hotspot_lookup_ms": self._video_last_hotspot_lookup_ms,
                 "video_hotspot_lookup_mode_code": self._video_last_hotspot_lookup_mode_code,
