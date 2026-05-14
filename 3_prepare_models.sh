@@ -36,7 +36,7 @@ SKIP_P2PNET="${SKIP_P2PNET:-0}"
 DENSITY_CALIB_DIR="${DENSITY_CALIB_DIR:-}"
 SEG_MODELS="${SEG_MODELS:-yolo26n-seg yolo26s-seg yolo26m-seg yolo26l-seg yolo26x-seg}"
 # Bbox-only models to build FP8-QDQ engines for (used by yolo_tiles, no seg head)
-BBOX_MODELS="${BBOX_MODELS:-yolo26n}"
+BBOX_MODELS="${BBOX_MODELS:-yolo26n yolo26m yolo26l yolo26x}"
 MODEL_REPO="${MODEL_REPO:-https://github.com/Nutz95/CrowdCounterModels}"
 MODEL_RAW_BASE="${MODEL_RAW_BASE:-https://github.com/Nutz95/CrowdCounterModels/raw/refs/heads/main}"
 P2PNET_SRC_DIR="${P2PNET_SRC_DIR:-models/p2pnet-src}"
