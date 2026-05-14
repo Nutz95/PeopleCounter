@@ -54,6 +54,11 @@ sse.addEventListener('message', e => {
         decode_stage_export_ms: null,
         decode_stage_pack_ms: null,
         other_ms: null,
+        other_collect_ms: null,
+        other_collect_source_wait_ms: null,
+        other_collect_orchestration_ms: null,
+        other_collect_queue_est_ms: null,
+        other_unattributed_ms: null,
         nvdec_ms: null,
         src_wait_ms: null,
         src_age_ms: null,
@@ -208,6 +213,11 @@ sse.addEventListener('message', e => {
   const serverLockHold = +(tel.server_lock_hold_ms ?? 0);
   const serverLockAcquired = +(tel.server_lock_acquired ?? 0);
   const otherCollect = Math.max(0, otherMs - (otherPublish + otherEncode));
+  const orchestrationTotal = Math.max(0, orchestratorFlatten + orchestratorRegister + orchestratorCollect + aggregatorCollectLatency);
+  const otherCollectSourceWait = Math.min(otherCollect, Math.max(0, srcWait));
+  const otherCollectOrchestration = Math.min(Math.max(0, otherCollect - otherCollectSourceWait), orchestrationTotal);
+  const otherCollectQueueEst = Math.max(0, otherCollect - otherCollectSourceWait - otherCollectOrchestration);
+  const otherUnattributed = Math.max(0, e2e - (srcWait + preproc + inferCritical + fusion + postDecode + otherPublish + otherEncode));
 
   // ── Update DOM ───────────────────────────────────────────────
   $connStatus.textContent = '⬤ Live';
@@ -276,6 +286,10 @@ sse.addEventListener('message', e => {
       other_encode_copy_ms: +otherEncodeCopy.toFixed(4),
       other_encode_push_ms: +otherEncodePush.toFixed(4),
       other_collect_ms: +otherCollect.toFixed(4),
+      other_collect_source_wait_ms: +otherCollectSourceWait.toFixed(4),
+      other_collect_orchestration_ms: +otherCollectOrchestration.toFixed(4),
+      other_collect_queue_est_ms: +otherCollectQueueEst.toFixed(4),
+      other_unattributed_ms: +otherUnattributed.toFixed(4),
       orchestrator_flatten_ms: +orchestratorFlatten.toFixed(4),
       orchestrator_register_ms: +orchestratorRegister.toFixed(4),
       orchestrator_collect_ms: +orchestratorCollect.toFixed(4),

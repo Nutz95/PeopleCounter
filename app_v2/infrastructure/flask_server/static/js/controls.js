@@ -73,7 +73,6 @@ function _updateOverlaySection(mode) {
   $section.style.display = overlays.length > 0 ? '' : 'none';
   document.getElementById('overlay-bbox').style.display    = overlays.includes('bbox')    ? '' : 'none';
   document.getElementById('overlay-bbox-points').style.display = overlays.includes('bbox') ? '' : 'none';
-  document.getElementById('overlay-bbox-text').style.display = overlays.includes('bbox') ? '' : 'none';
   document.getElementById('overlay-seg').style.display     = overlays.includes('seg')     ? '' : 'none';
   document.getElementById('overlay-heatmap').style.display = overlays.includes('heatmap') ? '' : 'none';
 
@@ -311,10 +310,6 @@ document.getElementById('mask-toggle').addEventListener('change', e => {
 
 document.getElementById('point-render-toggle').addEventListener('change', e => {
   renderPoints = e.target.checked;
-});
-
-document.getElementById('bbox-text-toggle').addEventListener('change', e => {
-  showBboxText = e.target.checked;
 });
 
 document.getElementById('seg-toggle').addEventListener('change', e => {

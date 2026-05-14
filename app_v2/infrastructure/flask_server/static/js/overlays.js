@@ -75,14 +75,6 @@ function drawMask(payload) {
         maskCtx.stroke();
       }
 
-      if (showBboxText && det.conf != null) {
-        const label = `${(det.conf * 100).toFixed(0)}%`;
-        maskCtx.fillStyle = 'rgba(5,11,23,0.75)';
-        maskCtx.fillRect(bx, by - 18, label.length * 7 + 8, 18);
-        maskCtx.fillStyle = '#e5fffa';
-        maskCtx.font = '11px monospace';
-        maskCtx.fillText(label, bx + 4, by - 4);
-      }
     }
   }
 }
@@ -118,14 +110,6 @@ function drawMaskPacked(rows) {
       maskCtx.arc(cx, cy, 2.5, 0, 2 * Math.PI);
       maskCtx.fill();
 
-      if (showBboxText) {
-        const label = `${(conf * 100).toFixed(0)}%`;
-        maskCtx.fillStyle = 'rgba(5,11,23,0.75)';
-        maskCtx.fillRect(cx - 2, cy - 18, label.length * 7 + 8, 18);
-        maskCtx.fillStyle = '#e5fffa';
-        maskCtx.font = '11px monospace';
-        maskCtx.fillText(label, cx + 2, cy - 4);
-      }
       continue;
     }
 
@@ -157,14 +141,6 @@ function drawMaskPacked(rows) {
       maskCtx.stroke();
     }
 
-    if (showBboxText) {
-      const label = `${(conf * 100).toFixed(0)}%`;
-      maskCtx.fillStyle = 'rgba(5,11,23,0.75)';
-      maskCtx.fillRect(bx, by - 18, label.length * 7 + 8, 18);
-      maskCtx.fillStyle = '#e5fffa';
-      maskCtx.font = '11px monospace';
-      maskCtx.fillText(label, bx + 4, by - 4);
-    }
   }
 }
 

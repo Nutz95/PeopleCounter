@@ -21,7 +21,6 @@ let showMask     = true;
 let showSeg      = false;
 let showHeatmap  = true;
 let previewOnly  = false;
-let showBboxText = false;
 let renderPoints = false;
 let _overlayPointRadiusMaskPx = 2.5;
 let _overlayPointRadiusHeatPx = 1.25;
@@ -205,6 +204,10 @@ const _benchmarkMetricCols = [
   'other_encode_copy_ms',
   'other_encode_push_ms',
   'orchestrator_flatten_ms',
+  'other_collect_source_wait_ms',
+  'other_collect_orchestration_ms',
+  'other_collect_queue_est_ms',
+  'other_unattributed_ms',
   'orchestrator_register_ms',
   'orchestrator_collect_ms',
   'aggregator_collect_latency_ms',
@@ -236,6 +239,10 @@ const _benchmarkSpikeComponents = [
   'postdecode_ms',
   'other_ms',
   'other_collect_ms',
+  'other_collect_source_wait_ms',
+  'other_collect_orchestration_ms',
+  'other_collect_queue_est_ms',
+  'other_unattributed_ms',
   'other_publish_ms',
   'other_encode_ms',
   'video_hotspot_lookup_ms',
@@ -412,6 +419,7 @@ function benchmarkCaptureStopAndDownload() {
     'infer_critical_ms', 'fusion_ms', 'postdecode_ms', 'decode_stage_filter_ms',
     'decode_stage_nms_ms', 'decode_stage_export_ms', 'decode_stage_pack_ms',
     'other_ms', 'other_publish_ms', 'other_encode_ms', 'other_encode_wait_ms', 'other_encode_copy_ms', 'other_encode_push_ms', 'other_collect_ms',
+    'other_collect_source_wait_ms', 'other_collect_orchestration_ms', 'other_collect_queue_est_ms', 'other_unattributed_ms',
     'orchestrator_flatten_ms', 'orchestrator_register_ms', 'orchestrator_collect_ms', 'aggregator_collect_latency_ms',
     'server_json_encode_ms', 'server_sse_publish_ms', 'server_compact_payload_ms', 'server_meta_ws_push_ms', 'server_telemetry_update_ms', 'server_lock_hold_ms', 'server_lock_acquired',
     'nvdec_ms', 'src_wait_ms', 'src_age_ms', 'src_copy_sync_ms',
