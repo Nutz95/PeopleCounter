@@ -483,10 +483,10 @@ class PipelineOrchestrator:
     def _apply_decoder_runtime_policy(self, sync_mode: str) -> None:
         """Apply low-latency decode policy according to active sync mode.
 
-        async: YOLO/CROWD count-only (GPU candidate count), no bbox/seg decode.
-        sync : restore configured decoder behaviour from model inference params.
+        Runtime sync mode must not silently change detection semantics.
+        Decoder toggles are driven by model inference config only so that
+        bbox overlays and counts stay consistent across async/sync transport.
         """
-        is_async = str(sync_mode).strip().lower() != "sync"
         for model in self._models:
             decoder = getattr(model, "_decoder", None)
             if decoder is None:
@@ -502,15 +502,11 @@ class PipelineOrchestrator:
                 inference_params = {}
 
             if hasattr(decoder, "count_only_mode"):
-                decoder.count_only_mode = bool(is_async)
+                decoder.count_only_mode = bool(inference_params.get("count_only_mode", False))
             if hasattr(decoder, "person_summary_enabled"):
-                decoder.person_summary_enabled = bool(is_async) or bool(
-                    inference_params.get("person_summary_enabled", False)
-                )
+                decoder.person_summary_enabled = bool(inference_params.get("person_summary_enabled", False))
             if hasattr(decoder, "seg_mask_enabled"):
-                decoder.seg_mask_enabled = (
-                    False if is_async else bool(inference_params.get("seg_mask_enabled", False))
-                )
+                decoder.seg_mask_enabled = bool(inference_params.get("seg_mask_enabled", False))
 
     def _shutdown(self) -> None:
         self._video_executor.shutdown(wait=False)

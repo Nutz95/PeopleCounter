@@ -20,7 +20,11 @@ const _syncModeLabels = {
 };
 
 function _isServerSideHeatmapMode() {
-  return _activeSyncMode === 'sync' && (showHeatmap || showMask || showSeg);
+  if (_activeSyncMode !== 'sync') return false;
+  if (_activeMode === 'density' || _activeMode === 'p2pnet') {
+    return showHeatmap;
+  }
+  return false;
 }
 
 function _applyServerSideHeatmapFrontendState() {

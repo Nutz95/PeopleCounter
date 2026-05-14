@@ -336,13 +336,11 @@ class FlaskStreamServer(ResultPublisher):
             # manipulate `mask_enabled` for non-bbox modes.
             if has_hotspot_model_payload:
                 server_side_points_active = True
-            elif self._mask_requested and yolo_detection_count > 0:
-                # Sync mode policy: YOLO/CROWD points should render even at low
-                # counts by default. The legacy config gate remains optional.
-                if self._server_side_points_for_yolo:
-                    server_side_points_active = yolo_detection_count >= self._server_side_points_yolo_min_detections
-                else:
-                    server_side_points_active = True
+            elif self._server_side_points_for_yolo and self._mask_requested and yolo_detection_count > 0:
+                # YOLO/CROWD server-side point burn-in is an explicit opt-in.
+                # Keep it off by default so bbox overlays stay on the browser
+                # GPU/WebGL path and MJPEG encoding does not pay the render cost.
+                server_side_points_active = yolo_detection_count >= self._server_side_points_yolo_min_detections
         server_side_overlay_active = server_side_heatmap_active or server_side_points_active
         has_metadata_clients = self._metadata_ws.has_clients()
         metadata_transport_active = (not async_passthrough_mode) and has_metadata_clients and not server_side_overlay_active

@@ -51,7 +51,7 @@ _MODE_OVERLAYS: dict[str, list[str]] = {
     # Reuse the existing heatmap/circle overlay renderer for point display.
     # Payload provides `hotspots` entries (x, y, w), where w maps to point radius.
     "p2pnet":              ["heatmap"],
-    "yolo_global":         ["bbox", "seg"],
+    "yolo_global":         ["bbox"],
     "yolo_tiles":          ["bbox"],
     "crowd_global":        ["bbox"],
     "crowd_tiles":         ["bbox"],
